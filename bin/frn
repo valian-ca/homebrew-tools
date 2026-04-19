@@ -182,23 +182,26 @@ probe_sim() {
       ' > "$TMP/sim" 2>/dev/null || true
 }
 
-probe_android & probe_ios & probe_sim &
-wait
+probe_all_devices() {
+  rm -f "$TMP/android" "$TMP/ios" "$TMP/sim"
+  probe_android & probe_ios & probe_sim &
+  wait
+  cat "$TMP"/android "$TMP"/ios "$TMP"/sim 2>/dev/null > "$TMP/all" || true
+}
 
-cat "$TMP"/android "$TMP"/ios "$TMP"/sim 2>/dev/null > "$TMP/all" || true
+probe_all_devices
 
-if [ ! -s "$TMP/all" ]; then
-  echo "No devices found (adb/devicectl/simctl all empty)." >&2
-  exit 1
-fi
-
-# Pick a device. Priority:
-#   1. If a saved device_id is still among the probed ones, use it silently.
-#   2. If only one device is available, use it silently.
-#   3. Otherwise show the gum picker.
+# Pick a device.
+#   - Without $1: auto-pick silently if the saved device is still connected,
+#     or if there's exactly one device. Otherwise show the picker.
+#   - With $1="menu": always show the picker (used from the summary menu so
+#     the user can rescan even with a single device).
+#   The picker always offers a "↻ Rescan devices" entry at the bottom to
+#   re-probe adb/devicectl/simctl without restarting frn.
 pick_device() {
-  local n label line
-  if [ -n "$SAVED_DEVICE_ID" ]; then
+  local force_menu="${1:-}"
+  local n line picked
+  if [ -z "$force_menu" ] && [ -n "$SAVED_DEVICE_ID" ]; then
     line=$(awk -F'\t' -v id="$SAVED_DEVICE_ID" '$2 == id {print; exit}' "$TMP/all")
     SAVED_DEVICE_ID=""  # consume: re-entry from menu uses the picker
     if [ -n "$line" ]; then
@@ -206,19 +209,30 @@ pick_device() {
       DEVICE_LABEL=$(printf '%s' "$line" | awk -F'\t' '{print $1}')
       return 0
     fi
-    # Saved device not connected anymore; fall through to normal flow.
+    # Saved device not connected anymore; fall through to the picker.
   fi
-  n=$(wc -l < "$TMP/all")
-  if [ "$n" -eq 1 ]; then
-    line=$(cat "$TMP/all")
-  else
-    label=$(awk -F'\t' '{print $1}' "$TMP/all" \
+  if [ -z "$force_menu" ]; then
+    n=$(wc -l < "$TMP/all" 2>/dev/null || echo 0)
+    if [ "$n" -eq 1 ]; then
+      line=$(cat "$TMP/all")
+      DEVICE_ID=$(printf '%s' "$line" | awk -F'\t' '{print $2}')
+      DEVICE_LABEL=$(printf '%s' "$line" | awk -F'\t' '{print $1}')
+      return 0
+    fi
+  fi
+  while true; do
+    picked=$({ awk -F'\t' '{print $1}' "$TMP/all" 2>/dev/null; echo "↻ Rescan devices"; } \
       | gum choose --header="Device" || true)
-    [ -n "$label" ] || return 1
-    line=$(awk -F'\t' -v l="$label" '$1 == l {print; exit}' "$TMP/all")
-  fi
-  DEVICE_ID=$(printf '%s' "$line" | awk -F'\t' '{print $2}')
-  DEVICE_LABEL=$(printf '%s' "$line" | awk -F'\t' '{print $1}')
+    [ -n "$picked" ] || return 1
+    if [ "$picked" = "↻ Rescan devices" ]; then
+      probe_all_devices
+      continue
+    fi
+    line=$(awk -F'\t' -v l="$picked" '$1 == l {print; exit}' "$TMP/all")
+    DEVICE_ID=$(printf '%s' "$line" | awk -F'\t' '{print $2}')
+    DEVICE_LABEL=$(printf '%s' "$line" | awk -F'\t' '{print $1}')
+    return 0
+  done
 }
 
 pick_device || { echo "Cancelled." >&2; exit 1; }
@@ -254,7 +268,7 @@ while true; do
       fi
       ;;
     "Device"*)
-      pick_device || true
+      pick_device menu || true
       ;;
     "VM out"*)
       NEW=$(gum input --value="$VMSERVICE_FILE" --prompt="VM service file > " || true)
