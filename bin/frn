@@ -20,7 +20,6 @@ FLAVOR="development"
 VMSERVICE_FILE=".dart_tool/valian/vmservice.uri"
 STATE_FILE="${FRN_STATE_FILE:-.dart_tool/valian/frn.json}"
 SAVED_DEVICE_ID=""
-SAVED_DEVICE_LABEL=""
 
 # Env vars override hardcoded defaults.
 [ -n "${FLUTTER_FLAVOR:-}" ]         && FLAVOR="$FLUTTER_FLAVOR"
@@ -31,12 +30,10 @@ if [ -f "$STATE_FILE" ] && command -v jq >/dev/null 2>&1; then
   _sf=$(jq -r '.flavor // empty'         "$STATE_FILE" 2>/dev/null || true)
   _sv=$(jq -r '.vmservice_file // empty' "$STATE_FILE" 2>/dev/null || true)
   _sd=$(jq -r '.device_id // empty'      "$STATE_FILE" 2>/dev/null || true)
-  _sl=$(jq -r '.device_label // empty'   "$STATE_FILE" 2>/dev/null || true)
   [ -n "$_sf" ] && FLAVOR="$_sf"
   [ -n "$_sv" ] && VMSERVICE_FILE="$_sv"
   SAVED_DEVICE_ID="$_sd"
-  SAVED_DEVICE_LABEL="$_sl"
-  unset _sf _sv _sd _sl
+  unset _sf _sv _sd
 fi
 
 usage() {
@@ -204,7 +201,6 @@ pick_device() {
   if [ -n "$SAVED_DEVICE_ID" ]; then
     line=$(awk -F'\t' -v id="$SAVED_DEVICE_ID" '$2 == id {print; exit}' "$TMP/all")
     SAVED_DEVICE_ID=""  # consume: re-entry from menu uses the picker
-    SAVED_DEVICE_LABEL=""
     if [ -n "$line" ]; then
       DEVICE_ID=$(printf '%s' "$line" | awk -F'\t' '{print $2}')
       DEVICE_LABEL=$(printf '%s' "$line" | awk -F'\t' '{print $1}')
