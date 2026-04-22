@@ -142,10 +142,24 @@ done < <(detect_flavors)
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
+# Run a command with a wall-clock timeout (seconds). Uses macOS-native perl
+# so no extra dependency is needed — SIGALRM is preserved across exec, so
+# the child gets killed if it runs too long.
+with_timeout() {
+  perl -e 'alarm shift @ARGV; exec { $ARGV[0] } @ARGV' "$@"
+}
+
 # --- Android (USB + wireless) ---
+# The adb daemon is notorious for hanging; a timeout keeps frn responsive.
+# On timeout we drop a marker so the picker can offer a restart/reconnect.
 probe_android() {
   command -v adb >/dev/null 2>&1 || return 0
-  adb devices -l 2>/dev/null | awk '
+  if ! with_timeout 5 adb devices -l > "$TMP/android.raw" 2>/dev/null; then
+    : > "$TMP/adb_timeout"
+    : > "$TMP/android"
+    return 0
+  fi
+  awk '
     NR > 1 && $2 == "device" {
       serial = $1
       model = "Android"
@@ -154,7 +168,7 @@ probe_android() {
       }
       tag = (serial ~ /:/) ? "wifi" : "usb"
       printf " %s (%s)\t%s\n", model, tag, serial
-    }' > "$TMP/android" 2>/dev/null || true
+    }' "$TMP/android.raw" > "$TMP/android" 2>/dev/null || true
 }
 
 # --- iOS physical (Xcode 15+: devicectl) ---
@@ -183,10 +197,65 @@ probe_sim() {
 }
 
 probe_all_devices() {
-  rm -f "$TMP/android" "$TMP/ios" "$TMP/sim"
+  rm -f "$TMP/android" "$TMP/ios" "$TMP/sim" "$TMP/adb_timeout"
   probe_android & probe_ios & probe_sim &
   wait
   cat "$TMP"/android "$TMP"/ios "$TMP"/sim 2>/dev/null > "$TMP/all" || true
+}
+
+# Kill a hung adb daemon and start a fresh one.
+restart_adb() {
+  command -v adb >/dev/null 2>&1 || return 1
+  echo "Restarting adb..." >&2
+  pkill -9 adb 2>/dev/null || true
+  with_timeout 5 adb start-server >/dev/null 2>&1 || {
+    echo "adb start-server timed out." >&2
+    return 1
+  }
+}
+
+# Rediscover and reconnect wireless ADB devices via mDNS. Mirrors the
+# adb-reconnect zsh helper: drop stale IP connections, discover tls-connect
+# services, reconnect; if no services are advertised, restart adb and retry.
+reconnect_wireless_adb() {
+  command -v adb >/dev/null 2>&1 || return 1
+  local stale
+  while IFS= read -r stale; do
+    [ -z "$stale" ] && continue
+    echo "Disconnecting stale $stale..." >&2
+    with_timeout 5 adb disconnect "$stale" >/dev/null 2>&1 || true
+  done < <(with_timeout 5 adb devices 2>/dev/null | awk '/^[0-9]+\./ {print $1}' || true)
+
+  local ports=() p
+  while IFS= read -r p; do
+    [ -n "$p" ] && ports+=("$p")
+  done < <(with_timeout 5 adb mdns services 2>/dev/null \
+    | awk '/_adb-tls-connect/ {print $NF}' | awk '!seen[$0]++' | tail -r || true)
+
+  if [ ${#ports[@]} -eq 0 ]; then
+    echo "No wireless services found, restarting adb..." >&2
+    restart_adb || return 1
+    sleep 1
+    while IFS= read -r p; do
+      [ -n "$p" ] && ports+=("$p")
+    done < <(with_timeout 5 adb mdns services 2>/dev/null \
+      | awk '/_adb-tls-connect/ {print $NF}' | awk '!seen[$0]++' | tail -r || true)
+  fi
+  if [ ${#ports[@]} -eq 0 ]; then
+    echo "No wireless debugging service found. Is it enabled on your phone?" >&2
+    return 1
+  fi
+
+  local addr
+  for addr in ${ports[@]+"${ports[@]}"}; do
+    echo "Trying $addr..." >&2
+    if with_timeout 5 adb connect "$addr" 2>&1 | grep -q 'connected'; then
+      echo "Connected to $addr" >&2
+      return 0
+    fi
+  done
+  echo "Failed to connect to any discovered service." >&2
+  return 1
 }
 
 probe_all_devices
@@ -221,13 +290,32 @@ pick_device() {
     fi
   fi
   while true; do
-    picked=$({ awk -F'\t' '{print $1}' "$TMP/all" 2>/dev/null; echo "↻ Rescan devices"; } \
-      | gum choose --header="Device" || true)
-    [ -n "$picked" ] || return 1
-    if [ "$picked" = "↻ Rescan devices" ]; then
-      probe_all_devices
-      continue
+    n=$(wc -l < "$TMP/all" 2>/dev/null || echo 0)
+    local menu=() entry header="Device"
+    if [ "$n" -gt 0 ]; then
+      while IFS= read -r entry; do
+        [ -n "$entry" ] && menu+=("$entry")
+      done < <(awk -F'\t' '{print $1}' "$TMP/all" 2>/dev/null)
     fi
+    menu+=("↻ Rescan devices")
+    if command -v adb >/dev/null 2>&1; then
+      menu+=("↻ Restart adb server")
+      # Reconnect is pointless when adb is hung — skip it in that case.
+      [ -f "$TMP/adb_timeout" ] || menu+=("↻ Reconnect wireless adb")
+    fi
+    if [ "$n" -eq 0 ]; then
+      header="No devices"
+      menu+=("Cancel")
+      echo "No devices found. Connect a device or start a simulator/emulator, then rescan." >&2
+    fi
+    picked=$(printf '%s\n' "${menu[@]}" | gum choose --header="$header" || true)
+    [ -n "$picked" ] || return 1
+    case "$picked" in
+      "↻ Rescan devices")          probe_all_devices; continue ;;
+      "↻ Restart adb server")      restart_adb || true; probe_all_devices; continue ;;
+      "↻ Reconnect wireless adb")  reconnect_wireless_adb || true; probe_all_devices; continue ;;
+      "Cancel")                    return 1 ;;
+    esac
     line=$(awk -F'\t' -v l="$picked" '$1 == l {print; exit}' "$TMP/all")
     DEVICE_ID=$(printf '%s' "$line" | awk -F'\t' '{print $2}')
     DEVICE_LABEL=$(printf '%s' "$line" | awk -F'\t' '{print $1}')
