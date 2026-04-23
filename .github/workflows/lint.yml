@@ -6,14 +6,42 @@ on:
   pull_request:
 
 jobs:
+  go:
+    name: go vet + test + lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: go vet
+        run: go vet ./...
+      - name: go test
+        run: go test ./...
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+
   shellcheck:
     name: shellcheck bin/*
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Skip if bin/ is empty
+        id: check
+        run: |
+          if compgen -G "bin/*" > /dev/null; then
+            echo "has_scripts=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_scripts=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: Install shellcheck
+        if: steps.check.outputs.has_scripts == 'true'
         run: sudo apt-get update && sudo apt-get install -y shellcheck
       - name: Run shellcheck
+        if: steps.check.outputs.has_scripts == 'true'
         run: shellcheck -x bin/*
 
   brew-audit:

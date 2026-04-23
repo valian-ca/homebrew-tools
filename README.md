@@ -27,7 +27,8 @@ brew upgrade valian-ca/tools/<name>
 
 ## `frn`
 
-Fast `flutter run` launcher with device picker.
+Fast `flutter run` launcher with device picker. Implemented in Go; `brew
+install` compiles it from source (pulls `go` as a build dependency).
 
 ![frn in action](docs/frn-demo.gif)
 
@@ -69,5 +70,6 @@ compatibility notes, and the release process.
 
 Every PR and push to `main` runs:
 
-- `shellcheck -x bin/*` — lints all shell scripts.
+- `go vet ./...`, `go test ./...`, `golangci-lint run` — for Go packages.
+- `shellcheck -x bin/*` — when `bin/` contains scripts.
 - `brew audit --strict --online valian-ca/tools/<name>` — only when a formula changes.
