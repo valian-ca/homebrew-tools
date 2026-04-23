@@ -1,10 +1,8 @@
-version: "2"
-
 run:
   timeout: 3m
 
 linters:
-  default: none
+  disable-all: true
   enable:
     - errcheck
     - govet
