@@ -62,6 +62,13 @@ func run(ctx context.Context) error {
 		return nil
 	}
 
+	if _, err := os.Stat("pubspec.yaml"); err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("frn must run from a Flutter project root (no pubspec.yaml in current directory)")
+		}
+		return err
+	}
+
 	// Precedence (low → high): hardcoded defaults < env vars < state file < CLI args.
 	flavors := flavor.Detect(".")
 	sel := ui.Selection{
