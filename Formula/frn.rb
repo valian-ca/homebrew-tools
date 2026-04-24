@@ -1,8 +1,8 @@
 class Frn < Formula
   desc "Fast Flutter run launcher with device picker"
   homepage "https://github.com/valian-ca/homebrew-tools"
-  url "https://github.com/valian-ca/homebrew-tools/archive/refs/tags/frn-0.3.1.tar.gz"
-  sha256 "323afcd5f4e46911ed2c4bc9e5094442f1e152cf443b078a2db4e887fa335580"
+  url "https://github.com/valian-ca/homebrew-tools/archive/refs/tags/frn-0.3.2.tar.gz"
+  sha256 "984dfa6b18ad838549df152e1bdd616b11b234677dde9c790f1afbb3fb42f368"
   license "MIT"
 
   depends_on "go" => :build
