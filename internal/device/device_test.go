@@ -161,6 +161,27 @@ func TestParseDevicectlSkipsUnpaired(t *testing.T) {
 	}
 }
 
+// Real capture: paired iPhone with the tunnel idle. devicectl's CLI shows
+// this as `available (paired)` — CoreDevice brings the tunnel up on demand
+// when flutter run targets the UDID, so we must not filter it.
+func TestParseDevicectlIncludesAvailableDisconnected(t *testing.T) {
+	payload := `{"result":{"devices":[{
+    "connectionProperties":{"pairingState":"paired","tunnelState":"disconnected","transportType":"wired"},
+    "deviceProperties":{"name":"iPhone 12 Mini"},
+    "hardwareProperties":{"platform":"iOS","udid":"00008101-0011649C3EB8001E"}
+  }]}}`
+	got, err := parseDevicectl([]byte(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected available-but-disconnected device to be included, got %+v", got)
+	}
+	if got[0].ID != "00008101-0011649C3EB8001E" {
+		t.Errorf("ID: got %q", got[0].ID)
+	}
+}
+
 func TestParseDevicectlConnectedButMissingTransport(t *testing.T) {
 	// Sanity: if transportType is absent on a connected device, we still
 	// emit it with a placeholder label rather than dropping it.

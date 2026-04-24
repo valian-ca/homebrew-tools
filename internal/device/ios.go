@@ -31,9 +31,12 @@ type devicectlOutput struct {
 
 // parseDevicectl extracts the usable paired iOS devices from devicectl's
 // JSON output. A device shows up in devicectl's list for a long time after
-// it was last paired — we only want ones that can actually be driven
-// right now, hence the tunnelState check. Observed tunnelStates include
-// "connected", "disconnected", "unavailable"; only "connected" is usable.
+// it was last paired — we want to include any paired device that CoreDevice
+// could bring up on demand. Observed tunnelStates: "connected" (tunnel up),
+// "disconnected" (tunnel idle but device joinable — devicectl's CLI reports
+// these as `available (paired)`), and "unavailable" (device out of reach).
+// Only "unavailable" is filtered; `flutter run -d <udid>` transparently
+// establishes the tunnel for the other two.
 func parseDevicectl(data []byte) ([]Device, error) {
 	var parsed devicectlOutput
 	if err := json.Unmarshal(data, &parsed); err != nil {
@@ -47,7 +50,7 @@ func parseDevicectl(data []byte) ([]Device, error) {
 		if d.ConnectionProperties.PairingState != "paired" {
 			continue
 		}
-		if d.ConnectionProperties.TunnelState != "connected" {
+		if d.ConnectionProperties.TunnelState == "unavailable" {
 			continue
 		}
 		transport := d.ConnectionProperties.TransportType
