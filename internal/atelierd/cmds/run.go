@@ -2,7 +2,6 @@ package cmds
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	mathrand "math/rand"
 	"os"
@@ -110,6 +109,11 @@ func runRun(cmd *cobra.Command, _ []string) error {
 		cancel()
 	}()
 
+	// Proactive refresh if the loaded credentials are already (or near) expired —
+	// prevents a heartbeat-before-refresh race that would otherwise trip
+	// auth-lost on the first 60 s heartbeat tick after a long machine-off.
+	refreshOnBoot(rootCtx, state)
+
 	atelierlog.Info("atelierd run started", "uid", state.snapshot().UID, "host", host, "version", Version)
 
 	var wg sync.WaitGroup
@@ -129,16 +133,15 @@ func runRun(cmd *cobra.Command, _ []string) error {
 
 // runState is the mutex-guarded shared state across run's goroutines.
 type runState struct {
-	mu               sync.RWMutex
-	creds            *credentials.Credentials
-	host             string
-	authState        status.AuthState
-	lastTick         time.Time
-	lastHeartbeat    time.Time
-	lastShip         time.Time
-	outboxBacklog    int
-	currentBackoff   time.Duration
-	authLostNotifyAt time.Time
+	mu             sync.RWMutex
+	creds          *credentials.Credentials
+	host           string
+	authState      status.AuthState
+	lastTick       time.Time
+	lastHeartbeat  time.Time
+	lastShip       time.Time
+	outboxBacklog  int
+	currentBackoff time.Duration
 }
 
 func (s *runState) snapshot() *status.File {
@@ -174,7 +177,6 @@ func (s *runState) markAuthLost(reason string) {
 	s.mu.Lock()
 	wasOk := s.authState == status.AuthOk
 	s.authState = status.AuthLost
-	s.authLostNotifyAt = time.Now().UTC()
 	s.mu.Unlock()
 	if wasOk {
 		atelierlog.Error("auth-lost: ship + heartbeat + refresh loops stopping; relancer atelierd link", "reason", reason)
@@ -229,6 +231,41 @@ func (s *runState) nextBackoff() time.Duration {
 
 func writeStatusSnapshot(s *runState) error {
 	return status.Save(s.snapshot())
+}
+
+// refreshOnBoot synchronously refreshes the idToken if the loaded credentials
+// are within refreshLeadTime of expiry (or already past). Without this, a long
+// machine-off can leave creds expired at boot, and the heartbeat goroutine
+// (which fires immediately) would race the refresher and trip auth-lost on
+// the first 401.
+func refreshOnBoot(ctx context.Context, state *runState) {
+	creds := state.currentCreds()
+	if time.Until(creds.IDTokenExpiresAt) >= refreshLeadTime {
+		return
+	}
+	bootCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	res, err := firebaseauth.RefreshIDToken(bootCtx, creds.RefreshToken)
+	if err != nil {
+		if firebaseauth.IsAuthLost(err) {
+			state.markAuthLost("startup refresh: " + err.Error())
+		} else {
+			atelierlog.Warn("startup refresh: transient error, continuing", "err", err.Error())
+		}
+		return
+	}
+	updated := &credentials.Credentials{
+		UID:              creds.UID,
+		Email:            creds.Email,
+		IDToken:          res.IDToken,
+		RefreshToken:     res.RefreshToken,
+		IDTokenExpiresAt: res.IDTokenExpiresAt,
+	}
+	if err := credentials.Save(updated); err != nil {
+		atelierlog.Warn("startup refresh: persist failed", "err", err.Error())
+	}
+	state.updateCreds(updated)
+	atelierlog.Info("startup refresh: idToken refreshed before launching loops", "next_expiry", res.IDTokenExpiresAt.Format(time.RFC3339))
 }
 
 // ============================================================================
@@ -521,6 +558,3 @@ func statusWriterLoop(ctx context.Context, state *runState) {
 		}
 	}
 }
-
-// ensure errors.As compiles even when no auth-lost branch is taken
-var _ = errors.As

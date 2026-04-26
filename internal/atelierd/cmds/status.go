@@ -155,12 +155,11 @@ func checkFirestore(parent context.Context, creds *credentials.Credentials) chec
 	ctx, cancel := context.WithTimeout(parent, pingTimeout)
 	defer cancel()
 	if err := firestore.PingUser(ctx, creds.IDToken, creds.UID); err != nil {
-		tier := tierFail
 		note := "ping /users échoué : " + err.Error()
 		if firestore.IsAuthLost(err) {
 			note = "auth rejetée par Firestore — relance `atelierd link`"
 		}
-		return checkResult{name: "Connectivité Firestore", tier: tier, note: note}
+		return checkResult{name: "Connectivité Firestore", tier: tierFail, note: note}
 	}
 	return checkResult{name: "Connectivité Firestore", tier: tierOK, note: "OK"}
 }
