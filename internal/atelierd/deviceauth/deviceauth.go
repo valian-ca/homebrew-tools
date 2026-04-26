@@ -37,7 +37,7 @@ func (e *CallError) Error() string {
 }
 
 // callableEndpoint is the single api callable hosting every backend route.
-var callableEndpoint = app.CallableBaseURL + "/api"
+var callableEndpoint = app.CallableBaseURL + "/dashboards-api"
 
 // callableRequest mirrors the {data: {type, value}} envelope Firebase callables
 // expect. The CallableRouter then dispatches on `type`.
