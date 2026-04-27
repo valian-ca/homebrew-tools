@@ -179,7 +179,7 @@ func (s *runState) markAuthLost(reason string) {
 	s.authState = status.AuthLost
 	s.mu.Unlock()
 	if wasOk {
-		atelierlog.Error("auth-lost: ship + heartbeat + refresh loops stopping; relancer atelierd link", "reason", reason)
+		atelierlog.Error("auth-lost: ship + heartbeat + refresh loops stopping; re-run atelierd link", "reason", reason)
 	}
 }
 
@@ -553,7 +553,7 @@ func statusWriterLoop(ctx context.Context, state *runState) {
 			}
 		case <-reminder.C:
 			if state.isAuthLost() {
-				atelierlog.Warn("auth-lost reminder: relance `atelierd link` puis `brew services restart atelierd`")
+				atelierlog.Warn("auth-lost reminder: re-run `atelierd link` then `brew services restart atelierd`")
 			}
 		}
 	}

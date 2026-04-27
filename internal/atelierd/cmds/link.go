@@ -56,16 +56,16 @@ func runLink(cmd *cobra.Command, _ []string) error {
 	}
 
 	cmd.Println()
-	cmd.Println("    Code de liaison :  " + formatCode(code))
+	cmd.Println("    Linking code:  " + formatCode(code))
 	cmd.Println()
-	cmd.Println("Ouvre la page de connexion et saisis le code ci-dessus.")
-	cmd.Println("URL : " + app.DashboardConnectMachineURL(code))
+	cmd.Println("Open the connection page and enter the code above.")
+	cmd.Println("URL: " + app.DashboardConnectMachineURL(code))
 	cmd.Println()
 	if err := openBrowser(app.DashboardConnectMachineURL(code)); err != nil {
 		// Browser launch is a convenience — the URL is still printed above.
-		cmd.PrintErrln("(Note : impossible d'ouvrir le navigateur automatiquement — " + err.Error() + ")")
+		cmd.PrintErrln("(Note: could not open the browser automatically — " + err.Error() + ")")
 	}
-	cmd.Println("En attente…")
+	cmd.Println("Waiting…")
 
 	customToken, err := pollForLink(ctx, cmd, code)
 	if err != nil {
@@ -89,7 +89,7 @@ func runLink(cmd *cobra.Command, _ []string) error {
 	}
 
 	cmd.Println()
-	cmd.Println("Lié à " + signed.Email + " sur " + host + ". ✓")
+	cmd.Println("Linked as " + signed.Email + " on " + host + ". ✓")
 	return nil
 }
 
@@ -123,7 +123,7 @@ func pollForLink(ctx context.Context, cmd *cobra.Command, code string) (string, 
 		case <-ctx.Done():
 			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 				cmd.Println()
-				return "", errors.New("Délai dépassé. Relance `atelierd link`.")
+				return "", errors.New("Timed out. Re-run `atelierd link`.")
 			}
 			return "", ctx.Err()
 		case <-ticker.C:
