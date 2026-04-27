@@ -10,6 +10,7 @@ package firebaseauth
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -60,12 +61,25 @@ type signInRequest struct {
 	ReturnSecureToken bool   `json:"returnSecureToken"`
 }
 
+// signInResponse mirrors the documented signInWithCustomToken response, which
+// only carries idToken, refreshToken, and expiresIn — not localId or email.
+// The uid + email are recovered by decoding the idToken JWT claims; see
+// claimsFromIDToken below.
 type signInResponse struct {
 	IDToken      string `json:"idToken"`
 	RefreshToken string `json:"refreshToken"`
 	ExpiresIn    string `json:"expiresIn"`
-	LocalID      string `json:"localId"`
-	Email        string `json:"email"`
+}
+
+// idTokenClaims is the subset of Firebase Auth idToken JWT claims we need.
+// The token is signed by Google; we only base64-decode the payload — without
+// signature verification — because we just received it from the Identity
+// Platform REST endpoint over TLS in the same call. Trusting the round-trip
+// is fine for our purposes (extracting display fields).
+type idTokenClaims struct {
+	UserID string `json:"user_id"`
+	Sub    string `json:"sub"`
+	Email  string `json:"email"`
 }
 
 // SignInWithCustomToken exchanges a Firebase custom token (returned by
@@ -101,13 +115,46 @@ func SignInWithCustomToken(ctx context.Context, customToken string) (*SignInResu
 	if err != nil {
 		return nil, err
 	}
+	claims, err := claimsFromIDToken(parsed.IDToken)
+	if err != nil {
+		return nil, fmt.Errorf("decode idToken claims: %w", err)
+	}
 	return &SignInResult{
-		UID:              parsed.LocalID,
-		Email:            parsed.Email,
+		UID:              claims.uid(),
+		Email:            claims.Email,
 		IDToken:          parsed.IDToken,
 		RefreshToken:     parsed.RefreshToken,
 		IDTokenExpiresAt: expiresAt,
 	}, nil
+}
+
+// uid prefers the Firebase-canonical `user_id` claim and falls back to the
+// JWT-standard `sub` claim, which Identity Platform also populates with the
+// Firebase uid.
+func (c idTokenClaims) uid() string {
+	if c.UserID != "" {
+		return c.UserID
+	}
+	return c.Sub
+}
+
+// claimsFromIDToken extracts the payload segment of a Firebase idToken JWT
+// and parses the fields we need. The token is `header.payload.signature`,
+// each segment base64url-encoded without padding.
+func claimsFromIDToken(idToken string) (idTokenClaims, error) {
+	parts := strings.Split(idToken, ".")
+	if len(parts) != 3 {
+		return idTokenClaims{}, errors.New("idToken does not have three segments")
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return idTokenClaims{}, fmt.Errorf("base64 decode payload: %w", err)
+	}
+	var claims idTokenClaims
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return idTokenClaims{}, fmt.Errorf("unmarshal claims: %w", err)
+	}
+	return claims, nil
 }
 
 // RefreshResult is the subset of the securetoken refresh response we need.
