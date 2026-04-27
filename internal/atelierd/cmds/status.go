@@ -53,8 +53,8 @@ func NewStatusCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "status",
 		Short: "Print health checks and exit non-zero if any FAIL",
-		Long: `Run seven diagnostic checks (Lien Firebase, Âge token, Connectivité
-Firestore, Watcher outbox, Heartbeat, État auth, Backlog outbox) and print
+		Long: `Run seven diagnostic checks (Firebase link, Token age, Firestore
+connectivity, Outbox watcher, Heartbeat, Auth state, Outbox backlog) and print
 each with OK / WARN / FAIL.
 
 Exit code: 0 if no FAIL; 1 otherwise.`,
@@ -110,118 +110,118 @@ func checkCredentials() (*credentials.Credentials, checkResult) {
 	if err != nil {
 		if err == credentials.ErrNotLinked {
 			return nil, checkResult{
-				name: "Lien Firebase",
+				name: "Firebase link",
 				tier: tierFail,
-				note: "credentials absents — exécute `atelierd link`",
+				note: "no credentials — run `atelierd link`",
 			}
 		}
 		return nil, checkResult{
-			name: "Lien Firebase",
+			name: "Firebase link",
 			tier: tierFail,
-			note: "lecture des credentials échouée : " + err.Error(),
+			note: "credentials read failed: " + err.Error(),
 		}
 	}
 	return creds, checkResult{
-		name: "Lien Firebase",
+		name: "Firebase link",
 		tier: tierOK,
-		note: "lié à " + creds.Email + " (uid " + creds.UID + ")",
+		note: "linked as " + creds.Email + " (uid " + creds.UID + ")",
 	}
 }
 
 func checkTokenAge(creds *credentials.Credentials) checkResult {
 	if creds == nil {
-		return checkResult{name: "Âge du token", tier: tierFail, note: "pas de credentials"}
+		return checkResult{name: "Token age", tier: tierFail, note: "no credentials"}
 	}
 	now := time.Now().UTC()
 	remaining := creds.IDTokenExpiresAt.Sub(now)
 	if remaining > tokenWarnAfter {
 		return checkResult{
-			name: "Âge du token",
+			name: "Token age",
 			tier: tierOK,
-			note: fmt.Sprintf("idToken valide encore %s", remaining.Round(time.Second)),
+			note: fmt.Sprintf("idToken valid for %s", remaining.Round(time.Second)),
 		}
 	}
 	return checkResult{
-		name: "Âge du token",
+		name: "Token age",
 		tier: tierWarn,
-		note: "idToken expiré — refresh attendu au prochain tick d'`atelierd run`",
+		note: "idToken expired — refresh expected on next `atelierd run` tick",
 	}
 }
 
 func checkFirestore(parent context.Context, creds *credentials.Credentials) checkResult {
 	if creds == nil {
-		return checkResult{name: "Connectivité Firestore", tier: tierFail, note: "pas de credentials"}
+		return checkResult{name: "Firestore connectivity", tier: tierFail, note: "no credentials"}
 	}
 	ctx, cancel := context.WithTimeout(parent, pingTimeout)
 	defer cancel()
 	if err := firestore.PingUser(ctx, creds.IDToken, creds.UID); err != nil {
-		note := "ping /users échoué : " + err.Error()
+		note := "ping /users failed: " + err.Error()
 		if firestore.IsAuthLost(err) {
-			note = "auth rejetée par Firestore — relance `atelierd link`"
+			note = "auth rejected by Firestore — re-run `atelierd link`"
 		}
-		return checkResult{name: "Connectivité Firestore", tier: tierFail, note: note}
+		return checkResult{name: "Firestore connectivity", tier: tierFail, note: note}
 	}
-	return checkResult{name: "Connectivité Firestore", tier: tierOK, note: "OK"}
+	return checkResult{name: "Firestore connectivity", tier: tierOK, note: "OK"}
 }
 
 func checkWatcher(s *status.File) checkResult {
 	if s == nil {
 		return checkResult{
-			name: "Watcher d'outbox",
+			name: "Outbox watcher",
 			tier: tierWarn,
-			note: "fichier de statut absent — `atelierd run` n'a peut-être jamais démarré (`brew services start atelierd`)",
+			note: "status file missing — `atelierd run` may have never started (`brew services start atelierd`)",
 		}
 	}
 	age := time.Since(s.LastTickAt)
 	if age < tickStaleAfter {
-		return checkResult{name: "Watcher d'outbox", tier: tierOK, note: fmt.Sprintf("dernier tick il y a %s", age.Round(time.Second))}
+		return checkResult{name: "Outbox watcher", tier: tierOK, note: fmt.Sprintf("last tick %s ago", age.Round(time.Second))}
 	}
 	return checkResult{
-		name: "Watcher d'outbox",
+		name: "Outbox watcher",
 		tier: tierWarn,
-		note: fmt.Sprintf("dernier tick il y a %s — le démon ne tourne peut-être pas", age.Round(time.Second)),
+		note: fmt.Sprintf("last tick %s ago — the daemon may not be running", age.Round(time.Second)),
 	}
 }
 
 func checkHeartbeat(s *status.File) checkResult {
 	if s == nil {
-		return checkResult{name: "Heartbeat", tier: tierWarn, note: "aucun heartbeat enregistré"}
+		return checkResult{name: "Heartbeat", tier: tierWarn, note: "no heartbeat recorded"}
 	}
 	if s.LastHeartbeatAt.IsZero() {
-		return checkResult{name: "Heartbeat", tier: tierWarn, note: "aucun heartbeat encore émis"}
+		return checkResult{name: "Heartbeat", tier: tierWarn, note: "no heartbeat sent yet"}
 	}
 	age := time.Since(s.LastHeartbeatAt)
 	if age < heartbeatStaleAfter {
-		return checkResult{name: "Heartbeat", tier: tierOK, note: fmt.Sprintf("il y a %s", age.Round(time.Second))}
+		return checkResult{name: "Heartbeat", tier: tierOK, note: fmt.Sprintf("%s ago", age.Round(time.Second))}
 	}
-	return checkResult{name: "Heartbeat", tier: tierWarn, note: fmt.Sprintf("dernier heartbeat il y a %s", age.Round(time.Second))}
+	return checkResult{name: "Heartbeat", tier: tierWarn, note: fmt.Sprintf("last heartbeat %s ago", age.Round(time.Second))}
 }
 
 func checkAuthState(s *status.File) checkResult {
 	if s == nil {
-		return checkResult{name: "État auth", tier: tierWarn, note: "fichier de statut absent"}
+		return checkResult{name: "Auth state", tier: tierWarn, note: "status file missing"}
 	}
 	switch s.AuthState {
 	case status.AuthOk:
-		return checkResult{name: "État auth", tier: tierOK, note: "ok"}
+		return checkResult{name: "Auth state", tier: tierOK, note: "ok"}
 	case status.AuthLost:
-		return checkResult{name: "État auth", tier: tierFail, note: "auth-lost — relance `atelierd link`"}
+		return checkResult{name: "Auth state", tier: tierFail, note: "auth-lost — re-run `atelierd link`"}
 	default:
-		return checkResult{name: "État auth", tier: tierWarn, note: "état inconnu : " + string(s.AuthState)}
+		return checkResult{name: "Auth state", tier: tierWarn, note: "unknown state: " + string(s.AuthState)}
 	}
 }
 
 func checkOutboxBacklog() checkResult {
 	count, err := outbox.Count()
 	if err != nil {
-		return checkResult{name: "Backlog outbox", tier: tierFail, note: "lecture impossible : " + err.Error()}
+		return checkResult{name: "Outbox backlog", tier: tierFail, note: "read failed: " + err.Error()}
 	}
 	switch {
 	case count > outboxBacklogFail:
-		return checkResult{name: "Backlog outbox", tier: tierFail, note: fmt.Sprintf("%d fichiers en attente (>%d)", count, outboxBacklogFail)}
+		return checkResult{name: "Outbox backlog", tier: tierFail, note: fmt.Sprintf("%d files pending (>%d)", count, outboxBacklogFail)}
 	case count > outboxBacklogWarn:
-		return checkResult{name: "Backlog outbox", tier: tierWarn, note: fmt.Sprintf("%d fichiers en attente (>%d)", count, outboxBacklogWarn)}
+		return checkResult{name: "Outbox backlog", tier: tierWarn, note: fmt.Sprintf("%d files pending (>%d)", count, outboxBacklogWarn)}
 	default:
-		return checkResult{name: "Backlog outbox", tier: tierOK, note: fmt.Sprintf("%d fichier(s) en attente", count)}
+		return checkResult{name: "Outbox backlog", tier: tierOK, note: fmt.Sprintf("%d file(s) pending", count)}
 	}
 }

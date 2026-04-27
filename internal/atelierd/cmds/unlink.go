@@ -28,13 +28,13 @@ either re-linking on a different account or admin intervention.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if !credentials.Exists() {
-				cmd.Println("Aucun lien actif.")
+				cmd.Println("No active link.")
 				return nil
 			}
 			if err := credentials.Delete(); err != nil {
 				return err
 			}
-			cmd.Println("Délié.")
+			cmd.Println("Unlinked.")
 			return nil
 		},
 	}

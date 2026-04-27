@@ -14,9 +14,12 @@ const (
 	// endpoints. Same value the frontend ships in its bundle.
 	FirebaseAPIKey = "AIzaSyB8orDLOWG37xGvjH2tClhkSelOP4xIy7Y"
 
-	// FirebaseAuthDomain is the Firebase Hosting / Auth domain. The dashboard
-	// is served from the same hostname.
-	FirebaseAuthDomain = "valian-dashboards.firebaseapp.com"
+	// DashboardHost is the Firebase Hosting domain the user opens in the
+	// browser to land on the dashboard. We use the `.web.app` domain (rather
+	// than the `.firebaseapp.com` mirror) because it is a different origin
+	// from the Firebase Auth domain — keeping the popup-based OAuth flow
+	// clear of the dashboard's PWA service worker.
+	DashboardHost = "valian-dashboards.web.app"
 
 	// FunctionsRegion is the GCP region where the api callable is deployed.
 	FunctionsRegion = "northamerica-northeast1"
@@ -39,7 +42,7 @@ const (
 // DashboardConnectMachineURL returns the URL the user opens to enter the
 // device-link code in the dashboard.
 func DashboardConnectMachineURL(code string) string {
-	return "https://" + FirebaseAuthDomain + "/connect-machine?code=" + code
+	return "https://" + DashboardHost + "/atelier-dashboard/connect-machine?code=" + code
 }
 
 // EventsCollectionURL returns the Firestore REST URL for an /events doc.
