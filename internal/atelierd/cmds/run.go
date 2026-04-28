@@ -34,7 +34,14 @@ const (
 	statusInterval    = 30 * time.Second
 	reconcileInterval = 5 * time.Second
 	refreshLeadTime   = 5 * time.Minute
-	authLostReminder  = 5 * time.Minute
+	// refreshPollInterval is how often the refresher re-checks the wall-clock
+	// expiry of the idToken. We poll instead of using one long time.After()
+	// because Go timers track the monotonic clock, which is frozen during
+	// macOS sleep — at wake the goroutine resumes and the next tick re-reads
+	// time.Now() (wall-clock) so a token that expired during sleep is caught
+	// and refreshed before any Firestore call has the chance to 401.
+	refreshPollInterval = 30 * time.Second
+	authLostReminder    = 5 * time.Minute
 
 	shipBatchMax  = 50
 	shipBatchTime = 1 * time.Second
@@ -52,11 +59,13 @@ func NewRunCmd() *cobra.Command {
 		Long: `Long-lived loop. Watches ~/.atelier/outbox/ and ships every event to
 Firestore /events/{ulid}. Refreshes the idToken before expiry. Writes a
 heartbeat to /users/{uid}.lastHeartbeat every 60s. Writes a status snapshot to
-~/.atelier/status every 30s.
+~/.atelier/status every 30s. Watches ~/.atelier/credentials and reloads on
+re-link without requiring brew services restart.
 
 On Firebase Auth 401/403, enters "auth-lost" mode: ship + heartbeat + refresh
-loops stop; the outbox accumulates; the status file marks authState=auth-lost.
-Recovery: atelierd unlink && atelierd link, then brew services restart atelierd.`,
+loops pause; the outbox accumulates; the status file marks authState=auth-lost.
+Recovery: atelierd link — the daemon picks up the new credentials automatically
+via the fsnotify watcher and exits auth-lost mode within seconds.`,
 		Args: cobra.NoArgs,
 		RunE: runRun,
 	}
@@ -117,11 +126,12 @@ func runRun(cmd *cobra.Command, _ []string) error {
 	atelierlog.Info("atelierd run started", "uid", state.snapshot().UID, "host", host, "version", Version)
 
 	var wg sync.WaitGroup
-	wg.Add(4)
+	wg.Add(5)
 	go func() { defer wg.Done(); shipperLoop(rootCtx, state) }()
 	go func() { defer wg.Done(); refresherLoop(rootCtx, state) }()
 	go func() { defer wg.Done(); heartbeatLoop(rootCtx, state) }()
 	go func() { defer wg.Done(); statusWriterLoop(rootCtx, state) }()
+	go func() { defer wg.Done(); credentialsWatcherLoop(rootCtx, state) }()
 
 	wg.Wait()
 	atelierlog.Info("atelierd run stopped")
@@ -179,7 +189,22 @@ func (s *runState) markAuthLost(reason string) {
 	s.authState = status.AuthLost
 	s.mu.Unlock()
 	if wasOk {
-		atelierlog.Error("auth-lost: ship + heartbeat + refresh loops stopping; re-run atelierd link", "reason", reason)
+		atelierlog.Error("auth-lost: ship + heartbeat + refresh paused; re-run atelierd link to recover", "reason", reason)
+	}
+}
+
+// clearAuthLost flips authState back to ok and resets retry backoff. Called
+// by the credentials watcher after a successful re-link rewrites
+// ~/.atelier/credentials. The ship/heartbeat/refresh loops poll authState on
+// each iteration and will resume normal operation within a few seconds.
+func (s *runState) clearAuthLost(reason string) {
+	s.mu.Lock()
+	wasLost := s.authState == status.AuthLost
+	s.authState = status.AuthOk
+	s.currentBackoff = 0
+	s.mu.Unlock()
+	if wasLost {
+		atelierlog.Info("auth-lost cleared: ship + heartbeat + refresh resuming", "reason", reason)
 	}
 }
 
@@ -240,32 +265,55 @@ func writeStatusSnapshot(s *runState) error {
 // the first 401.
 func refreshOnBoot(ctx context.Context, state *runState) {
 	creds := state.currentCreds()
-	if time.Until(creds.IDTokenExpiresAt) >= refreshLeadTime {
+	if !shouldRefreshNow(creds.IDTokenExpiresAt, refreshLeadTime, time.Now()) {
 		return
 	}
-	bootCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	res, err := firebaseauth.RefreshIDToken(bootCtx, creds.RefreshToken)
-	if err != nil {
-		if firebaseauth.IsAuthLost(err) {
-			state.markAuthLost("startup refresh: " + err.Error())
-		} else {
-			atelierlog.Warn("startup refresh: transient error, continuing", "err", err.Error())
-		}
-		return
+	if err := performRefresh(ctx, state); err != nil && !firebaseauth.IsAuthLost(err) {
+		atelierlog.Warn("startup refresh: transient error, continuing", "err", err.Error())
 	}
-	updated := &credentials.Credentials{
-		UID:              creds.UID,
-		Email:            creds.Email,
-		IDToken:          res.IDToken,
-		RefreshToken:     res.RefreshToken,
-		IDTokenExpiresAt: res.IDTokenExpiresAt,
+}
+
+// withAuthRecovery runs op (a Firestore call carrying the current idToken).
+// If op returns 401/403, it attempts a single proactive refresh of the
+// idToken and retries op once with the freshly minted token. Only escalates
+// to auth-lost when:
+//
+//  1. The refresh itself returns 401/403 — the refresh token is truly revoked.
+//  2. The retry still returns 401/403 even with a fresh idToken.
+//
+// This unblocks the common post-sleep failure mode where macOS froze the
+// monotonic-clock refresh timer for hours, the idToken silently expired, and
+// the next Firestore write would otherwise irreversibly trip auth-lost.
+func withAuthRecovery(ctx context.Context, state *runState, opName string, op func(idToken string) error) error {
+	creds := state.currentCreds()
+	err := op(creds.IDToken)
+	if err == nil {
+		return nil
 	}
-	if err := credentials.Save(updated); err != nil {
-		atelierlog.Warn("startup refresh: persist failed", "err", err.Error())
+	if !firestore.IsAuthLost(err) && !firebaseauth.IsAuthLost(err) {
+		return err // transient — let the caller back off
 	}
-	state.updateCreds(updated)
-	atelierlog.Info("startup refresh: idToken refreshed before launching loops", "next_expiry", res.IDTokenExpiresAt.Format(time.RFC3339))
+
+	atelierlog.Warn(opName+": got 401, attempting reactive token refresh before declaring auth-lost", "err", err.Error())
+	if rerr := performRefresh(ctx, state); rerr != nil {
+		// performRefresh already invoked markAuthLost on a 401/403 from
+		// the securetoken endpoint. On a transient refresh failure (5xx,
+		// network) we leave authState untouched so the next reconcile or
+		// refresher tick can retry.
+		return rerr
+	}
+
+	// Retry the op once with the fresh idToken.
+	creds = state.currentCreds()
+	err = op(creds.IDToken)
+	if err == nil {
+		atelierlog.Info(opName + ": recovered after reactive refresh")
+		return nil
+	}
+	if firestore.IsAuthLost(err) || firebaseauth.IsAuthLost(err) {
+		state.markAuthLost(opName + ": still 401 after reactive refresh: " + err.Error())
+	}
+	return err
 }
 
 // ============================================================================
@@ -419,7 +467,10 @@ func shipBatch(ctx context.Context, state *runState, files []string) error {
 	commitCtx, cancel := context.WithDeadline(ctx, deadline.Add(10*time.Second))
 	defer cancel()
 
-	if err := firestore.CommitEvents(commitCtx, creds.IDToken, docs); err != nil {
+	err := withAuthRecovery(ctx, state, "ship", func(idToken string) error {
+		return firestore.CommitEvents(commitCtx, idToken, docs)
+	})
+	if err != nil {
 		return err
 	}
 
@@ -438,34 +489,33 @@ func shipBatch(ctx context.Context, state *runState, files []string) error {
 // ============================================================================
 
 func refresherLoop(ctx context.Context, state *runState) {
+	tick := time.NewTicker(refreshPollInterval)
+	defer tick.Stop()
 	for {
-		if state.isAuthLost() {
-			// Wait for shutdown — auth-lost is terminal in this run.
-			<-ctx.Done()
-			return
-		}
-		creds := state.currentCreds()
-		wait := time.Until(creds.IDTokenExpiresAt) - refreshLeadTime
-		if wait < 0 {
-			wait = 0
-		}
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(wait):
+		case <-tick.C:
 		}
 
+		// Auth-lost can be cleared by the credentials watcher after a re-link;
+		// keep polling so we resume cleanly when that happens. The ship and
+		// heartbeat loops also poll authState on each iteration.
 		if state.isAuthLost() {
 			continue
 		}
 
-		creds = state.currentCreds()
-		refreshCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		res, err := firebaseauth.RefreshIDToken(refreshCtx, creds.RefreshToken)
-		cancel()
-		if err != nil {
+		creds := state.currentCreds()
+		// Wall-clock check — robust to macOS sleep, where Go's monotonic-clock
+		// timers freeze. At wake, this comparison sees the real expiry and
+		// triggers a refresh on the very next tick.
+		if !shouldRefreshNow(creds.IDTokenExpiresAt, refreshLeadTime, time.Now()) {
+			continue
+		}
+
+		if err := performRefresh(ctx, state); err != nil {
 			if firebaseauth.IsAuthLost(err) {
-				state.markAuthLost("refresh: " + err.Error())
+				// markAuthLost already invoked by performRefresh.
 				continue
 			}
 			delay := state.nextBackoff()
@@ -475,23 +525,48 @@ func refresherLoop(ctx context.Context, state *runState) {
 				return
 			case <-time.After(delay):
 			}
-			continue
 		}
-
-		updated := &credentials.Credentials{
-			UID:              creds.UID,
-			Email:            creds.Email,
-			IDToken:          res.IDToken,
-			RefreshToken:     res.RefreshToken,
-			IDTokenExpiresAt: res.IDTokenExpiresAt,
-		}
-		if err := credentials.Save(updated); err != nil {
-			atelierlog.Error("refresher: persist failed", "err", err.Error())
-			continue
-		}
-		state.updateCreds(updated)
-		atelierlog.Info("refresher: idToken refreshed", "next_expiry", res.IDTokenExpiresAt.Format(time.RFC3339))
 	}
+}
+
+// shouldRefreshNow reports whether the idToken should be refreshed at `now`,
+// using a wall-clock comparison. Pure function so unit tests can drive it
+// without touching time.Now() in test code.
+func shouldRefreshNow(expiresAt time.Time, leadTime time.Duration, now time.Time) bool {
+	return now.Add(leadTime).After(expiresAt) || now.Add(leadTime).Equal(expiresAt)
+}
+
+// performRefresh is the inner step of refresherLoop: trade the current refresh
+// token for a new idToken, persist credentials, update state. Used both by
+// refresherLoop (proactive, scheduled) and by withAuthRecovery (reactive, after
+// an unexpected 401 from Firestore). Returns the underlying firebaseauth error
+// untouched so callers can distinguish auth-lost from transient.
+func performRefresh(ctx context.Context, state *runState) error {
+	creds := state.currentCreds()
+	refreshCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	res, err := firebaseauth.RefreshIDToken(refreshCtx, creds.RefreshToken)
+	if err != nil {
+		if firebaseauth.IsAuthLost(err) {
+			state.markAuthLost("refresh: " + err.Error())
+		}
+		return err
+	}
+	updated := &credentials.Credentials{
+		UID:              creds.UID,
+		Email:            creds.Email,
+		IDToken:          res.IDToken,
+		RefreshToken:     res.RefreshToken,
+		IDTokenExpiresAt: res.IDTokenExpiresAt,
+	}
+	if perr := credentials.Save(updated); perr != nil {
+		// Persist failure is logged but doesn't unmark the in-memory update —
+		// next refresh will overwrite the disk copy anyway.
+		atelierlog.Warn("refresher: persist failed", "err", perr.Error())
+	}
+	state.updateCreds(updated)
+	atelierlog.Info("idToken refreshed", "next_expiry", res.IDTokenExpiresAt.Format(time.RFC3339))
+	return nil
 }
 
 // ============================================================================
@@ -518,14 +593,15 @@ func doHeartbeat(ctx context.Context, state *runState) {
 	if state.isAuthLost() {
 		return
 	}
-	creds := state.currentCreds()
+	uid := state.currentCreds().UID
 	hbCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	if err := firestore.SetUserHeartbeat(hbCtx, creds.IDToken, creds.UID); err != nil {
-		if firestore.IsAuthLost(err) {
-			state.markAuthLost("heartbeat: " + err.Error())
-			return
-		}
+	err := withAuthRecovery(ctx, state, "heartbeat", func(idToken string) error {
+		return firestore.SetUserHeartbeat(hbCtx, idToken, uid)
+	})
+	if err != nil {
+		// withAuthRecovery already marked auth-lost where appropriate; here we
+		// just log and rely on the next heartbeat tick to retry.
 		atelierlog.Warn("heartbeat: write failed", "err", err.Error())
 		return
 	}
@@ -553,8 +629,111 @@ func statusWriterLoop(ctx context.Context, state *runState) {
 			}
 		case <-reminder.C:
 			if state.isAuthLost() {
-				atelierlog.Warn("auth-lost reminder: re-run `atelierd link` then `brew services restart atelierd`")
+				atelierlog.Warn("auth-lost reminder: re-run `atelierd link` — the daemon will pick up the new credentials automatically")
 			}
 		}
 	}
+}
+
+// ============================================================================
+// Goroutine 5 — credentialsWatcherLoop
+// ============================================================================
+
+// credentialsWatcherLoop watches ~/.atelier/ for changes to the credentials
+// file. When `atelierd link` rewrites it (atomic os.Rename via
+// credentials.Save), we reload the new tokens, clear auth-lost mode if set,
+// and let the ship/heartbeat/refresh loops pick the new idToken on their next
+// poll. This removes the need for `brew services restart atelierd` after a
+// re-link.
+//
+// We watch the parent directory (not the file itself) because os.Rename
+// replaces the inode — fsnotify on the file path would lose its subscription
+// after the first replacement.
+func credentialsWatcherLoop(ctx context.Context, state *runState) {
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		atelierlog.Error("credentials-watcher: fsnotify init failed", "err", err.Error())
+		<-ctx.Done()
+		return
+	}
+	defer watcher.Close()
+
+	if err := watcher.Add(paths.MustRoot()); err != nil {
+		atelierlog.Error("credentials-watcher: fsnotify add failed", "err", err.Error())
+		<-ctx.Done()
+		return
+	}
+
+	credPath := paths.Credentials()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case ev, ok := <-watcher.Events:
+			if !ok {
+				return
+			}
+			if !shouldHandleCredentialsEvent(ev, credPath) {
+				continue
+			}
+			// Brief debounce — atomic rename can fire Create + Rename in
+			// quick succession, and `atelierd link` writes the tempfile
+			// before renaming it into place.
+			drainEvents(watcher.Events, 200*time.Millisecond)
+			handleCredentialsChange(state)
+		case err, ok := <-watcher.Errors:
+			if !ok {
+				return
+			}
+			atelierlog.Warn("credentials-watcher: error", "err", err.Error())
+		}
+	}
+}
+
+// shouldHandleCredentialsEvent filters fsnotify events on the ~/.atelier/
+// directory down to the ones that signal a credentials write — atomic
+// os.Rename surfaces as Create on the destination, plain writes surface as
+// Write. Pure function for unit testing.
+func shouldHandleCredentialsEvent(ev fsnotify.Event, credPath string) bool {
+	if ev.Name != credPath {
+		return false
+	}
+	return ev.Op&(fsnotify.Create|fsnotify.Write|fsnotify.Rename) != 0
+}
+
+// drainEvents collects any extra events that arrive within the debounce
+// window. Without this, a single re-link writing the tempfile and then
+// renaming it could trigger two reloads back-to-back.
+func drainEvents(ch <-chan fsnotify.Event, window time.Duration) {
+	deadline := time.NewTimer(window)
+	defer deadline.Stop()
+	for {
+		select {
+		case <-ch:
+			// Reset the window — keep draining as long as events keep coming.
+			if !deadline.Stop() {
+				<-deadline.C
+			}
+			deadline.Reset(window)
+		case <-deadline.C:
+			return
+		}
+	}
+}
+
+// handleCredentialsChange reloads the credentials file and updates the run
+// state. Called by the watcher after a debounced fsnotify event.
+func handleCredentialsChange(state *runState) {
+	creds, err := credentials.Load()
+	if err != nil {
+		// File may have been transiently absent during atomic rename; on a
+		// real `atelierd unlink`, ErrNotLinked is expected and we keep the
+		// in-memory creds (the run loop will continue using them until they
+		// expire — at which point auth-lost takes over normally).
+		atelierlog.Warn("credentials-watcher: reload failed", "err", err.Error())
+		return
+	}
+	state.updateCreds(creds)
+	state.clearAuthLost("credentials reloaded after re-link")
+	atelierlog.Info("credentials-watcher: credentials reloaded", "uid", creds.UID, "email", creds.Email)
 }
