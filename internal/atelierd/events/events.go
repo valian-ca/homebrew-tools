@@ -17,6 +17,14 @@ import (
 	"strings"
 )
 
+// VAL-195: ParsePayload writes every `--data key=value` to the outbox as a
+// verbatim string. Type coercion (boolean, numeric) is the responsibility of
+// consuming Zod schemas in valian-dashboards. The previous implementation
+// coerced int/float/bool from the raw string, which made any future string
+// field unsafe (e.g. `--data title="2025"` would silently become an int and
+// fail Zod validation). The Zod-side `success` field accepts both legacy
+// boolean and new string-form via a permanent union.
+
 // Type is one of the 11 atelier event types. Validated by IsValid before
 // any write to the outbox.
 type Type string
@@ -63,14 +71,9 @@ func IsValid(s string) bool {
 }
 
 // ParsePayload converts a list of "key=value" args into a payload map.
-// Each value is parsed with this precedence:
-//
-//  1. integer (strconv.ParseInt base 10)
-//  2. float64 (strconv.ParseFloat)
-//  3. boolean ("true" / "false", case-insensitive)
-//  4. string (verbatim)
-//
-// Returns an error on the first malformed arg ("key=" with no value, or no "=").
+// Values are stored verbatim as strings — see the package docblock above
+// for rationale. Returns an error on the first malformed arg ("key=" with
+// no value, or no "=").
 func ParsePayload(args []string) (map[string]any, error) {
 	out := make(map[string]any, len(args))
 	for _, raw := range args {
@@ -78,23 +81,7 @@ func ParsePayload(args []string) (map[string]any, error) {
 		if !ok || key == "" {
 			return nil, errors.New("invalid --data: must be key=value, got " + strconv.Quote(raw))
 		}
-		out[key] = parseValue(val)
+		out[key] = val
 	}
 	return out, nil
-}
-
-func parseValue(s string) any {
-	if i, err := strconv.ParseInt(s, 10, 64); err == nil {
-		return i
-	}
-	if f, err := strconv.ParseFloat(s, 64); err == nil {
-		return f
-	}
-	switch strings.ToLower(s) {
-	case "true":
-		return true
-	case "false":
-		return false
-	}
-	return s
 }

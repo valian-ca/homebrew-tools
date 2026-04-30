@@ -40,6 +40,8 @@ func TestAllReturnsElevenTypes(t *testing.T) {
 }
 
 func TestParsePayload(t *testing.T) {
+	// VAL-195: every value is stored verbatim as a string. Type coercion is
+	// the consumer's responsibility (Zod schemas in valian-dashboards).
 	cases := []struct {
 		name    string
 		args    []string
@@ -52,29 +54,29 @@ func TestParsePayload(t *testing.T) {
 			want: map[string]any{"foo": "bar"},
 		},
 		{
-			name: "int value",
+			name: "numeric-looking value stays a string",
 			args: []string{"count=42"},
-			want: map[string]any{"count": int64(42)},
+			want: map[string]any{"count": "42"},
 		},
 		{
-			name: "float value",
+			name: "float-looking value stays a string",
 			args: []string{"rate=3.14"},
-			want: map[string]any{"rate": 3.14},
+			want: map[string]any{"rate": "3.14"},
 		},
 		{
-			name: "bool true",
+			name: "boolean-looking true stays a string",
 			args: []string{"success=true"},
-			want: map[string]any{"success": true},
+			want: map[string]any{"success": "true"},
 		},
 		{
-			name: "bool false",
+			name: "boolean-looking false stays a string",
 			args: []string{"success=false"},
-			want: map[string]any{"success": false},
+			want: map[string]any{"success": "false"},
 		},
 		{
-			name: "bool case-insensitive",
+			name: "case is preserved (no lowercasing)",
 			args: []string{"a=TRUE", "b=False"},
-			want: map[string]any{"a": true, "b": false},
+			want: map[string]any{"a": "TRUE", "b": "False"},
 		},
 		{
 			name: "empty string value",
@@ -89,7 +91,12 @@ func TestParsePayload(t *testing.T) {
 		{
 			name: "mixed",
 			args: []string{"tool=Edit", "filesEdited=3", "success=true"},
-			want: map[string]any{"tool": "Edit", "filesEdited": int64(3), "success": true},
+			want: map[string]any{"tool": "Edit", "filesEdited": "3", "success": "true"},
+		},
+		{
+			name: "title with mono-token numeric value (VAL-195 regression case)",
+			args: []string{"title=2025"},
+			want: map[string]any{"title": "2025"},
 		},
 		{
 			name:    "no equals",
