@@ -60,7 +60,10 @@ func NewRunCmd() *cobra.Command {
 Firestore /events/{ulid}. Refreshes the idToken before expiry. Writes a
 heartbeat to /users/{uid}.lastHeartbeat every 60s. Writes a status snapshot to
 ~/.atelier/status every 30s. Watches ~/.atelier/credentials and reloads on
-re-link without requiring brew services restart.
+re-link without requiring brew services restart. Watches ~/.atelier/sessions/
+and tails the Claude Code transcript JSONL for each registered session,
+deriving hook:user-prompt-submit, hook:pre-tool-use, hook:post-tool-use, and
+hook:assistant-turn events into the outbox (cf. VAL-201).
 
 On Firebase Auth 401/403, enters "auth-lost" mode: ship + heartbeat + refresh
 loops pause; the outbox accumulates; the status file marks authState=auth-lost.
@@ -126,12 +129,13 @@ func runRun(cmd *cobra.Command, _ []string) error {
 	atelierlog.Info("atelierd run started", "uid", state.snapshot().UID, "host", host, "version", Version)
 
 	var wg sync.WaitGroup
-	wg.Add(5)
+	wg.Add(6)
 	go func() { defer wg.Done(); shipperLoop(rootCtx, state) }()
 	go func() { defer wg.Done(); refresherLoop(rootCtx, state) }()
 	go func() { defer wg.Done(); heartbeatLoop(rootCtx, state) }()
 	go func() { defer wg.Done(); statusWriterLoop(rootCtx, state) }()
 	go func() { defer wg.Done(); credentialsWatcherLoop(rootCtx, state) }()
+	go func() { defer wg.Done(); sessionsManagerLoop(rootCtx, state) }()
 
 	wg.Wait()
 	atelierlog.Info("atelierd run stopped")
