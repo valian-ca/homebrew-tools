@@ -25,7 +25,7 @@ import (
 // fail Zod validation). The Zod-side `success` field accepts both legacy
 // boolean and new string-form via a permanent union.
 
-// Type is one of the 11 atelier event types. Validated by IsValid before
+// Type is one of the 12 atelier event types. Validated by IsValid before
 // any write to the outbox.
 type Type string
 
@@ -36,6 +36,7 @@ const (
 	HookPostToolUse      Type = "hook:post-tool-use"
 	HookStop             Type = "hook:stop"
 	HookSessionEnd       Type = "hook:session-end"
+	HookAssistantTurn    Type = "hook:assistant-turn"
 	SkillPhaseStart      Type = "skill:phase-start"
 	SkillPhaseEnd        Type = "skill:phase-end"
 	SkillTicketCreated   Type = "skill:ticket-created"
@@ -46,6 +47,7 @@ const (
 // All returns every valid event type, sorted alphabetically (stable for tests).
 func All() []Type {
 	return []Type{
+		HookAssistantTurn,
 		HookPostToolUse,
 		HookPreToolUse,
 		HookSessionEnd,

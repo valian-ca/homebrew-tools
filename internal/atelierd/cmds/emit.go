@@ -8,6 +8,7 @@ import (
 
 	"github.com/valian-ca/homebrew-tools/internal/atelierd/events"
 	"github.com/valian-ca/homebrew-tools/internal/atelierd/outbox"
+	"github.com/valian-ca/homebrew-tools/internal/atelierd/transcript"
 	"github.com/valian-ca/homebrew-tools/internal/atelierd/ulid"
 )
 
@@ -46,6 +47,24 @@ Examples:
 			}
 			if payload == nil {
 				payload = map[string]any{}
+			}
+
+			// On hook:session-start with --data jsonlPath, register the
+			// session BEFORE writing the outbox envelope so a daemon that
+			// (re)starts immediately afterward sees the session record on
+			// its first scan of ~/.atelier/sessions/. The state file is the
+			// only durable handoff between the bash hook (which knows the
+			// transcript path) and the long-lived watcher inside atelierd run.
+			if eventType == string(events.HookSessionStart) {
+				if jsonlPath, ok := payload["jsonlPath"].(string); ok && jsonlPath != "" {
+					if err := transcript.SaveState(&transcript.State{
+						ClaudeSessionID: claudeSessionID,
+						JSONLPath:       jsonlPath,
+						LastActivityAt:  time.Now().UTC(),
+					}); err != nil {
+						return fmt.Errorf("register session: %w", err)
+					}
+				}
 			}
 
 			env := &outbox.Envelope{

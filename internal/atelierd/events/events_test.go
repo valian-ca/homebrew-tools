@@ -16,6 +16,7 @@ func TestIsValid(t *testing.T) {
 		{"hook:post-tool-use", true},
 		{"hook:stop", true},
 		{"hook:session-end", true},
+		{"hook:assistant-turn", true},
 		{"skill:phase-start", true},
 		{"skill:phase-end", true},
 		{"skill:ticket-created", true},
@@ -33,9 +34,9 @@ func TestIsValid(t *testing.T) {
 	}
 }
 
-func TestAllReturnsElevenTypes(t *testing.T) {
-	if got := len(All()); got != 11 {
-		t.Errorf("All() returned %d types, want 11", got)
+func TestAllReturnsTwelveTypes(t *testing.T) {
+	if got := len(All()); got != 12 {
+		t.Errorf("All() returned %d types, want 12", got)
 	}
 }
 
