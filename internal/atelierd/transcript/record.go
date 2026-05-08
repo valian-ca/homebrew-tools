@@ -8,9 +8,16 @@
 //
 //   - assistant record (content[tool_use])         → hook:pre-tool-use
 //   - assistant record (any content, dedup msg_id) → hook:assistant-turn
-//   - user record (.toolUseResult present)         → hook:post-tool-use
-//   - user record (.toolUseResult absent, fresh    → hook:user-prompt-submit
+//   - user record (content[tool_result])           → hook:post-tool-use
+//   - user record (no tool_result block, fresh     → hook:user-prompt-submit
 //     promptId)
+//
+// The post-tool-use discriminator is the presence of a tool_result content
+// block on message.content; tool_use_id and is_error live on that block. The
+// top-level toolUseResult field is a per-tool wrapper of varying shape
+// (stdout/stderr for Bash, filenames for Glob, …) and on Claude Code 2.x
+// never carries tool_use_id. The legacy top-level shape is still consulted
+// as a fallback so pre-2.x fixtures keep working.
 //
 // Stop and SessionEnd are NOT derived here — the bash hooks at the plugin
 // level still emit those (cf. VAL-201 plan). The JSONL exposes no reliable
@@ -25,21 +32,15 @@ import "encoding/json"
 //
 // `Message.Usage` and `Message.Model` are typed as json.RawMessage so unknown
 // nested fields (e.g. a future `usage.custom_token_class`) flow through
-// byte-identical into the emitted hook:assistant-turn payload — VAL-201 AC 5.
+// byte-identical into the emitted hook:assistant-turn payload.
 type Record struct {
-	Type     string  `json:"type"`
-	Message  Message `json:"message,omitempty"`
-	PromptID string  `json:"promptId,omitempty"`
-	// ToolUseResult is present on user records that carry a tool_result back
-	// to the model. Its presence (not its value) is the discriminator between
-	// hook:post-tool-use and hook:user-prompt-submit.
+	Type          string         `json:"type"`
+	Message       Message        `json:"message,omitempty"`
+	PromptID      string         `json:"promptId,omitempty"`
 	ToolUseResult *ToolUseResult `json:"toolUseResult,omitempty"`
 	IsMeta        bool           `json:"isMeta,omitempty"`
 }
 
-// Message is the assistant or user message body. For assistant records it
-// carries the API response (id, model, usage, content blocks). For user
-// records it carries either a string prompt or a content array.
 type Message struct {
 	ID      string          `json:"id,omitempty"`
 	Role    string          `json:"role,omitempty"`
@@ -48,20 +49,21 @@ type Message struct {
 	Content json.RawMessage `json:"content,omitempty"`
 }
 
-// ContentBlock describes one element of an assistant message's content array.
-// The `Type` discriminates: "thinking" (ignored), "text" (ignored),
-// "tool_use" (mapped to hook:pre-tool-use). `ID`, `Name`, and `Input` are
-// only meaningful when Type == "tool_use".
+// `Type` discriminates: "thinking" / "text" (ignored), "tool_use" (assistant
+// message → hook:pre-tool-use), "tool_result" (user message → hook:post-tool-use).
+// `ID` / `Name` / `Input` are only meaningful when Type == "tool_use";
+// `ToolUseID` / `IsError` only when Type == "tool_result".
 type ContentBlock struct {
-	Type  string          `json:"type"`
-	ID    string          `json:"id,omitempty"`
-	Name  string          `json:"name,omitempty"`
-	Input json.RawMessage `json:"input,omitempty"`
+	Type      string          `json:"type"`
+	ID        string          `json:"id,omitempty"`
+	Name      string          `json:"name,omitempty"`
+	Input     json.RawMessage `json:"input,omitempty"`
+	ToolUseID string          `json:"tool_use_id,omitempty"`
+	IsError   bool            `json:"is_error,omitempty"`
 }
 
-// ToolUseResult is the Claude Code-side wrapper around a tool_result that
-// gets fed back to the model. Only ToolUseID and IsError affect derivation;
-// the rest of the wrapper is intentionally not modelled.
+// Only ToolUseID and IsError affect derivation; the rest of the wrapper is
+// intentionally not modelled.
 type ToolUseResult struct {
 	ToolUseID string `json:"tool_use_id,omitempty"`
 	IsError   bool   `json:"is_error,omitempty"`

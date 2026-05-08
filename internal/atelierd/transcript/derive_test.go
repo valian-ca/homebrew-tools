@@ -37,7 +37,6 @@ func TestDerive_AssistantTurnEmittedOncePerMessageID(t *testing.T) {
 	mk := fakeULID()
 	state := newTestState()
 
-	// First line of msg_A — assistant with thinking content.
 	line1 := []byte(`{"type":"assistant","message":{"id":"msg_A","model":"claude-opus-4-7","usage":{"input_tokens":10,"output_tokens":5},"content":[{"type":"thinking","thinking":"…"}]}}`)
 	envs1, err := Derive(state, line1, now, mk)
 	if err != nil {
@@ -50,8 +49,6 @@ func TestDerive_AssistantTurnEmittedOncePerMessageID(t *testing.T) {
 		t.Errorf("state.LastMsgID = %q, want msg_A", state.LastMsgID)
 	}
 
-	// Second line of msg_A — same turn, tool_use content. Should NOT re-emit
-	// hook:assistant-turn but SHOULD emit hook:pre-tool-use.
 	line2 := []byte(`{"type":"assistant","message":{"id":"msg_A","model":"claude-opus-4-7","usage":{"input_tokens":10,"output_tokens":5},"content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"ls"}}]}}`)
 	envs2, err := Derive(state, line2, now, mk)
 	if err != nil {
@@ -61,7 +58,6 @@ func TestDerive_AssistantTurnEmittedOncePerMessageID(t *testing.T) {
 		t.Fatalf("line2: want one hook:pre-tool-use, got %#v", envs2)
 	}
 
-	// Third line — new msg_B. Re-emit hook:assistant-turn.
 	line3 := []byte(`{"type":"assistant","message":{"id":"msg_B","model":"claude-opus-4-7","usage":{"input_tokens":12,"output_tokens":3},"content":[{"type":"text","text":"…"}]}}`)
 	envs3, err := Derive(state, line3, now, mk)
 	if err != nil {
@@ -76,12 +72,11 @@ func TestDerive_PreToolUsePayloadMatchesBashContract(t *testing.T) {
 	now := fakeClock(time.Now().UTC())
 	state := newTestState()
 
-	line := []byte(`{"type":"assistant","message":{"id":"msg_X","content":[{"type":"tool_use","id":"toolu_42","name":"Edit","input":{"file_path":"/a/b.go","command":"ignored","pattern":"foo","query":"bar","url":"https://e.x","description":"d","skill":"s","random_extra":true}}]}}`)
+	line := []byte(`{"type":"assistant","message":{"id":"msg_X","content":[{"type":"tool_use","id":"toolu_42","name":"Edit","input":{"file_path":"/a/b.go","command":"ignored","pattern":"foo","query":"bar","url":"https://e.x","description":"d","random_extra":true}}]}}`)
 	envs, err := Derive(state, line, now, fakeULID())
 	if err != nil {
 		t.Fatalf("derive error: %v", err)
 	}
-	// Two events: assistant-turn + pre-tool-use.
 	if len(envs) != 2 {
 		t.Fatalf("want 2 envelopes, got %d", len(envs))
 	}
@@ -97,16 +92,41 @@ func TestDerive_PreToolUsePayloadMatchesBashContract(t *testing.T) {
 		"query":       "bar",
 		"url":         "https://e.x",
 		"description": "d",
-		"skillName":   "s",
 	}
 	for k, v := range want {
 		if pre.Payload[k] != v {
 			t.Errorf("payload[%q] = %v, want %v", k, pre.Payload[k], v)
 		}
 	}
-	// random_extra must not be forwarded — the bash hook never did.
 	if _, ok := pre.Payload["random_extra"]; ok {
 		t.Errorf("random_extra leaked into payload")
+	}
+	if _, ok := pre.Payload["skillName"]; ok {
+		t.Errorf("skillName must not be forwarded for non-Skill tools (dashboard contract)")
+	}
+}
+
+func TestDerive_PreToolUsePayloadForwardsSkillNameOnlyForSkillTool(t *testing.T) {
+	now := fakeClock(time.Now().UTC())
+	state := newTestState()
+
+	line := []byte(`{"type":"assistant","message":{"id":"msg_S","content":[{"type":"tool_use","id":"toolu_skill","name":"Skill","input":{"skill":"valian:br","args":"some args"}}]}}`)
+	envs, err := Derive(state, line, now, fakeULID())
+	if err != nil {
+		t.Fatalf("derive error: %v", err)
+	}
+	if len(envs) != 2 {
+		t.Fatalf("want 2 envelopes, got %d", len(envs))
+	}
+	pre := envs[1]
+	if pre.Type != "hook:pre-tool-use" {
+		t.Fatalf("want hook:pre-tool-use, got %s", pre.Type)
+	}
+	if pre.Payload["tool"] != "Skill" {
+		t.Errorf("payload.tool = %v, want Skill", pre.Payload["tool"])
+	}
+	if pre.Payload["skillName"] != "valian:br" {
+		t.Errorf("payload.skillName = %v, want valian:br", pre.Payload["skillName"])
 	}
 }
 
@@ -132,12 +152,48 @@ func TestDerive_PreToolUseDedupByToolUseID(t *testing.T) {
 	}
 }
 
+func TestDerive_PostToolUseFromContentBlock(t *testing.T) {
+	// Claude Code 2.x carries tool_use_id and is_error on a tool_result
+	// content block inside message.content. The top-level toolUseResult is
+	// a per-tool wrapper of varying shape (stdout/stderr for Bash, filenames
+	// for Glob, …) and never carries tool_use_id — so deriveUser must read
+	// the content block, not the legacy top-level field, or every real
+	// session loses every hook:post-tool-use event.
+	now := fakeClock(time.Now().UTC())
+
+	state := newTestState()
+	state.OpenToolUseTools["toolu_real"] = "Bash"
+	line := []byte(`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_real","content":"ok"}]},"toolUseResult":{"stdout":"ok","stderr":""}}`)
+	envs, err := Derive(state, line, now, fakeULID())
+	if err != nil {
+		t.Fatalf("derive error: %v", err)
+	}
+	if len(envs) != 1 || envs[0].Type != "hook:post-tool-use" {
+		t.Fatalf("want hook:post-tool-use, got %#v", envs)
+	}
+	if envs[0].Payload["tool"] != "Bash" {
+		t.Errorf("payload.tool = %v, want Bash", envs[0].Payload["tool"])
+	}
+	if envs[0].Payload["success"] != "true" {
+		t.Errorf("absent is_error must read as success=\"true\", got %v", envs[0].Payload["success"])
+	}
+	if _, still := state.OpenToolUseTools["toolu_real"]; still {
+		t.Errorf("OpenToolUseTools should have pruned toolu_real after post fired")
+	}
+
+	state.OpenToolUseTools["toolu_err"] = "Edit"
+	line2 := []byte(`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_err","content":"boom","is_error":true}]}}`)
+	envs2, _ := Derive(state, line2, now, fakeULID())
+	if len(envs2) != 1 || envs2[0].Payload["success"] != "false" {
+		t.Errorf("is_error:true must read as success=\"false\", got %#v", envs2)
+	}
+}
+
 func TestDerive_PostToolUseFromUserToolResult(t *testing.T) {
 	now := fakeClock(time.Now().UTC())
 	state := newTestState()
 	state.OpenToolUseTools["toolu_99"] = "Bash"
 
-	// is_error: false → success: "true"
 	line := []byte(`{"type":"user","toolUseResult":{"tool_use_id":"toolu_99","is_error":false}}`)
 	envs, err := Derive(state, line, now, fakeULID())
 	if err != nil {
@@ -159,7 +215,6 @@ func TestDerive_PostToolUseFromUserToolResult(t *testing.T) {
 		t.Errorf("ClosedToolUseIDs should have recorded toolu_99")
 	}
 
-	// is_error: true → success: "false"
 	state.OpenToolUseTools["toolu_100"] = "Edit"
 	line2 := []byte(`{"type":"user","toolUseResult":{"tool_use_id":"toolu_100","is_error":true}}`)
 	envs2, _ := Derive(state, line2, now, fakeULID())
@@ -172,21 +227,18 @@ func TestDerive_UserPromptSubmitDedupByPromptID(t *testing.T) {
 	now := fakeClock(time.Now().UTC())
 	state := newTestState()
 
-	// First user record with promptId=p1 — emit.
 	line1 := []byte(`{"type":"user","promptId":"p1","message":{"role":"user","content":"hello"}}`)
 	envs1, _ := Derive(state, line1, now, fakeULID())
 	if len(envs1) != 1 || envs1[0].Type != "hook:user-prompt-submit" {
 		t.Fatalf("line1: want hook:user-prompt-submit, got %#v", envs1)
 	}
 
-	// Same promptId — DO NOT re-emit.
 	line2 := []byte(`{"type":"user","promptId":"p1","message":{"role":"user","content":"more text from same prompt"}}`)
 	envs2, _ := Derive(state, line2, now, fakeULID())
 	if len(envs2) != 0 {
 		t.Errorf("line2: want no events for same promptId, got %#v", envs2)
 	}
 
-	// New promptId — emit again.
 	line3 := []byte(`{"type":"user","promptId":"p2","message":{"role":"user","content":"new prompt"}}`)
 	envs3, _ := Derive(state, line3, now, fakeULID())
 	if len(envs3) != 1 {
@@ -243,8 +295,6 @@ func TestDerive_EmptyLineSkipped(t *testing.T) {
 }
 
 func TestDerive_UnknownUsageFieldsPreservedByteForByte(t *testing.T) {
-	// VAL-201 AC 5 — the most important test: unknown nested fields in usage
-	// must flow through to the outbox payload unchanged.
 	now := fakeClock(time.Now().UTC())
 	state := newTestState()
 	rawLine := []byte(`{"type":"assistant","message":{"id":"msg_unk","model":"claude-future-7","usage":{"input_tokens":1,"custom_field":42,"custom_nested":{"foo":7,"bar":["a","b"]}},"content":[{"type":"text","text":"…"}]}}`)
@@ -265,10 +315,39 @@ func TestDerive_UnknownUsageFieldsPreservedByteForByte(t *testing.T) {
 	}
 }
 
+func TestDerive_SubagentEnvelopesCarryParentClaudeSessionID(t *testing.T) {
+	// Every envelope must carry the parent's ClaudeSessionID — that ID is
+	// the pivot aggregatePhaseRun on the backend folds subagent tokens into
+	// the parent's phaseRun on, without any backend-side change.
+	now := fakeClock(time.Now().UTC())
+	state := &State{
+		ClaudeSessionID:  "cs-parent",
+		WatcherKey:       "cs-parent/subagents/agent-x",
+		JSONLPath:        "/tmp/cs-parent/subagents/agent-x.jsonl",
+		OpenToolUseTools: map[string]string{},
+		ClosedToolUseIDs: map[string]bool{},
+	}
+
+	line := []byte(`{"type":"assistant","message":{"id":"msg_haiku","model":"claude-haiku-4-5-20251001","usage":{"input_tokens":7,"output_tokens":2,"cache_read_input_tokens":3},"content":[{"type":"text","text":"…"}]}}`)
+	envs, err := Derive(state, line, now, fakeULID())
+	if err != nil {
+		t.Fatalf("derive error: %v", err)
+	}
+	if len(envs) != 1 {
+		t.Fatalf("want 1 envelope, got %d", len(envs))
+	}
+	if envs[0].ClaudeSessionID != "cs-parent" {
+		t.Errorf("envelope ClaudeSessionID = %q, want cs-parent (parent's id)", envs[0].ClaudeSessionID)
+	}
+	if envs[0].Payload["model"] != "claude-haiku-4-5-20251001" {
+		t.Errorf("envelope model = %v, want claude-haiku-4-5-20251001 (subagent's actual model)", envs[0].Payload["model"])
+	}
+}
+
 func TestDerive_RestartReplayNoDuplication(t *testing.T) {
-	// VAL-201 AC 4 — kill -9 mid-session, restart, no dup. Simulated by
-	// re-replaying the same lines against the same state and asserting no new
-	// envelopes for already-emitted msg_id / promptId / tool_use_id.
+	// kill -9 mid-session, restart, no dup. Simulated by re-replaying the same
+	// lines against the same state and asserting no new envelopes for
+	// already-emitted msg_id / promptId / tool_use_id.
 	now := fakeClock(time.Now().UTC())
 	state := newTestState()
 
@@ -283,12 +362,10 @@ func TestDerive_RestartReplayNoDuplication(t *testing.T) {
 		envs, _ := Derive(state, l, now, fakeULID())
 		totalFirstPass += len(envs)
 	}
-	// Expect: 1 user-prompt-submit + 1 assistant-turn + 1 pre-tool-use + 1 post-tool-use = 4.
 	if totalFirstPass != 4 {
 		t.Fatalf("first pass: want 4 envelopes, got %d", totalFirstPass)
 	}
 
-	// Replay (atelierd resumed from a stale offset before kill).
 	totalReplay := 0
 	for _, l := range lines {
 		envs, _ := Derive(state, l, now, fakeULID())

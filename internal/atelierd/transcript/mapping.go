@@ -39,7 +39,11 @@ func preToolUsePayload(name string, rawInput json.RawMessage) map[string]any {
 	if in.Description != "" {
 		payload["description"] = in.Description
 	}
-	if in.Skill != "" {
+	// skillName is the project's contract for the dashboard's per-skill
+	// aggregation (categorize-tool.ts only consumes it when tool === "Skill").
+	// Forwarding it from any tool that happens to carry an "skill" key in its
+	// input would contaminate the groupBy with whatever value Claude passed.
+	if name == "Skill" && in.Skill != "" {
 		payload["skillName"] = in.Skill
 	}
 	return payload
