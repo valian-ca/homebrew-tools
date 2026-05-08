@@ -21,17 +21,31 @@ import (
 )
 
 const (
-	// sessionPollInterval is the safety net for fsnotify. fsnotify on macOS
-	// occasionally drops events under load; a periodic re-scan catches up
-	// (same pattern as the shipper's reconcileInterval).
-	sessionPollInterval = 5 * time.Second
+	// subagentFilePrefix matches the names Claude Code writes under
+	// <parentSessionId>/subagents/. The full pattern is "agent-<id>.jsonl".
+	subagentFilePrefix = "agent-"
+
+	// subagentDirName is the directory Claude Code lazily creates next to a
+	// parent JSONL the first time the parent invokes a Task subagent.
+	subagentDirName = "subagents"
 )
 
-// sessionsManagerLoop is the sixth atelierd run goroutine. Its job is to keep
-// one watcher per known session alive — discovering new sessions written to
-// ~/.atelier/sessions/ by `atelierd emit hook:session-start --data jsonlPath`,
-// and respawning watchers on daemon startup for sessions that survived a
-// previous run.
+// sessionPollInterval is the safety net for fsnotify. fsnotify on macOS
+// occasionally drops events under load; a periodic re-scan catches up
+// (same pattern as the shipper's reconcileInterval). Var rather than const
+// so integration tests can drive the watchers with a sub-second tick.
+var sessionPollInterval = 5 * time.Second
+
+// subagentPreAttachInterval is the slower poll a parent's subagentDirManager
+// runs before the subagents/ directory exists. Most sessions never invoke a
+// subagent, so the steady-state cost of a 5 s os.Stat per parent is wasted —
+// 30 s is still snappy enough that the first subagent invocation surfaces
+// quickly, and the manager flips back to sessionPollInterval on attach.
+var subagentPreAttachInterval = 30 * time.Second
+
+// Subagent transcripts are not spawned here: each parent's runSessionWatcher
+// owns a sibling subagentDirManager that watches its own
+// <parentJsonl-without-ext>/subagents/ directory.
 func sessionsManagerLoop(ctx context.Context, _ *runState) {
 	if err := paths.EnsureDir(transcript.SessionsDir()); err != nil {
 		atelierlog.Error("sessions-manager: ensure sessions dir failed", "err", err.Error())
@@ -47,6 +61,9 @@ func sessionsManagerLoop(ctx context.Context, _ *runState) {
 	var mu sync.Mutex
 
 	spawn := func(state *transcript.State) {
+		if state.IsSubagent() {
+			return
+		}
 		mu.Lock()
 		if _, exists := watchers[state.ClaudeSessionID]; exists {
 			mu.Unlock()
@@ -67,15 +84,29 @@ func sessionsManagerLoop(ctx context.Context, _ *runState) {
 		}()
 	}
 
-	// Initial scan: rehydrate every session that was on disk when atelierd run
-	// started. Sessions registered while the daemon was down are picked up
-	// here so AC 4 (kill -9 + 30 s downtime) works without losing sessions.
+	// Initial scan: rehydrate every parent session that was on disk when
+	// atelierd run started. Subagent state files are inspected only to flag
+	// orphans — a parent's subagentDirManager will rediscover its live
+	// subagents from <jsonl>/subagents/ and resume from the persisted offset.
 	states, err := transcript.ListStates()
 	if err != nil {
 		atelierlog.Warn("sessions-manager: initial scan failed", "err", err.Error())
 	}
+	parentIDs := map[string]bool{}
 	for _, s := range states {
-		spawn(s)
+		if !s.IsSubagent() {
+			parentIDs[s.ClaudeSessionID] = true
+		}
+	}
+	for _, s := range states {
+		if !s.IsSubagent() {
+			spawn(s)
+			continue
+		}
+		if !parentIDs[s.ParentSessionID()] {
+			atelierlog.Warn("sessions-manager: orphan subagent state, parent not registered",
+				"watcherKey", s.WatcherKey)
+		}
 	}
 
 	watcher, err := fsnotify.NewWatcher()
@@ -108,6 +139,9 @@ func sessionsManagerLoop(ctx context.Context, _ *runState) {
 				continue
 			}
 			for _, s := range states {
+				if s.IsSubagent() {
+					continue
+				}
 				spawn(s)
 			}
 		case ev, ok := <-watcherEventsRaw(watcher):
@@ -159,17 +193,15 @@ func sessionIDFromEventName(name string) string {
 	return strings.TrimSuffix(base, ".json")
 }
 
-// runSessionWatcher watches a single Claude Code transcript JSONL file and
-// derives events from each line as they're appended. The function returns
-// only when ctx is cancelled (daemon shutdown) — there is no idle exit;
+// The function returns only when ctx is cancelled — there is no idle exit;
 // hook:session-end is emitted by the bash hook, not by atelierd.
 //
 // Crash-safety: state is saved to disk BEFORE writing envelopes to the
-// outbox. This favors zero-duplication over zero-loss (AC 4 says "sans
-// duplication"; loss in the small mid-batch crash window is tolerated). On
-// restart, transcript.Derive's in-state dedup (LastMsgID, ClosedToolUseIDs,
-// LastPromptID, OpenToolUseTools) suppresses re-emission of any line whose
-// state was already persisted.
+// outbox. This favors zero-duplication over zero-loss; loss in the small
+// mid-batch crash window is tolerated. On restart, transcript.Derive's
+// in-state dedup (LastMsgID, ClosedToolUseIDs, LastPromptID,
+// OpenToolUseTools) suppresses re-emission of any line whose state was
+// already persisted.
 func runSessionWatcher(ctx context.Context, claudeSessionID string) {
 	state, err := transcript.LoadState(claudeSessionID)
 	if err != nil {
@@ -178,6 +210,18 @@ func runSessionWatcher(ctx context.Context, claudeSessionID string) {
 	}
 
 	atelierlog.Info("session-watcher: started", "session", claudeSessionID, "jsonl", state.JSONLPath, "offset", state.Offset)
+
+	subCtx, subCancel := context.WithCancel(ctx)
+	var subWG sync.WaitGroup
+	subWG.Add(1)
+	go func() {
+		defer subWG.Done()
+		subagentDirManager(subCtx, claudeSessionID, state.JSONLPath)
+	}()
+	defer func() {
+		subCancel()
+		subWG.Wait()
+	}()
 
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
@@ -190,8 +234,6 @@ func runSessionWatcher(ctx context.Context, claudeSessionID string) {
 		}
 	}
 
-	// First catch-up read so any lines appended while atelierd was down (AC 4)
-	// are processed before we start blocking on fsnotify.
 	state = consume(ctx, state)
 
 	tick := time.NewTicker(sessionPollInterval)
@@ -205,6 +247,236 @@ func runSessionWatcher(ctx context.Context, claudeSessionID string) {
 			state = consume(ctx, state)
 		case ev, ok := <-watcherEventsRaw(watcher):
 			if !ok {
+				watcher = nil
+				continue
+			}
+			if ev.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Rename) == 0 {
+				continue
+			}
+			state = consume(ctx, state)
+		}
+	}
+}
+
+// The <parentJsonl-without-ext>/subagents/ directory is created lazily by
+// Claude Code on the first Task invocation; until then this loop polls
+// silently — no log output for sessions that never invoke a subagent.
+//
+// Cardinality is hybrid by necessity: fsnotify on darwin (kqueue) only wakes
+// on dir-entry mutations when watching a directory, never on writes to
+// files inside it. So this manager owns the dir-watch (CREATE / RENAME),
+// while each runSubagentWatcher owns its own file-watch for appends —
+// exactly mirroring sessionsManagerLoop / runSessionWatcher at the parent
+// layer.
+func subagentDirManager(ctx context.Context, parentSessionID, parentJSONLPath string) {
+	if !strings.HasSuffix(parentJSONLPath, ".jsonl") {
+		atelierlog.Warn("subagent-manager: parent jsonl path lacks .jsonl suffix; subagent watching disabled",
+			"parent", parentSessionID, "path", parentJSONLPath)
+		<-ctx.Done()
+		return
+	}
+	subagentDir := filepath.Join(strings.TrimSuffix(parentJSONLPath, ".jsonl"), subagentDirName)
+
+	type live struct {
+		cancel context.CancelFunc
+	}
+	spawned := map[string]live{}
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+
+	spawn := func(jsonlPath string) {
+		base := filepath.Base(jsonlPath)
+		if !strings.HasPrefix(base, subagentFilePrefix) || !strings.HasSuffix(base, ".jsonl") {
+			return
+		}
+		agentBase := strings.TrimSuffix(base, ".jsonl")
+		watcherKey := transcript.SubagentWatcherKey(parentSessionID, agentBase)
+
+		mu.Lock()
+		if _, exists := spawned[watcherKey]; exists {
+			mu.Unlock()
+			return
+		}
+		wctx, cancel := context.WithCancel(ctx)
+		spawned[watcherKey] = live{cancel: cancel}
+		mu.Unlock()
+
+		if _, err := transcript.LoadState(watcherKey); err != nil {
+			if !errors.Is(err, os.ErrNotExist) {
+				atelierlog.Warn("subagent-manager: load state failed", "parent", parentSessionID, "agent", agentBase, "err", err.Error())
+				mu.Lock()
+				delete(spawned, watcherKey)
+				mu.Unlock()
+				cancel()
+				return
+			}
+			fresh := &transcript.State{
+				ClaudeSessionID: parentSessionID,
+				WatcherKey:      watcherKey,
+				JSONLPath:       jsonlPath,
+				LastActivityAt:  time.Now().UTC(),
+			}
+			if serr := transcript.SaveState(fresh); serr != nil {
+				atelierlog.Warn("subagent-manager: persist initial state failed", "parent", parentSessionID, "agent", agentBase, "err", serr.Error())
+				mu.Lock()
+				delete(spawned, watcherKey)
+				mu.Unlock()
+				cancel()
+				return
+			}
+		}
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer func() {
+				mu.Lock()
+				delete(spawned, watcherKey)
+				mu.Unlock()
+			}()
+			runSubagentWatcher(wctx, watcherKey)
+		}()
+	}
+
+	scan := func() {
+		entries, err := os.ReadDir(subagentDir)
+		if err != nil {
+			if !errors.Is(err, os.ErrNotExist) {
+				atelierlog.Warn("subagent-manager: read dir failed", "parent", parentSessionID, "err", err.Error())
+			}
+			return
+		}
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
+			}
+			n := e.Name()
+			if !strings.HasPrefix(n, subagentFilePrefix) || !strings.HasSuffix(n, ".jsonl") {
+				continue
+			}
+			spawn(filepath.Join(subagentDir, n))
+		}
+	}
+
+	var watcher *fsnotify.Watcher
+	var dirReady bool
+
+	tryAttach := func() {
+		if watcher != nil {
+			return
+		}
+		if _, err := os.Stat(subagentDir); err != nil {
+			return
+		}
+		if !dirReady {
+			dirReady = true
+			atelierlog.Info("subagent-manager: subagents dir detected", "parent", parentSessionID, "dir", subagentDir)
+		}
+		w, werr := fsnotify.NewWatcher()
+		if werr != nil {
+			atelierlog.Warn("subagent-manager: fsnotify init failed; will retry next tick", "parent", parentSessionID, "err", werr.Error())
+			return
+		}
+		if aerr := w.Add(subagentDir); aerr != nil {
+			atelierlog.Warn("subagent-manager: fsnotify add failed; will retry next tick", "parent", parentSessionID, "err", aerr.Error())
+			_ = w.Close()
+			return
+		}
+		watcher = w
+	}
+
+	tick := time.NewTicker(subagentPreAttachInterval)
+	defer tick.Stop()
+	defer func() {
+		mu.Lock()
+		for _, l := range spawned {
+			l.cancel()
+		}
+		mu.Unlock()
+		wg.Wait()
+		if watcher != nil {
+			_ = watcher.Close()
+		}
+	}()
+
+	tryAttach()
+	if dirReady {
+		tick.Reset(sessionPollInterval)
+		scan()
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+			wasReady := dirReady
+			tryAttach()
+			if !wasReady && dirReady {
+				tick.Reset(sessionPollInterval)
+			}
+			scan()
+		case ev, ok := <-watcherEventsRaw(watcher):
+			if !ok {
+				watcher = nil
+				continue
+			}
+			if !shouldHandleSubagentEvent(ev) {
+				continue
+			}
+			spawn(ev.Name)
+		}
+	}
+}
+
+func shouldHandleSubagentEvent(ev fsnotify.Event) bool {
+	if ev.Op&(fsnotify.Create|fsnotify.Rename|fsnotify.Write) == 0 {
+		return false
+	}
+	base := filepath.Base(ev.Name)
+	if !strings.HasPrefix(base, subagentFilePrefix) {
+		return false
+	}
+	if !strings.HasSuffix(base, ".jsonl") {
+		return false
+	}
+	return true
+}
+
+func runSubagentWatcher(ctx context.Context, watcherKey string) {
+	state, err := transcript.LoadState(watcherKey)
+	if err != nil {
+		atelierlog.Error("subagent-watcher: load state failed; aborting", "watcherKey", watcherKey, "err", err.Error())
+		return
+	}
+
+	atelierlog.Info("subagent-watcher: started", "parent", state.ClaudeSessionID, "watcherKey", watcherKey, "jsonl", state.JSONLPath, "offset", state.Offset)
+
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		atelierlog.Warn("subagent-watcher: fsnotify init failed; polling only", "watcherKey", watcherKey, "err", err.Error())
+	} else {
+		defer watcher.Close()
+		if werr := watcher.Add(state.JSONLPath); werr != nil {
+			atelierlog.Warn("subagent-watcher: fsnotify add failed; polling only", "watcherKey", watcherKey, "err", werr.Error())
+			watcher = nil
+		}
+	}
+
+	state = consume(ctx, state)
+
+	tick := time.NewTicker(sessionPollInterval)
+	defer tick.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+			state = consume(ctx, state)
+		case ev, ok := <-watcherEventsRaw(watcher):
+			if !ok {
+				watcher = nil
 				continue
 			}
 			if ev.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Rename) == 0 {
@@ -229,7 +501,7 @@ func consume(ctx context.Context, state *transcript.State) *transcript.State {
 		// File may be transiently absent (rotation, deletion). Keep the
 		// session record and retry on next tick / fsnotify event.
 		if !errors.Is(err, os.ErrNotExist) {
-			atelierlog.Warn("session-watcher: open jsonl failed", "session", state.ClaudeSessionID, "err", err.Error())
+			atelierlog.Warn("session-watcher: open jsonl failed", "watcherKey", state.Key(), "session", state.ClaudeSessionID, "err", err.Error())
 		}
 		return state
 	}
@@ -240,55 +512,53 @@ func consume(ctx context.Context, state *transcript.State) *transcript.State {
 		return state
 	}
 	if stat.Size() < state.Offset {
-		atelierlog.Warn("session-watcher: jsonl truncated; restarting from offset 0", "session", state.ClaudeSessionID, "size", stat.Size(), "offset", state.Offset)
+		atelierlog.Warn("session-watcher: jsonl truncated; restarting from offset 0", "watcherKey", state.Key(), "session", state.ClaudeSessionID, "size", stat.Size(), "offset", state.Offset)
 		state.Offset = 0
 	}
 
 	if _, err := f.Seek(state.Offset, io.SeekStart); err != nil {
-		atelierlog.Warn("session-watcher: seek failed", "session", state.ClaudeSessionID, "err", err.Error())
+		atelierlog.Warn("session-watcher: seek failed", "watcherKey", state.Key(), "session", state.ClaudeSessionID, "err", err.Error())
 		return state
 	}
 
 	bytesRead, err := io.ReadAll(f)
 	if err != nil {
-		atelierlog.Warn("session-watcher: read failed", "session", state.ClaudeSessionID, "err", err.Error())
+		atelierlog.Warn("session-watcher: read failed", "watcherKey", state.Key(), "session", state.ClaudeSessionID, "err", err.Error())
 		return state
 	}
 	if len(bytesRead) == 0 {
 		return state
 	}
 
-	// Process complete lines only — a trailing partial line (no \n yet) waits
-	// for the next append.
 	consumed := int64(0)
 	for {
-		idx := bytes.IndexByte(bytesRead[consumed:], '\n')
-		if idx < 0 {
+		newlineIdx := bytes.IndexByte(bytesRead[consumed:], '\n')
+		if newlineIdx < 0 {
 			break
 		}
-		line := bytesRead[consumed : consumed+int64(idx)]
+		line := bytesRead[consumed : consumed+int64(newlineIdx)]
 		envelopes, derr := transcript.Derive(state, line, nil, ulid.New)
 		if derr != nil {
-			atelierlog.Warn("session-watcher: derive error (skipping line)", "session", state.ClaudeSessionID, "err", derr.Error())
+			atelierlog.Warn("session-watcher: derive error (skipping line)", "watcherKey", state.Key(), "session", state.ClaudeSessionID, "err", derr.Error())
 		}
-		consumed += int64(idx) + 1 // past the \n
-		state.Offset += int64(idx) + 1
+		consumed += int64(newlineIdx) + 1
+		state.Offset += int64(newlineIdx) + 1
 		state.LastActivityAt = time.Now().UTC()
 
 		// Save state BEFORE writing envelopes to the outbox. On a kill -9 in
 		// the brief window between SaveState and outbox.Write the events
 		// won't ship, but on restart the line will be skipped (offset has
 		// advanced) and we won't re-emit them either — zero duplication, at
-		// most a tiny lost-window. AC 4 explicitly forbids duplication; loss
-		// in this micro-window is acceptable.
+		// most a tiny lost-window. The contract forbids duplication; loss in
+		// this micro-window is acceptable.
 		if serr := transcript.SaveState(state); serr != nil {
-			atelierlog.Warn("session-watcher: save state failed", "session", state.ClaudeSessionID, "err", serr.Error())
+			atelierlog.Warn("session-watcher: save state failed", "watcherKey", state.Key(), "session", state.ClaudeSessionID, "err", serr.Error())
 			return state
 		}
 
 		for _, env := range envelopes {
 			if werr := outbox.Write(env); werr != nil {
-				atelierlog.Warn("session-watcher: outbox write failed", "session", state.ClaudeSessionID, "type", env.Type, "err", werr.Error())
+				atelierlog.Warn("session-watcher: outbox write failed", "watcherKey", state.Key(), "session", state.ClaudeSessionID, "type", env.Type, "err", werr.Error())
 			}
 		}
 	}

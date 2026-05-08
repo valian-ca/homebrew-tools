@@ -68,8 +68,6 @@ func Derive(state *State, line []byte, now Clock, newULID ULIDFn) ([]*outbox.Env
 func deriveAssistant(state *State, rec Record, now Clock, newULID ULIDFn) []*outbox.Envelope {
 	var envs []*outbox.Envelope
 
-	// hook:assistant-turn — once per unique message.id. The same id appears on
-	// every JSONL line for the same turn; we emit only on first sight.
 	if rec.Message.ID != "" && rec.Message.ID != state.LastMsgID {
 		state.LastMsgID = rec.Message.ID
 		envs = append(envs, &outbox.Envelope{
@@ -81,10 +79,6 @@ func deriveAssistant(state *State, rec Record, now Clock, newULID ULIDFn) []*out
 		})
 	}
 
-	// hook:pre-tool-use — emit one per tool_use content block on this line.
-	// One assistant turn split across multiple lines may carry tool_use on
-	// some and other types on others; we emit per-line, deduped per
-	// tool_use_id (a tool_use_id is unique within a session).
 	if len(rec.Message.Content) > 0 {
 		var blocks []ContentBlock
 		if err := json.Unmarshal(rec.Message.Content, &blocks); err == nil {
@@ -114,9 +108,9 @@ func deriveAssistant(state *State, rec Record, now Clock, newULID ULIDFn) []*out
 }
 
 func deriveUser(state *State, rec Record, now Clock, newULID ULIDFn) []*outbox.Envelope {
-	// user record carrying a tool_result → hook:post-tool-use.
-	if rec.ToolUseResult != nil && rec.ToolUseResult.ToolUseID != "" {
-		toolUseID := rec.ToolUseResult.ToolUseID
+	toolUseID, isError, hasToolResult := toolResultFromRecord(rec)
+
+	if hasToolResult {
 		if state.ClosedToolUseIDs[toolUseID] {
 			return nil
 		}
@@ -127,15 +121,11 @@ func deriveUser(state *State, rec Record, now Clock, newULID ULIDFn) []*outbox.E
 			ULID:            newULID(),
 			Type:            string(events.HookPostToolUse),
 			ClaudeSessionID: state.ClaudeSessionID,
-			Payload:         postToolUsePayload(toolName, rec.ToolUseResult.IsError),
+			Payload:         postToolUsePayload(toolName, isError),
 			CreatedAt:       now(),
 		}}
 	}
 
-	// user record with no tool_result → user-prompt-submit candidate.
-	// Skip system reminders (isMeta:true) and dedup by promptId so a single
-	// prompt that fires multiple JSONL lines (initial text + injected
-	// attachments) produces one event.
 	if rec.IsMeta {
 		return nil
 	}
@@ -150,4 +140,21 @@ func deriveUser(state *State, rec Record, now Clock, newULID ULIDFn) []*outbox.E
 		Payload:         map[string]any{},
 		CreatedAt:       now(),
 	}}
+}
+
+func toolResultFromRecord(rec Record) (string, bool, bool) {
+	if len(rec.Message.Content) > 0 {
+		var blocks []ContentBlock
+		if err := json.Unmarshal(rec.Message.Content, &blocks); err == nil {
+			for _, blk := range blocks {
+				if blk.Type == "tool_result" && blk.ToolUseID != "" {
+					return blk.ToolUseID, blk.IsError, true
+				}
+			}
+		}
+	}
+	if rec.ToolUseResult != nil && rec.ToolUseResult.ToolUseID != "" {
+		return rec.ToolUseResult.ToolUseID, rec.ToolUseResult.IsError, true
+	}
+	return "", false, false
 }
