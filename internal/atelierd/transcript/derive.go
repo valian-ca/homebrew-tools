@@ -20,7 +20,7 @@ type ULIDFn func() string
 // Derive consumes one JSONL line, mutates state in-place to record what was
 // observed, and returns the envelopes that should be appended to the outbox.
 // Returns no envelopes (and no error) for line types we ignore (attachment,
-// custom-title, last-prompt, file-history-snapshot, system, …).
+// last-prompt, file-history-snapshot, system, …).
 //
 // Malformed lines are skipped silently with no error — Anthropic occasionally
 // writes lines we can't parse (e.g. mid-write truncation, unknown record
@@ -60,9 +60,23 @@ func Derive(state *State, line []byte, now Clock, newULID ULIDFn) ([]*outbox.Env
 		return deriveAssistant(state, rec, now, newULID), nil
 	case "user":
 		return deriveUser(state, rec, now, newULID), nil
+	case "ai-title":
+		return deriveTitle(state, events.TranscriptAITitle, rec.AiTitle, now, newULID), nil
+	case "custom-title":
+		return deriveTitle(state, events.TranscriptCustomTitle, rec.CustomTitle, now, newULID), nil
 	default:
 		return nil, nil
 	}
+}
+
+func deriveTitle(state *State, eventType events.Type, title string, now Clock, newULID ULIDFn) []*outbox.Envelope {
+	return []*outbox.Envelope{{
+		ULID:            newULID(),
+		Type:            string(eventType),
+		ClaudeSessionID: state.ClaudeSessionID,
+		Payload:         map[string]any{"title": title},
+		CreatedAt:       now(),
+	}}
 }
 
 func deriveAssistant(state *State, rec Record, now Clock, newULID ULIDFn) []*outbox.Envelope {
