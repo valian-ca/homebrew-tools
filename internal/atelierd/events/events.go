@@ -25,23 +25,25 @@ import (
 // fail Zod validation). The Zod-side `success` field accepts both legacy
 // boolean and new string-form via a permanent union.
 
-// Type is one of the 12 atelier event types. Validated by IsValid before
+// Type is one of the 14 atelier event types. Validated by IsValid before
 // any write to the outbox.
 type Type string
 
 const (
-	HookSessionStart     Type = "hook:session-start"
-	HookUserPromptSubmit Type = "hook:user-prompt-submit"
-	HookPreToolUse       Type = "hook:pre-tool-use"
-	HookPostToolUse      Type = "hook:post-tool-use"
-	HookStop             Type = "hook:stop"
-	HookSessionEnd       Type = "hook:session-end"
-	HookAssistantTurn    Type = "hook:assistant-turn"
-	SkillPhaseStart      Type = "skill:phase-start"
-	SkillPhaseEnd        Type = "skill:phase-end"
-	SkillTicketCreated   Type = "skill:ticket-created"
-	SkillActivity        Type = "skill:activity"
-	SkillShipComplete    Type = "skill:ship-complete"
+	HookSessionStart      Type = "hook:session-start"
+	HookUserPromptSubmit  Type = "hook:user-prompt-submit"
+	HookPreToolUse        Type = "hook:pre-tool-use"
+	HookPostToolUse       Type = "hook:post-tool-use"
+	HookStop              Type = "hook:stop"
+	HookSessionEnd        Type = "hook:session-end"
+	HookAssistantTurn     Type = "hook:assistant-turn"
+	SkillPhaseStart       Type = "skill:phase-start"
+	SkillPhaseEnd         Type = "skill:phase-end"
+	SkillTicketCreated    Type = "skill:ticket-created"
+	SkillActivity         Type = "skill:activity"
+	SkillShipComplete     Type = "skill:ship-complete"
+	TranscriptAITitle     Type = "transcript:ai-title"
+	TranscriptCustomTitle Type = "transcript:custom-title"
 )
 
 // All returns every valid event type, sorted alphabetically (stable for tests).
@@ -59,6 +61,8 @@ func All() []Type {
 		SkillPhaseStart,
 		SkillShipComplete,
 		SkillTicketCreated,
+		TranscriptAITitle,
+		TranscriptCustomTitle,
 	}
 }
 

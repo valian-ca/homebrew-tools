@@ -39,6 +39,8 @@ type Record struct {
 	PromptID      string         `json:"promptId,omitempty"`
 	ToolUseResult *ToolUseResult `json:"toolUseResult,omitempty"`
 	IsMeta        bool           `json:"isMeta,omitempty"`
+	AiTitle       string         `json:"aiTitle,omitempty"`
+	CustomTitle   string         `json:"customTitle,omitempty"`
 }
 
 type Message struct {

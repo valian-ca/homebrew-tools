@@ -259,7 +259,7 @@ func TestDerive_MetaUserRecordSkipped(t *testing.T) {
 func TestDerive_IgnoredRecordTypes(t *testing.T) {
 	now := fakeClock(time.Now().UTC())
 	state := newTestState()
-	for _, typ := range []string{"attachment", "custom-title", "last-prompt", "file-history-snapshot", "system"} {
+	for _, typ := range []string{"attachment", "last-prompt", "file-history-snapshot", "system"} {
 		line := []byte(`{"type":"` + typ + `"}`)
 		envs, err := Derive(state, line, now, fakeULID())
 		if err != nil {
@@ -267,6 +267,84 @@ func TestDerive_IgnoredRecordTypes(t *testing.T) {
 		}
 		if len(envs) != 0 {
 			t.Errorf("%s: want 0 envelopes, got %d", typ, len(envs))
+		}
+	}
+}
+
+func TestDerive_AiTitleEmitsOneEnvelope(t *testing.T) {
+	now := fakeClock(time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC))
+	state := newTestState()
+
+	line := []byte(`{"type":"ai-title","aiTitle":"My Session Title"}`)
+	envs, err := Derive(state, line, now, fakeULID())
+	if err != nil {
+		t.Fatalf("derive error: %v", err)
+	}
+	if len(envs) != 1 {
+		t.Fatalf("want 1 envelope, got %d", len(envs))
+	}
+	if envs[0].Type != "transcript:ai-title" {
+		t.Errorf("Type = %q, want transcript:ai-title", envs[0].Type)
+	}
+	if envs[0].ClaudeSessionID != "cs-test" {
+		t.Errorf("ClaudeSessionID = %q, want cs-test", envs[0].ClaudeSessionID)
+	}
+	if envs[0].Payload["title"] != "My Session Title" {
+		t.Errorf("Payload[title] = %v, want My Session Title", envs[0].Payload["title"])
+	}
+}
+
+func TestDerive_CustomTitleEmitsOneEnvelope(t *testing.T) {
+	now := fakeClock(time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC))
+	state := newTestState()
+
+	line := []byte(`{"type":"custom-title","customTitle":"User chosen name"}`)
+	envs, err := Derive(state, line, now, fakeULID())
+	if err != nil {
+		t.Fatalf("derive error: %v", err)
+	}
+	if len(envs) != 1 {
+		t.Fatalf("want 1 envelope, got %d", len(envs))
+	}
+	if envs[0].Type != "transcript:custom-title" {
+		t.Errorf("Type = %q, want transcript:custom-title", envs[0].Type)
+	}
+	if envs[0].Payload["title"] != "User chosen name" {
+		t.Errorf("Payload[title] = %v, want User chosen name", envs[0].Payload["title"])
+	}
+}
+
+// Empty title still emits — the JSONL line existing is itself a signal,
+// and last-write-wins on the backend means a deliberate clear should
+// reach Firestore rather than being silently absorbed.
+func TestDerive_EmptyTitleStillEmitsEnvelope(t *testing.T) {
+	now := fakeClock(time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC))
+	state := newTestState()
+
+	for _, c := range []struct {
+		typ      string
+		payload  string
+		wantType string
+	}{
+		{"ai-title", `{"type":"ai-title","aiTitle":""}`, "transcript:ai-title"},
+		{"custom-title", `{"type":"custom-title","customTitle":""}`, "transcript:custom-title"},
+		{"ai-title", `{"type":"ai-title"}`, "transcript:ai-title"},
+		{"custom-title", `{"type":"custom-title"}`, "transcript:custom-title"},
+	} {
+		envs, err := Derive(state, []byte(c.payload), now, fakeULID())
+		if err != nil {
+			t.Errorf("%s: derive error: %v", c.typ, err)
+			continue
+		}
+		if len(envs) != 1 {
+			t.Errorf("%s: want 1 envelope, got %d", c.typ, len(envs))
+			continue
+		}
+		if envs[0].Type != c.wantType {
+			t.Errorf("%s: Type = %q, want %q", c.typ, envs[0].Type, c.wantType)
+		}
+		if envs[0].Payload["title"] != "" {
+			t.Errorf("%s: Payload[title] = %v, want empty string", c.typ, envs[0].Payload["title"])
 		}
 	}
 }
