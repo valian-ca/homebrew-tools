@@ -28,35 +28,26 @@ func (m *model) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *model) viewConfirm() string {
-	var fix, skip, disc, noPrompt, undecided int
+	c := tally(allIdx(len(m.findings)), m.actions)
+	noPrompt := 0
 	for i := range m.findings {
-		switch {
-		case m.actions[i] == nil:
-			undecided++
-		case *m.actions[i] == contract.ActionFix:
-			fix++
-		case *m.actions[i] == contract.ActionSkip:
-			skip++
-		case *m.actions[i] == contract.ActionDiscuss:
-			disc++
-			if strings.TrimSpace(m.prompts[i]) == "" {
-				noPrompt++
-			}
+		if m.actions[i] != nil && *m.actions[i] == contract.ActionDiscuss && strings.TrimSpace(m.prompts[i]) == "" {
+			noPrompt++
 		}
 	}
 
 	var b strings.Builder
 	b.WriteString(m.th.header.Render("Plan") + "\n\n")
-	b.WriteString(fmt.Sprintf("  %d fix\n", fix))
-	discLine := fmt.Sprintf("  %d discuss", disc)
+	b.WriteString(fmt.Sprintf("  %d fix\n", c.fix))
+	discLine := fmt.Sprintf("  %d discuss", c.discuss)
 	if noPrompt > 0 {
 		discLine += fmt.Sprintf("  (%d without prompt)", noPrompt)
 	}
 	b.WriteString(discLine + "\n")
-	b.WriteString(fmt.Sprintf("  %d skip\n", skip))
+	b.WriteString(fmt.Sprintf("  %d skip\n", c.skip))
 
-	if undecided > 0 {
-		b.WriteString("\n" + m.th.dim.Render(fmt.Sprintf("%d finding(s) still undecided", undecided)) + "\n")
+	if c.undecided > 0 {
+		b.WriteString("\n" + m.th.dim.Render(fmt.Sprintf("%d finding(s) still undecided", c.undecided)) + "\n")
 		b.WriteString("\n[Esc] back")
 	} else {
 		b.WriteString("\n[Enter] ship   [Esc] back")

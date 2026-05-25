@@ -11,8 +11,6 @@ import (
 	"github.com/valian-ca/homebrew-tools/internal/review-triage/contract"
 )
 
-// openDiscuss switches to the Discuss screen for the given finding, preloading
-// the textarea with the current prompt and recording rollback state.
 func (m *model) openDiscuss(idx int, ret screen) (tea.Model, tea.Cmd) {
 	m.discussIdx = idx
 	m.discussReturn = ret
@@ -51,7 +49,7 @@ func (m *model) advanceAfterDiscuss() {
 		m.detailStep(1)
 		return
 	}
-	m.advanceRow()
+	m.advanceToNextItem()
 }
 
 func (m *model) viewDiscuss() string {

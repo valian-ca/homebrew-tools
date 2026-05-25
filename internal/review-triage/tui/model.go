@@ -1,6 +1,3 @@
-// Package tui implements the review-triage terminal UI: a bubbletea MVU
-// program with four screens (Table, Detail, Discuss, Confirm) that turns a
-// list of findings into a list of fix/skip/discuss decisions.
 package tui
 
 import (
@@ -14,11 +11,8 @@ import (
 	"github.com/valian-ca/homebrew-tools/internal/review-triage/contract"
 )
 
-// splitMinWidth is the terminal width (cols) at or above which the Table and
-// Detail render side by side as a master-detail split.
 const splitMinWidth = 160
 
-// Outcome reports how the program ended; main maps it to an exit code.
 type Outcome int
 
 const (
@@ -27,7 +21,6 @@ const (
 	OutcomeCancel
 )
 
-// Result is what Run returns to main.
 type Result struct {
 	Outcome   Outcome
 	Decisions []contract.Decision
@@ -73,8 +66,6 @@ type model struct {
 	decisions []contract.Decision
 }
 
-// Run executes the TUI for the given input and returns the user's decisions.
-// An empty findings list short-circuits to a submit with no decisions.
 func Run(in *contract.Input) (Result, error) {
 	if len(in.Findings) == 0 {
 		return Result{Outcome: OutcomeSubmit, Decisions: []contract.Decision{}}, nil
@@ -164,8 +155,6 @@ func (m *model) currentFindingIdx() int {
 	return m.rows[m.cursor].findingIdx
 }
 
-// groupItemIndices returns the finding indices belonging to the header at
-// rowIdx (the rowItems following it up to the next header).
 func (m *model) groupItemIndices(rowIdx int) []int {
 	var out []int
 	for i := rowIdx + 1; i < len(m.rows) && m.rows[i].kind == rowItem; i++ {
@@ -185,10 +174,17 @@ func (m *model) moveCursor(delta int) {
 	m.refreshDetail()
 }
 
-func (m *model) advanceRow() {
-	if m.cursor < len(m.rows)-1 {
-		m.cursor++
+// advanceToNextItem skips group headers so item actions flow item-to-item
+// across group boundaries, landing on the submit row after the last item.
+func (m *model) advanceToNextItem() {
+	for i := m.cursor + 1; i < len(m.rows); i++ {
+		if m.rows[i].kind == rowItem {
+			m.cursor = i
+			m.refreshDetail()
+			return
+		}
 	}
+	m.cursor = len(m.rows) - 1
 	m.refreshDetail()
 }
 
@@ -227,6 +223,9 @@ func (m *model) relayout() {
 	if bodyH < 3 {
 		bodyH = 3
 	}
+	// Re-render the detail only when the width actually changed: a drag-resize
+	// emits a WindowSizeMsg per cell step and re-diffing on each is wasteful.
+	widthChanged := detailW != m.vp.Width
 	m.vp.Width = detailW
 	m.vp.Height = bodyH
 	// The Discuss textarea is the input of a small centred modal, not a
@@ -240,7 +239,9 @@ func (m *model) relayout() {
 	}
 	m.ta.SetWidth(taW)
 	m.ta.SetHeight(6)
-	m.refreshDetail()
+	if widthChanged {
+		m.refreshDetail()
+	}
 }
 
 func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -260,6 +261,12 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
+	// Ctrl+C opens the quit confirm from any screen, including Discuss (where
+	// 'n' returns to the textarea with its in-progress note intact).
+	if msg.String() == "ctrl+c" {
+		m.quitting = true
+		return m, nil
+	}
 	if m.screen == screenDiscuss {
 		return m.updateDiscuss(msg)
 	}
@@ -267,9 +274,6 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "?":
 		m.help = true
-		return m, nil
-	case "ctrl+c":
-		m.quitting = true
 		return m, nil
 	case "ctrl+s", "cmd+s":
 		return m.attemptSubmit()
@@ -286,8 +290,6 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// attemptSubmit refuses while any finding is undecided, otherwise shows the
-// Confirm modal.
 func (m *model) attemptSubmit() (tea.Model, tea.Cmd) {
 	undecided := 0
 	for _, a := range m.actions {
@@ -304,7 +306,6 @@ func (m *model) attemptSubmit() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// finalize builds the decision list from the current actions/prompts.
 func (m *model) finalize() {
 	decisions := make([]contract.Decision, len(m.findings))
 	for i, f := range m.findings {

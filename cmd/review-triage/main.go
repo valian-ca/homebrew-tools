@@ -1,6 +1,3 @@
-// review-triage — interactive triage of code-review findings for the
-// valian:review skill. Reads findings as JSON, presents an interactive TUI,
-// and writes the fix/skip/discuss decisions back as JSON.
 package main
 
 import (

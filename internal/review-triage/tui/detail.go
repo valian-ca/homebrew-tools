@@ -49,9 +49,6 @@ func (m *model) updateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-// refreshDetail re-renders the Detail viewport for the finding under the
-// cursor and scrolls it back to the top. A cursor on a header or the submit
-// row clears the pane.
 func (m *model) refreshDetail() {
 	idx := m.currentFindingIdx()
 	if idx < 0 {
@@ -63,8 +60,6 @@ func (m *model) refreshDetail() {
 	m.vp.GotoTop()
 }
 
-// detailStep moves the cursor to the previous/next rowItem, skipping headers,
-// so the Detail can page through findings without returning to the Table.
 func (m *model) detailStep(dir int) {
 	for i := m.cursor + dir; i >= 0 && i < len(m.rows); i += dir {
 		if m.rows[i].kind == rowItem {
@@ -97,17 +92,13 @@ func (m *model) applyTabDetail() {
 	m.detailStep(1)
 }
 
-// detailBody renders the full description of one finding, wrapped/clipped to w.
-// Order: heading, location, explanation, proposed fix, then the diff. The
-// proposed fix precedes the diff (a deliberate departure from output-format.md,
-// which lists it last) so the reader sees the intended change before the
-// mechanics. Colour is reserved for emphasis (type, score, badge, diff markers,
-// code); the prose is grey.
+// detailBody puts the proposed fix before the diff — a deliberate departure
+// from output-format.md (which lists it last) so the reader sees the intended
+// change before the mechanics.
 func (m *model) detailBody(idx, w int) string {
 	f := m.findings[idx]
 	var b strings.Builder
 
-	// Heading: grey, with the finding's type in white.
 	var heading string
 	if prefix := strings.TrimSuffix(f.AgentLabel, ": "+f.Group); prefix != f.AgentLabel {
 		heading = m.th.item.Render(prefix+": ") + m.th.white.Render(f.Group) + m.th.item.Render(" · "+f.Title)
@@ -116,7 +107,6 @@ func (m *model) detailBody(idx, w int) string {
 	}
 	b.WriteString(ansi.Truncate(heading, w, "…") + "\n")
 
-	// Location line: grey, with the score in white.
 	loc := fmt.Sprintf("%s:%d-%d · score ", f.File, f.LineStart, f.LineEnd)
 	b.WriteString(m.th.item.Render(loc) + m.th.white.Render(fmt.Sprintf("%d", f.Score)) +
 		m.th.item.Render(" · ") + m.th.suggestBadge(m.actions[idx], f.Selection) + "\n\n")
@@ -133,31 +123,113 @@ func (m *model) detailBody(idx, w int) string {
 }
 
 func (m *model) renderDiff(f contract.Finding, w int) string {
-	lines := highlight.Diff(f.CodeExcerpt, f.ProposedFix.Code)
+	lines := highlight.Diff(f.CodeExcerpt, f.ProposedFix.Code, f.LineStart, f.Language)
+	if len(lines) == 0 {
+		return ""
+	}
+	maxNum := f.LineStart
+	for _, l := range lines {
+		maxNum = max(maxNum, l.OldNum, l.NewNum)
+	}
+	numW := len(fmt.Sprintf("%d", maxNum))
+
 	var out []string
-	for _, ln := range lines {
-		marker, st := " ", lipgloss.NewStyle()
-		switch ln.Kind {
-		case highlight.KindAdd:
-			marker, st = "+", m.th.addLine
-		case highlight.KindDelete:
-			marker, st = "-", m.th.delLine
-		}
-		gutter := marker + " "
-		if !m.noColor && marker != " " {
-			gutter = st.Render(marker) + " "
-		}
-		out = append(out, ansi.Truncate(gutter+highlight.Code(ln.Content, f.Language, m.noColor), w, "…"))
+	for _, l := range lines {
+		out = append(out, m.renderDiffLine(l, numW, w))
 	}
 	return strings.Join(out, "\n")
+}
+
+func (m *model) renderDiffLine(l highlight.Line, numW, w int) string {
+	num := func(n int) string {
+		if n == 0 {
+			return strings.Repeat(" ", numW)
+		}
+		return fmt.Sprintf("%*d", numW, n)
+	}
+	gutterText := num(l.OldNum) + " " + num(l.NewNum) + " "
+	gutterW := numW*2 + 2
+	// The +/- markers are redundant with the red/green backgrounds, so they
+	// only appear under NO_COLOR, where the background can't carry the signal.
+	if m.noColor {
+		marker := " "
+		switch l.Kind {
+		case highlight.KindAdd:
+			marker = "+"
+		case highlight.KindDelete:
+			marker = "-"
+		}
+		gutterText += marker + " "
+		gutterW += 2
+	}
+	contentW := w - gutterW
+	if contentW < 4 {
+		contentW = 4
+	}
+	return m.th.diffNum.Render(gutterText) + m.renderSegs(l, contentW)
+}
+
+func (m *model) renderSegs(l highlight.Line, contentW int) string {
+	if m.noColor {
+		var sb strings.Builder
+		for _, s := range l.Segs {
+			sb.WriteString(s.Text)
+		}
+		return ansi.Truncate(sb.String(), contentW, "…")
+	}
+	baseBg, emphBg := diffBackgrounds(l.Kind)
+	var sb strings.Builder
+	used := 0
+	for _, s := range l.Segs {
+		if used >= contentW {
+			break
+		}
+		text := s.Text
+		if used+lipgloss.Width(text) > contentW {
+			text = ansi.Truncate(text, contentW-used, "…")
+		}
+		sb.WriteString(segStyle(s.Color, bgOf(s.Emphasis, baseBg, emphBg)).Render(text))
+		used += lipgloss.Width(text)
+	}
+	if used < contentW && baseBg != "" {
+		sb.WriteString(lipgloss.NewStyle().Background(lipgloss.Color(baseBg)).Render(strings.Repeat(" ", contentW-used)))
+	}
+	return sb.String()
+}
+
+func segStyle(fg, bg string) lipgloss.Style {
+	st := lipgloss.NewStyle()
+	if fg != "" {
+		st = st.Foreground(lipgloss.Color(fg))
+	}
+	if bg != "" {
+		st = st.Background(lipgloss.Color(bg))
+	}
+	return st
+}
+
+func bgOf(emphasis bool, base, emph string) string {
+	if emphasis {
+		return emph
+	}
+	return base
+}
+
+func diffBackgrounds(k highlight.LineKind) (base, emph string) {
+	switch k {
+	case highlight.KindAdd:
+		return "22", "29"
+	case highlight.KindDelete:
+		return "52", "88"
+	default:
+		return "", ""
+	}
 }
 
 func (m *model) detailHint() string {
 	return m.th.dim.Render("[f/s/d] action  [Tab] keep  [←/→] finding  [j/k] scroll  [Esc] back  [?] help")
 }
 
-// chromeBox wraps content in the same window frame as the Table: an inverse
-// title bar on top, inside a rounded border, all sized to exactly w columns.
 func (m *model) chromeBox(title, body string, w int) string {
 	bar := m.th.titleBar.Width(w).Render(ansi.Truncate(title, w, ""))
 	return m.th.border.Border(lipgloss.RoundedBorder()).Width(w).Render(bar + "\n" + body)

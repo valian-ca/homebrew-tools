@@ -1,5 +1,3 @@
-// Package contract holds the Go types mirroring the review-triage JSON
-// schema and the parse/validate/write helpers that bound the binary's I/O.
 package contract
 
 import (
@@ -8,12 +6,11 @@ import (
 	"os"
 )
 
-// SchemaVersion is the only input/output schema this binary understands.
-// A mismatch is a hard error (exit 2) so the skill can evolve the schema
-// without silently misreading an older binary's output.
+// SchemaVersion is the only schema this binary understands; a mismatch is a
+// hard error (exit 2) so the skill can evolve the schema without an older
+// binary silently misreading its input.
 const SchemaVersion = 1
 
-// Action is the decision retained for a finding (output side).
 type Action string
 
 const (
@@ -22,19 +19,15 @@ const (
 	ActionDiscuss Action = "discuss"
 )
 
-// Valid reports whether a is one of the three known actions.
 func (a Action) Valid() bool {
 	return a == ActionFix || a == ActionSkip || a == ActionDiscuss
 }
 
-// ProposedFix is the suggested replacement for a finding's code.
 type ProposedFix struct {
 	Explanation string `json:"explanation"`
 	Code        string `json:"code"`
 }
 
-// Finding is one review issue presented for triage. Provided in the input,
-// never mutated by the binary.
 type Finding struct {
 	ID          int         `json:"id"`
 	Title       string      `json:"title"`
@@ -48,12 +41,11 @@ type Finding struct {
 	Language    string      `json:"language"`
 	CodeExcerpt string      `json:"codeExcerpt"`
 	ProposedFix ProposedFix `json:"proposedFix"`
-	// Selection is the suggested starting action. A nil pointer means the
-	// upstream had no opinion and the user must choose.
+	// Selection is the suggested starting action; nil means the upstream had no
+	// opinion and the user must choose.
 	Selection *Action `json:"selection"`
 }
 
-// Input is the document the skill writes for the binary to read.
 type Input struct {
 	SchemaVersion int       `json:"schemaVersion"`
 	Branch        string    `json:"branch"`
@@ -61,23 +53,20 @@ type Input struct {
 	Findings      []Finding `json:"findings"`
 }
 
-// Decision is the action the user retained for one finding (output side).
 type Decision struct {
 	ID     int    `json:"id"`
 	Action Action `json:"action"`
-	// DiscussPrompt is present iff Action == ActionDiscuss. It may be the
-	// empty string, so it is a pointer rather than relying on omitempty of
-	// a plain string (which cannot distinguish "" from absent).
+	// DiscussPrompt is present iff Action == ActionDiscuss and may be the empty
+	// string, so it is a pointer — omitempty on a plain string cannot tell ""
+	// from absent.
 	DiscussPrompt *string `json:"discussPrompt,omitempty"`
 }
 
-// Output is the document the binary writes on a successful submit.
 type Output struct {
 	SchemaVersion int        `json:"schemaVersion"`
 	Decisions     []Decision `json:"decisions"`
 }
 
-// Parse decodes and validates an input document.
 func Parse(data []byte) (*Input, error) {
 	var in Input
 	if err := json.Unmarshal(data, &in); err != nil {
@@ -89,7 +78,6 @@ func Parse(data []byte) (*Input, error) {
 	return &in, nil
 }
 
-// Load reads and parses an input document from path.
 func Load(path string) (*Input, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -98,9 +86,9 @@ func Load(path string) (*Input, error) {
 	return Parse(data)
 }
 
-// Validate enforces the schema invariants that the parser cannot express
-// in the struct tags: the schema version, the per-finding "at least one
-// side" rule, and selection well-formedness.
+// Validate enforces the invariants the struct tags cannot express: the schema
+// version, the per-finding "at least one side populated" rule, and selection
+// well-formedness.
 func (in *Input) Validate() error {
 	if in.SchemaVersion != SchemaVersion {
 		return fmt.Errorf("unsupported schemaVersion %d (expected %d)", in.SchemaVersion, SchemaVersion)
@@ -116,11 +104,16 @@ func (in *Input) Validate() error {
 	return nil
 }
 
-// Write serializes the output document to path with a trailing newline.
+// Write serializes the output to path atomically (temp file + rename) so a
+// crash mid-write can't truncate a previously written decisions file.
 func (o Output) Write(path string) error {
 	data, err := json.MarshalIndent(o, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, append(data, '\n'), 0o644)
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, append(data, '\n'), 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }

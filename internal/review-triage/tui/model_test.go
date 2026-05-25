@@ -58,7 +58,7 @@ func actionAt(m *model, findingIdx int) string {
 	return string(*m.actions[findingIdx])
 }
 
-// AC 1: grouped by type, score desc within group, headers present.
+// Rows are grouped by type, sorted by score desc within each group, with headers.
 func TestTableRowsGroupedAndSorted(t *testing.T) {
 	m := newTestModel(t, true, 120)
 	want := []struct {
@@ -87,7 +87,7 @@ func TestTableRowsGroupedAndSorted(t *testing.T) {
 	}
 }
 
-// AC 2: f on an item sets fix and advances; f on a header bulk-sets the group.
+// f on an item sets fix and advances; f on a header bulk-sets the group.
 func TestActionKeysItemAndHeader(t *testing.T) {
 	m := newTestModel(t, true, 120)
 	m.cursor = 1 // item id1
@@ -113,7 +113,19 @@ func TestActionKeysItemAndHeader(t *testing.T) {
 	}
 }
 
-// AC 3: d on item opens Discuss; Tab commits discuss + prompt. d on header
+// Acting on the last item of a group advances to the next group's first item,
+// skipping the intervening header. Header actions still land on the next header.
+func TestItemAdvanceSkipsHeader(t *testing.T) {
+	m := newTestModel(t, true, 120)
+	// rows: [H comments, item1, item2, H bugs, item3, submit]
+	m.cursor = 2 // last item of the comments group
+	send(m, "f")
+	if m.rows[m.cursor].kind != rowItem || m.findings[m.rows[m.cursor].findingIdx].ID != 3 {
+		t.Fatalf("acting on last item of a group should skip the header to the next item, cursor on %v (row %d)", m.rows[m.cursor].kind, m.cursor)
+	}
+}
+
+// d on item opens Discuss; Tab commits discuss + prompt. d on header
 // bulk-sets discuss with empty prompt and does not open the textarea.
 func TestDiscussItemAndHeader(t *testing.T) {
 	m := newTestModel(t, true, 120)
@@ -145,7 +157,7 @@ func TestDiscussItemAndHeader(t *testing.T) {
 	}
 }
 
-// AC 3 (cont.): Esc cancels a fresh Discuss and rolls the action back.
+// Esc cancels a fresh Discuss and rolls the action back.
 func TestDiscussCancelRollback(t *testing.T) {
 	m := newTestModel(t, true, 120)
 	m.cursor = 1
@@ -160,7 +172,7 @@ func TestDiscussCancelRollback(t *testing.T) {
 	}
 }
 
-// AC 4: Tab accepts the suggested selection; refused when selection is nil.
+// Tab accepts the suggested selection; refused when selection is nil.
 func TestTabAcceptsSelection(t *testing.T) {
 	m := newTestModel(t, true, 120)
 	m.cursor = 1 // id1 has selection=fix
@@ -183,7 +195,7 @@ func TestTabAcceptsSelection(t *testing.T) {
 	}
 }
 
-// AC 5: g cycles through the four group-by dimensions.
+// g cycles through the four group-by dimensions.
 func TestGroupCycle(t *testing.T) {
 	m := newTestModel(t, true, 120)
 	want := []groupBy{groupByScore, groupByAction, groupByFile, groupByType}
@@ -195,7 +207,7 @@ func TestGroupCycle(t *testing.T) {
 	}
 }
 
-// AC 10: Ctrl+S refused while undecided; Confirm shown when all decided.
+// Ctrl+S refused while undecided; Confirm shown when all decided.
 func TestSubmitGate(t *testing.T) {
 	m := newTestModel(t, true, 120)
 	send(m, "ctrl+s")
@@ -211,7 +223,7 @@ func TestSubmitGate(t *testing.T) {
 	}
 }
 
-// AC 11: Confirm Enter finalizes — one decision per finding, prompt iff discuss.
+// Confirm Enter finalizes — one decision per finding, prompt iff discuss.
 func TestConfirmFinalize(t *testing.T) {
 	m := newTestModel(t, true, 120)
 	setAction(&m.actions[0], contract.ActionFix)
@@ -238,7 +250,7 @@ func TestConfirmFinalize(t *testing.T) {
 	}
 }
 
-// AC 12: Ctrl+C opens quit confirm; y cancels with no decisions.
+// Ctrl+C opens quit confirm; y cancels with no decisions.
 func TestQuitConfirm(t *testing.T) {
 	m := newTestModel(t, true, 120)
 	send(m, "ctrl+c")
@@ -254,7 +266,20 @@ func TestQuitConfirm(t *testing.T) {
 	}
 }
 
-// AC 9: split engages at >=160; Enter focuses Detail pane, Esc returns focus;
+// Esc on the main Table opens the quit confirm, like Ctrl+C.
+func TestEscOpensQuitOnTable(t *testing.T) {
+	m := newTestModel(t, true, 120)
+	send(m, "esc")
+	if !m.quitting {
+		t.Fatalf("Esc on the Table should open the quit confirm")
+	}
+	send(m, "y")
+	if m.outcome != OutcomeCancel {
+		t.Fatalf("y should cancel after Esc-opened quit, outcome=%v", m.outcome)
+	}
+}
+
+// Split engages at >=160: Enter focuses Detail pane, Esc returns focus;
 // crossing the threshold re-lays-out without losing the cursor.
 func TestSplitFocusAndResize(t *testing.T) {
 	m := newTestModel(t, true, 161)
@@ -283,7 +308,7 @@ func TestSplitFocusAndResize(t *testing.T) {
 	}
 }
 
-// AC 13: NO_COLOR yields output with no ANSI escapes and plain badges.
+// NO_COLOR yields output with no ANSI escapes and plain badges.
 func TestNoColorRendering(t *testing.T) {
 	m := newTestModel(t, true, 120)
 	view := m.viewTable()
@@ -312,7 +337,7 @@ func TestSuggestBadge(t *testing.T) {
 	}
 }
 
-// AC 6: narrow Enter drills into the Detail modal.
+// Narrow Enter drills into the Detail modal.
 func TestNarrowEnterOpensDetail(t *testing.T) {
 	m := newTestModel(t, true, 120)
 	m.cursor = 1
@@ -326,7 +351,7 @@ func TestNarrowEnterOpensDetail(t *testing.T) {
 	}
 }
 
-// Empty findings short-circuit to a submit with no decisions (Robustesse note).
+// Empty findings short-circuit to a submit with no decisions.
 func TestRunEmptyFindings(t *testing.T) {
 	res, err := Run(&contract.Input{SchemaVersion: 1, Findings: nil})
 	if err != nil {
@@ -334,5 +359,69 @@ func TestRunEmptyFindings(t *testing.T) {
 	}
 	if res.Outcome != OutcomeSubmit || len(res.Decisions) != 0 {
 		t.Fatalf("empty findings should submit zero decisions, got %+v", res)
+	}
+}
+
+// In the Detail screen, f sets the action and advances to the next finding.
+func TestDetailActionAdvances(t *testing.T) {
+	m := newTestModel(t, true, 120)
+	m.cursor = 1 // first item (id1)
+	send(m, "enter")
+	if m.screen != screenDetail {
+		t.Fatalf("Enter should open the Detail modal, screen=%v", m.screen)
+	}
+	send(m, "f")
+	if actionAt(m, 0) != "fix" {
+		t.Fatalf("f in Detail should set fix, got %s", actionAt(m, 0))
+	}
+	if m.currentFindingIdx() != 1 {
+		t.Fatalf("f in Detail should advance to the next item (id2), idx=%d", m.currentFindingIdx())
+	}
+}
+
+// Tab in the Detail screen on a nil-selection finding is a no-op.
+func TestDetailTabNilSelectionNoop(t *testing.T) {
+	m := newTestModel(t, true, 120)
+	m.cursor = 2 // item id2 has nil selection
+	send(m, "enter")
+	send(m, "tab")
+	if actionAt(m, 1) != "?" {
+		t.Fatalf("Tab on a nil-selection finding in Detail should not set an action, got %s", actionAt(m, 1))
+	}
+}
+
+// Committing a discuss prompt from within Detail advances via the Detail path.
+func TestDiscussFromDetailAdvances(t *testing.T) {
+	m := newTestModel(t, true, 120)
+	m.cursor = 1
+	send(m, "enter")
+	send(m, "d")
+	if m.screen != screenDiscuss {
+		t.Fatalf("d in Detail should open Discuss, screen=%v", m.screen)
+	}
+	m.ta.SetValue("note")
+	send(m, "tab")
+	if m.screen != screenDetail {
+		t.Fatalf("saving from a Detail-opened Discuss should return to Detail, screen=%v", m.screen)
+	}
+	if actionAt(m, 0) != "discuss" || m.prompts[0] != "note" {
+		t.Fatalf("discuss not committed: action=%s prompt=%q", actionAt(m, 0), m.prompts[0])
+	}
+	if m.currentFindingIdx() != 1 {
+		t.Fatalf("should advance to the next item (id2), idx=%d", m.currentFindingIdx())
+	}
+}
+
+// Ctrl+C opens the quit confirm even from the Discuss screen.
+func TestCtrlCFromDiscuss(t *testing.T) {
+	m := newTestModel(t, true, 120)
+	m.cursor = 1
+	send(m, "d")
+	if m.screen != screenDiscuss {
+		t.Fatalf("d should open Discuss")
+	}
+	send(m, "ctrl+c")
+	if !m.quitting {
+		t.Fatalf("Ctrl+C from Discuss should open the quit confirm")
 	}
 }

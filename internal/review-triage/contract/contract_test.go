@@ -2,6 +2,8 @@ package contract
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -123,4 +125,53 @@ func TestActionValid(t *testing.T) {
 		t.Fatalf("unknown action should be invalid")
 	}
 	_ = fix()
+}
+
+func TestOutputWriteRoundTrip(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "out.json")
+	prompt := "why not optional chaining"
+	out := Output{
+		SchemaVersion: 1,
+		Decisions: []Decision{
+			{ID: 1, Action: ActionFix},
+			{ID: 2, Action: ActionDiscuss, DiscussPrompt: &prompt},
+		},
+	}
+	if err := out.Write(p); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	raw, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if !strings.HasSuffix(string(raw), "\n") {
+		t.Fatalf("output should end with a trailing newline")
+	}
+	var got Output
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(got.Decisions) != 2 || got.Decisions[0].Action != ActionFix {
+		t.Fatalf("round-trip mismatch: %+v", got)
+	}
+	if got.Decisions[1].DiscussPrompt == nil || *got.Decisions[1].DiscussPrompt != prompt {
+		t.Fatalf("discuss prompt lost in round-trip: %+v", got.Decisions[1])
+	}
+}
+
+func TestLoadRoundTripAndMissing(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "in.json")
+	if err := os.WriteFile(p, []byte(`{"schemaVersion":1,"findings":[{"id":3,"codeExcerpt":"x","proposedFix":{"code":"y"}}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	in, err := Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(in.Findings) != 1 || in.Findings[0].ID != 3 {
+		t.Fatalf("unexpected load: %+v", in)
+	}
+	if _, err := Load(filepath.Join(t.TempDir(), "nope.json")); err == nil {
+		t.Fatalf("expected error loading a missing file")
+	}
 }

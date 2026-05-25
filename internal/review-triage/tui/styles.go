@@ -22,8 +22,7 @@ type theme struct {
 	dim       lipgloss.Style
 	footer    lipgloss.Style
 	border    lipgloss.Style
-	addLine   lipgloss.Style
-	delLine   lipgloss.Style
+	diffNum   lipgloss.Style
 	badgeFix  lipgloss.Style
 	badgeSkip lipgloss.Style
 	badgeDisc lipgloss.Style
@@ -44,8 +43,7 @@ func newTheme(noColor bool) theme {
 		dim:       lipgloss.NewStyle().Faint(true),
 		footer:    lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39")),
 		border:    lipgloss.NewStyle().Foreground(lipgloss.Color("63")),
-		addLine:   lipgloss.NewStyle().Foreground(lipgloss.Color("42")),
-		delLine:   lipgloss.NewStyle().Foreground(lipgloss.Color("203")),
+		diffNum:   lipgloss.NewStyle().Foreground(lipgloss.Color("240")),
 		badgeFix:  lipgloss.NewStyle().Foreground(lipgloss.Color("42")),
 		badgeSkip: lipgloss.NewStyle().Foreground(lipgloss.Color("244")),
 		badgeDisc: lipgloss.NewStyle().Foreground(lipgloss.Color("214")),
@@ -53,7 +51,6 @@ func newTheme(noColor bool) theme {
 	}
 }
 
-// badgeText is the colour-free badge for an action (nil = undecided).
 func badgeText(a *contract.Action) string {
 	switch {
 	case a == nil:

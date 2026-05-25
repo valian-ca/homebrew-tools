@@ -47,7 +47,6 @@ type row struct {
 	findingIdx int // valid only for rowItem
 }
 
-// scoreBucket maps a 0-100 score to a fixed band label.
 func scoreBucket(score int) string {
 	switch {
 	case score >= 100:
@@ -65,7 +64,6 @@ func scoreBucket(score int) string {
 	}
 }
 
-// groupKeyFor returns the group key of finding i under the given dimension.
 func groupKeyFor(g groupBy, f contract.Finding, action *contract.Action) string {
 	switch g {
 	case groupByScore:
@@ -82,8 +80,6 @@ func groupKeyFor(g groupBy, f contract.Finding, action *contract.Action) string 
 	}
 }
 
-// groupOrder returns the ordered list of group keys for the dimension. Score
-// and action use fixed orders; type and file follow first-appearance order.
 func groupOrder(g groupBy, findings []contract.Finding, actions []*contract.Action) []string {
 	switch g {
 	case groupByScore:
@@ -118,9 +114,6 @@ func filterPresent(candidates []string, g groupBy, findings []contract.Finding, 
 	return out
 }
 
-// buildRows flattens findings into header+item rows for the given dimension,
-// items sorted by score descending within each group, then a trailing submit
-// row.
 func buildRows(g groupBy, findings []contract.Finding, actions []*contract.Action) []row {
 	byKey := map[string][]int{}
 	for i, f := range findings {
@@ -142,32 +135,38 @@ func buildRows(g groupBy, findings []contract.Finding, actions []*contract.Actio
 	return rows
 }
 
-// breakdown counts the actions over the given finding indices and renders the
-// non-zero buckets in fix · discuss · skip · ? order. When includeZero is
-// true (the submit footer) every bucket is shown.
-func breakdown(idxs []int, actions []*contract.Action, includeZero bool) string {
-	var fix, skip, disc, undecided int
+type actionCounts struct{ fix, discuss, skip, undecided int }
+
+func tally(idxs []int, actions []*contract.Action) actionCounts {
+	var c actionCounts
 	for _, i := range idxs {
 		switch {
 		case actions[i] == nil:
-			undecided++
+			c.undecided++
 		case *actions[i] == contract.ActionFix:
-			fix++
+			c.fix++
 		case *actions[i] == contract.ActionSkip:
-			skip++
+			c.skip++
 		case *actions[i] == contract.ActionDiscuss:
-			disc++
+			c.discuss++
 		}
 	}
+	return c
+}
+
+// breakdown renders the non-zero buckets in fix · discuss · skip · ? order;
+// includeZero (the submit footer) shows every bucket.
+func breakdown(idxs []int, actions []*contract.Action, includeZero bool) string {
+	c := tally(idxs, actions)
 	var parts []string
 	add := func(n int, label string) {
 		if n > 0 || includeZero {
 			parts = append(parts, fmt.Sprintf("%d %s", n, label))
 		}
 	}
-	add(fix, "fix")
-	add(disc, "discuss")
-	add(skip, "skip")
-	add(undecided, "?")
+	add(c.fix, "fix")
+	add(c.discuss, "discuss")
+	add(c.skip, "skip")
+	add(c.undecided, "?")
 	return strings.Join(parts, " · ")
 }

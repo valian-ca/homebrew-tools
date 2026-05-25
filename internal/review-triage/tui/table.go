@@ -40,7 +40,7 @@ func (m *model) updateTable(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.moveCursor(1)
 	case "k", "up":
 		m.moveCursor(-1)
-	case "q":
+	case "q", "esc":
 		m.quitting = true
 	case "g":
 		m.cycleGroup()
@@ -62,7 +62,7 @@ func (m *model) applyAction(a contract.Action) {
 	switch m.rows[m.cursor].kind {
 	case rowItem:
 		setAction(&m.actions[m.rows[m.cursor].findingIdx], a)
-		m.advanceRow()
+		m.advanceToNextItem()
 	case rowHeader:
 		for _, idx := range m.groupItemIndices(m.cursor) {
 			setAction(&m.actions[idx], a)
@@ -95,7 +95,7 @@ func (m *model) applyTab() {
 			return
 		}
 		setAction(&m.actions[idx], *sel)
-		m.advanceRow()
+		m.advanceToNextItem()
 	case rowHeader:
 		for _, idx := range m.groupItemIndices(m.cursor) {
 			if sel := m.findings[idx].Selection; sel != nil {
@@ -128,14 +128,10 @@ func (m *model) cycleGroup() {
 	m.refreshDetail()
 }
 
-// clip truncates a (possibly ANSI-styled) line to w display columns.
 func clip(line string, w int) string {
 	return ansi.Truncate(line, w, "…")
 }
 
-// tableInner renders the Table content (title bar, rows, footer) without the
-// surrounding window border. Every line is clipped to w so the title bar — and
-// therefore the border — spans exactly w columns.
 func (m *model) tableInner(w int) string {
 	var lines []string
 	title := fmt.Sprintf(" Findings · group: %s ", m.group.label())
