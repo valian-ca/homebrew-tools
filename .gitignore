@@ -1,1 +1,4 @@
 .DS_Store
+
+# Locally built tool binaries (go build ./cmd/<tool> drops these at the repo root)
+/review-triage
