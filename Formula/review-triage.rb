@@ -2,7 +2,7 @@ class ReviewTriage < Formula
   desc "Interactive TUI to triage code-review findings for valian:review"
   homepage "https://github.com/valian-ca/homebrew-tools"
   url "https://github.com/valian-ca/homebrew-tools/archive/refs/tags/review-triage-0.1.0.tar.gz"
-  sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+  sha256 "0f35686aac2278f3b760dc073f8bdad616d2949d6fe0e7d3b9a09953a311cd54"
   license "MIT"
 
   depends_on "go" => :build
