@@ -125,8 +125,14 @@ schemes:
   ReviewTriage:
     build:
       targets:
+        # ReviewTriageCLI is intentionally absent: it's a build-time target
+        # dependency of ReviewTriage (declared in dependencies above, link:false)
+        # and gets copied into ReviewTriage.app/Contents/MacOS/review-triage-cli
+        # by the postBuildScript. Including it here as a separate scheme target
+        # makes the .xcarchive contain two top-level products (the .app + the
+        # CLI binary), which xcodebuild -exportArchive cannot disambiguate for
+        # `method = developer-id` ("expected one {} but found developer-id").
         ReviewTriage: all
-        ReviewTriageCLI: all
         ReviewTriageTests: [test]
     run:
       config: Debug
