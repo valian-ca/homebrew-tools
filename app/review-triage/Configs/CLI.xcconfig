@@ -1,0 +1,17 @@
+#include "Shared.xcconfig"
+
+PRODUCT_NAME = review-triage-cli
+SKIP_INSTALL = NO
+
+// CLI tools embedded in a notarized .app must themselves be signed with the same
+// hardened runtime, otherwise notarization rejects the bundle.
+ENABLE_HARDENED_RUNTIME = YES
+
+CODE_SIGN_STYLE[config=Debug] = Automatic
+CODE_SIGN_IDENTITY[config=Debug] = -
+CODE_SIGNING_REQUIRED[config=Debug] = NO
+
+CODE_SIGN_STYLE[config=Release] = Manual
+CODE_SIGN_IDENTITY[config=Release] = Developer ID Application
+CODE_SIGNING_REQUIRED[config=Release] = YES
+OTHER_CODE_SIGN_FLAGS[config=Release] = --options runtime --timestamp
