@@ -104,19 +104,13 @@ jobs:
             -exportPath "${{ env.EXPORT_DIR }}" \
             -exportOptionsPlist "${{ env.EXPORT_DIR }}/ExportOptions.plist"
 
-      - name: Store notarytool credentials
+      - name: Stage notarytool API key
         env:
-          ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
-          KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
           KEY_B64: ${{ secrets.APPLE_NOTARY_KEY }}
         run: |
           set -euo pipefail
-          trap 'rm -f /tmp/notary_key.p8' EXIT
           echo "$KEY_B64" | base64 --decode > /tmp/notary_key.p8
-          xcrun notarytool store-credentials AC_NOTARY \
-            --key /tmp/notary_key.p8 \
-            --key-id "$KEY_ID" \
-            --issuer "$ISSUER_ID"
+          chmod 600 /tmp/notary_key.p8
 
       - name: Zip for notarization
         run: |
@@ -125,11 +119,23 @@ jobs:
           ditto -c -k --keepParent "${APP_NAME}.app" "ReviewTriage-${{ steps.ver.outputs.version }}-notarize.zip"
 
       - name: Submit to notarytool
+        # Pass the App Store Connect API key directly to `notarytool submit`
+        # instead of going through `store-credentials` + `--keychain-profile`.
+        # The latter writes the credentials to the default (login) keychain,
+        # which is locked on Blacksmith macOS runners (no auto-unlock at
+        # session start). Stateless flag-driven auth is simpler, runner-
+        # agnostic, and matches the pattern in most macOS GHA blueprints.
+        env:
+          ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+          KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
         run: |
           set -euo pipefail
+          trap 'rm -f /tmp/notary_key.p8' EXIT
           xcrun notarytool submit \
             "${{ env.EXPORT_DIR }}/ReviewTriage-${{ steps.ver.outputs.version }}-notarize.zip" \
-            --keychain-profile AC_NOTARY \
+            --key /tmp/notary_key.p8 \
+            --key-id "$KEY_ID" \
+            --issuer "$ISSUER_ID" \
             --wait
 
       - name: Staple

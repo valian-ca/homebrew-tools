@@ -46,7 +46,7 @@ jobs:
 
   brew-audit:
     name: brew audit (if formulae or casks changed)
-    runs-on: macos-latest
+    runs-on: blacksmith-6vcpu-macos-latest
     steps:
       - uses: actions/checkout@v4
         with:
@@ -96,7 +96,10 @@ jobs:
 
   swift:
     name: swift build + test (app/review-triage)
-    runs-on: macos-15
+    # Blacksmith macOS-15 M4 — drops the swift test job from ~6m30s on
+    # GitHub-hosted macos-15 (M1/M2) to ~3 min. Symmetric with the runner
+    # choice in release-app.yml. See that workflow for cost/perf rationale.
+    runs-on: blacksmith-6vcpu-macos-15
     steps:
       - uses: actions/checkout@v4
       - name: Skip if app/review-triage is absent
