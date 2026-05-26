@@ -1,0 +1,30 @@
+#include "Shared.xcconfig"
+
+PRODUCT_BUNDLE_IDENTIFIER = ca.valian.review-triage
+// PRODUCT_NAME drives the .app filename; keeping it space-free avoids path-
+// quoting hell across xcconfig / xcodebuild / cask. The user-visible name lives
+// in CFBundleDisplayName in the Info.plist (= "Review Triage").
+PRODUCT_NAME = ReviewTriage
+
+ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon
+ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor
+COMBINE_HIDPI_IMAGES = YES
+
+// Hardened runtime is required for Developer ID notarization. The .entitlements
+// file is intentionally empty (no App Sandbox) — the app reads --input/--output
+// file paths supplied by the skill, which sandbox would block without a
+// user-selected file entitlement.
+ENABLE_HARDENED_RUNTIME = YES
+CODE_SIGN_ENTITLEMENTS = ReviewTriage/ReviewTriage.entitlements
+
+// Debug builds (tests, local) use ad-hoc signing — no Developer ID needed in CI.
+// Release builds require Developer ID Application; the CI release workflow imports
+// the cert from a secret and sets DEVELOPMENT_TEAM at invocation time.
+CODE_SIGN_STYLE[config=Debug] = Automatic
+CODE_SIGN_IDENTITY[config=Debug] = -
+CODE_SIGNING_REQUIRED[config=Debug] = NO
+
+CODE_SIGN_STYLE[config=Release] = Manual
+CODE_SIGN_IDENTITY[config=Release] = Developer ID Application
+CODE_SIGNING_REQUIRED[config=Release] = YES
+OTHER_CODE_SIGN_FLAGS[config=Release] = --options runtime --timestamp

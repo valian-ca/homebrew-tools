@@ -45,14 +45,14 @@ jobs:
         run: shellcheck -x bin/*
 
   brew-audit:
-    name: brew audit (if formulae changed)
+    name: brew audit (if formulae or casks changed)
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Detect changed formulae
+      - name: Detect changed formulae and casks
         id: changed
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
@@ -62,20 +62,68 @@ jobs:
           fi
           # On the very first push to main, before is all-zero — skip audit.
           if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
-            echo "names=" >> "$GITHUB_OUTPUT"
+            echo "formulae=" >> "$GITHUB_OUTPUT"
+            echo "casks=" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           # Convert "Formula/<name>.rb" paths to "valian-ca/tools/<name>" qualified names,
           # since `brew audit` no longer accepts bare paths.
-          names=$(git diff --name-only "$base"...HEAD -- 'Formula/*.rb' \
+          formulae=$(git diff --name-only "$base"...HEAD -- 'Formula/*.rb' \
             | sed -E 's|^Formula/(.+)\.rb$|valian-ca/tools/\1|' \
             | tr '\n' ' ')
-          echo "names=$names" >> "$GITHUB_OUTPUT"
+          casks=$(git diff --name-only "$base"...HEAD -- 'Casks/*.rb' \
+            | sed -E 's|^Casks/(.+)\.rb$|valian-ca/tools/\1|' \
+            | tr '\n' ' ')
+          echo "formulae=$formulae" >> "$GITHUB_OUTPUT"
+          echo "casks=$casks" >> "$GITHUB_OUTPUT"
 
       - name: Tap the checkout
-        if: steps.changed.outputs.names != ''
+        if: steps.changed.outputs.formulae != '' || steps.changed.outputs.casks != ''
         run: brew tap valian-ca/tools "$(pwd)"
 
-      - name: Run brew audit
-        if: steps.changed.outputs.names != ''
-        run: brew audit --strict --online ${{ steps.changed.outputs.names }}
+      - name: Audit changed formulae
+        if: steps.changed.outputs.formulae != ''
+        run: brew audit --strict --online ${{ steps.changed.outputs.formulae }}
+
+      - name: Audit changed casks
+        # --online is intentionally omitted on PRs because the cask points at a
+        # release artifact that may not exist yet. Tag-first release pushes the
+        # tag (which triggers release-app.yml to upload the artifact), then the
+        # follow-up commit updates the sha256 and re-runs this job — at which
+        # point --online would pass. For PRs we get strict offline checks only.
+        if: steps.changed.outputs.casks != ''
+        run: brew audit --strict --cask ${{ steps.changed.outputs.casks }}
+
+  swift:
+    name: swift build + test (app/review-triage)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Skip if app/review-triage is absent
+        id: check
+        run: |
+          if [ -d app/review-triage ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Install XcodeGen
+        if: steps.check.outputs.present == 'true'
+        run: brew install xcodegen
+      - name: Generate Xcode project
+        if: steps.check.outputs.present == 'true'
+        working-directory: app/review-triage
+        run: xcodegen generate
+      - name: Build and test
+        if: steps.check.outputs.present == 'true'
+        working-directory: app/review-triage
+        run: |
+          xcodebuild test \
+            -project ReviewTriage.xcodeproj \
+            -scheme ReviewTriage \
+            -destination 'platform=macOS' \
+            -configuration Debug \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_STYLE=Automatic \
+            DEVELOPMENT_TEAM=""

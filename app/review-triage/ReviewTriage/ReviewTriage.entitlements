@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+		Intentionally empty. No App Sandbox: the app reads --input and writes --output
+		file paths supplied via CLI by the valian:review skill; sandboxing would block
+		these accesses without a user-selected file entitlement. Hardened runtime is
+		enabled in the xcconfig and is independent of this file's contents.
+	-->
+</dict>
+</plist>
