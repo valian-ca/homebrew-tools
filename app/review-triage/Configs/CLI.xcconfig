@@ -1,7 +1,15 @@
 #include "Shared.xcconfig"
 
 PRODUCT_NAME = review-triage-cli
-SKIP_INSTALL = NO
+// SKIP_INSTALL = YES is critical: this target is built only to be embedded
+// inside ReviewTriage.app (via the postBuildScript that copies the binary into
+// Contents/MacOS/review-triage-cli). If SKIP_INSTALL is NO, Xcode also exports
+// the standalone binary to Products/usr/local/bin/review-triage-cli inside the
+// .xcarchive, which makes the archive contain two top-level products. That
+// breaks `xcodebuild -exportArchive` with method=developer-id, which fails with
+// "expected one {} but found developer-id" — Xcode cannot disambiguate which
+// product the export targets.
+SKIP_INSTALL = YES
 
 // CLI tools embedded in a notarized .app must themselves be signed with the same
 // hardened runtime, otherwise notarization rejects the bundle.
