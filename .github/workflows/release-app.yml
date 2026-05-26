@@ -11,7 +11,14 @@ permissions:
 jobs:
   build-and-release:
     name: build, sign, notarize, release
-    runs-on: macos-15
+    # Blacksmith macOS-15 runner: Apple Silicon M4, 6 vCPU, ~2x faster than
+    # GitHub-hosted `macos-15` (M1/M2) at half the per-minute cost ($0.08/min
+    # vs $0.16/min). Drop-in replacement — Xcode + standard macOS toolchain
+    # are pre-installed. Convention aligns with the Ubuntu side of the Valian
+    # mobile-app-template, which already runs on Blacksmith
+    # (`blacksmith-8vcpu-ubuntu-2404`). The `blacksmith-sh` GitHub App is
+    # installed on the valian-ca org.
+    runs-on: blacksmith-6vcpu-macos-15
     env:
       APP_NAME: ReviewTriage
       APP_DIR: app/review-triage
