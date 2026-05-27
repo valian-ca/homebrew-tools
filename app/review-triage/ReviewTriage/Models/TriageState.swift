@@ -4,6 +4,7 @@ import Observation
 @Observable
 @MainActor
 public final class TriageState {
+    public let inputTitle: String
     public let findings: [Finding]
     public let outputURL: URL
 
@@ -65,6 +66,7 @@ public final class TriageState {
     }
 
     public init(input: Input, outputURL: URL) {
+        self.inputTitle = input.title
         self.findings = input.findings
         self.outputURL = outputURL
         self.actions = Array(repeating: nil, count: input.findings.count)

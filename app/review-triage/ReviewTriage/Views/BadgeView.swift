@@ -1,15 +1,16 @@
 import SwiftUI
 
 struct BadgeView: View {
+    @Environment(\.fontPalette) private var palette
     let action: Action?
     let suggestion: Action?
 
     var body: some View {
         HStack(spacing: 4) {
             Image(systemName: BadgeStyle.symbol(action: action))
-                .font(.caption2)
+                .font(palette.caption)
             Text(BadgeStyle.text(action: action, suggestion: suggestion))
-                .font(.caption2.weight(.semibold))
+                .font(palette.captionSemibold)
                 .monospaced()
         }
         .foregroundStyle(.white)

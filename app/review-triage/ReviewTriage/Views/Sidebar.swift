@@ -2,9 +2,34 @@ import SwiftUI
 import AppKit
 
 struct Sidebar: View {
+    @Environment(\.fontPalette) private var palette
     @Bindable var state: TriageState
 
     var body: some View {
+        VStack(spacing: 0) {
+            if !state.inputTitle.isEmpty {
+                titleBanner
+            }
+            list
+        }
+    }
+
+    private var titleBanner: some View {
+        Text(state.inputTitle)
+            .font(palette.subheadlineSemibold)
+            .foregroundStyle(.secondary)
+            .lineLimit(2)
+            .multilineTextAlignment(.leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(Color(nsColor: .underPageBackgroundColor))
+            .overlay(alignment: .bottom) {
+                Divider()
+            }
+    }
+
+    private var list: some View {
         List(state.rows, selection: $state.selectedRowID) { row in
             rowView(for: row)
                 .tag(row.id)
@@ -39,7 +64,7 @@ struct Sidebar: View {
         .overlay(alignment: .bottom) {
             if !state.footerMessage.isEmpty {
                 Text(state.footerMessage)
-                    .font(.caption)
+                    .font(palette.caption)
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 6)
@@ -79,6 +104,7 @@ struct Sidebar: View {
 }
 
 private struct HeaderRow: View {
+    @Environment(\.fontPalette) private var palette
     let row: Row
     let groupKey: String
     let state: TriageState
@@ -88,18 +114,18 @@ private struct HeaderRow: View {
         let breakdown = Tally.breakdown(indices: indices, actions: state.actions)
         HStack(spacing: 6) {
             Image(systemName: "chevron.down")
-                .font(.caption2.weight(.semibold))
+                .font(palette.captionSemibold)
                 .foregroundStyle(.tertiary)
             Text(groupKey)
-                .font(.subheadline.weight(.semibold))
+                .font(palette.subheadlineSemibold)
             Text("(\(indices.count))")
-                .font(.subheadline)
+                .font(palette.subheadline)
                 .foregroundStyle(.secondary)
                 .monospacedDigit()
             if !breakdown.isEmpty {
                 Text("·").foregroundStyle(.tertiary)
                 Text(breakdown)
-                    .font(.caption)
+                    .font(palette.caption)
                     .foregroundStyle(.secondary)
             }
             Spacer(minLength: 0)
@@ -110,6 +136,7 @@ private struct HeaderRow: View {
 }
 
 private struct ItemRow: View {
+    @Environment(\.fontPalette) private var palette
     let finding: Finding
     let action: Action?
     let hideGroupSuffix: Bool
@@ -117,15 +144,16 @@ private struct ItemRow: View {
     var body: some View {
         HStack(spacing: 6) {
             Text(label)
-                .font(.caption.weight(.medium))
+                .font(palette.captionMedium)
                 .foregroundStyle(.secondary)
                 .monospacedDigit()
             Text(finding.title)
+                .font(palette.body)
                 .lineLimit(1)
                 .truncationMode(.tail)
             Spacer(minLength: 4)
             Text("·\(finding.score)")
-                .font(.caption.monospacedDigit())
+                .font(palette.captionMonoDigits)
                 .foregroundStyle(.secondary)
             BadgeView(action: action, suggestion: finding.selection)
         }
@@ -143,6 +171,7 @@ private struct ItemRow: View {
 }
 
 private struct SubmitRow: View {
+    @Environment(\.fontPalette) private var palette
     let planSummary: String
 
     var body: some View {
@@ -150,9 +179,9 @@ private struct SubmitRow: View {
             Image(systemName: "checkmark.seal.fill")
                 .foregroundStyle(.tint)
             Text("Submit")
-                .font(.subheadline.weight(.semibold))
+                .font(palette.subheadlineSemibold)
             Text(planSummary)
-                .font(.caption.monospacedDigit())
+                .font(palette.captionMonoDigits)
                 .foregroundStyle(.secondary)
             Spacer(minLength: 0)
         }
