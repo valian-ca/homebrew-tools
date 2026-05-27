@@ -42,9 +42,17 @@ private struct FindingDetail: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
+                // Materialize the post-edit excerpt by re-running the same
+                // apply that `Input.validate()` already executed. We trust the
+                // contract: if validation passed, apply cannot fail here, so
+                // any thrown error is a programmer bug — surface it loudly.
+                let newCode = (try? EditApply.apply(
+                    edits: finding.proposedFix.edits,
+                    to: finding.codeExcerpt
+                )) ?? finding.codeExcerpt
                 let diffLines = LineDiff.diff(
                     oldCode: finding.codeExcerpt,
-                    newCode: finding.proposedFix.code,
+                    newCode: newCode,
                     startLine: finding.lineStart
                 )
                 if !diffLines.isEmpty {

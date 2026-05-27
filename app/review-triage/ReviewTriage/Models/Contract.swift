@@ -10,13 +10,23 @@ public enum Action: String, Codable, Sendable, CaseIterable, Hashable {
     case discuss
 }
 
+public struct Edit: Codable, Sendable, Hashable {
+    public let find: String
+    public let replace: String
+
+    public init(find: String, replace: String) {
+        self.find = find
+        self.replace = replace
+    }
+}
+
 public struct ProposedFix: Codable, Sendable, Hashable {
     public let explanation: String
-    public let code: String
+    public let edits: [Edit]
 
-    public init(explanation: String, code: String) {
+    public init(explanation: String, edits: [Edit]) {
         self.explanation = explanation
-        self.code = code
+        self.edits = edits
     }
 }
 
@@ -96,8 +106,16 @@ public struct Input: Codable, Sendable {
             throw ContractError.unsupportedSchemaVersion(schemaVersion)
         }
         for finding in findings {
-            if finding.codeExcerpt.isEmpty && finding.proposedFix.code.isEmpty {
-                throw ContractError.bothSidesEmpty(findingId: finding.id)
+            if finding.proposedFix.edits.isEmpty {
+                throw ContractError.editsListEmpty(findingId: finding.id)
+            }
+            // Materialize the edits up-front so the developer never reaches the
+            // diff pane with a finding whose anchors don't apply. EditApply is
+            // pure; we throw away the result and recompute it at render time.
+            do {
+                _ = try EditApply.apply(edits: finding.proposedFix.edits, to: finding.codeExcerpt)
+            } catch let err as EditApplyError {
+                throw ContractError.editError(findingId: finding.id, underlying: err)
             }
         }
     }
@@ -163,7 +181,8 @@ public struct Output: Codable, Sendable {
 public enum ContractError: Error, LocalizedError, Equatable {
     case unsupportedSchemaVersion(Int)
     case malformedInput(underlying: Error)
-    case bothSidesEmpty(findingId: Int)
+    case editsListEmpty(findingId: Int)
+    case editError(findingId: Int, underlying: EditApplyError)
     case cannotReadInput(path: String, underlying: Error)
 
     public var errorDescription: String? {
@@ -172,8 +191,10 @@ public enum ContractError: Error, LocalizedError, Equatable {
             return "unsupported schemaVersion \(v) (expected \(Contract.schemaVersion))"
         case .malformedInput(let underlying):
             return "malformed input JSON: \(underlying.localizedDescription)"
-        case .bothSidesEmpty(let id):
-            return "finding \(id) has empty codeExcerpt and empty proposedFix.code"
+        case .editsListEmpty(let id):
+            return "finding \(id) has an empty proposedFix.edits list"
+        case .editError(let id, let underlying):
+            return "finding \(id): \(underlying.errorDescription ?? "edit application failed")"
         case .cannotReadInput(let path, let underlying):
             return "cannot read input file \(path): \(underlying.localizedDescription)"
         }
@@ -183,8 +204,10 @@ public enum ContractError: Error, LocalizedError, Equatable {
         switch (lhs, rhs) {
         case (.unsupportedSchemaVersion(let a), .unsupportedSchemaVersion(let b)):
             return a == b
-        case (.bothSidesEmpty(let a), .bothSidesEmpty(let b)):
+        case (.editsListEmpty(let a), .editsListEmpty(let b)):
             return a == b
+        case (.editError(let a, let ea), .editError(let b, let eb)):
+            return a == b && ea == eb
         case (.malformedInput, .malformedInput),
              (.cannotReadInput, .cannotReadInput):
             return true

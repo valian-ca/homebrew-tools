@@ -1,6 +1,6 @@
 MACOSX_DEPLOYMENT_TARGET = 15.0
 SWIFT_VERSION = 6.0
-MARKETING_VERSION = 0.1.0
+MARKETING_VERSION = 0.2.0
 CURRENT_PROJECT_VERSION = 1
 
 // Strict concurrency: surface Sendable issues at compile time on the way to Swift 7.

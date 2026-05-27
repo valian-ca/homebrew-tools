@@ -85,7 +85,7 @@ struct LaunchPlanTests {
           "findings": [{
             "id": 1, "title": "T", "group": "g", "agentLabel": "#1: g", "score": 50,
             "explanation": "", "file": "f", "lineStart": 1, "lineEnd": 1,
-            "language": "go", "codeExcerpt": "a", "proposedFix": {"explanation": "", "code": "b"},
+            "language": "go", "codeExcerpt": "a", "proposedFix": {"explanation": "", "edits": [{"find": "a", "replace": "b"}]},
             "selection": null
           }]
         }
