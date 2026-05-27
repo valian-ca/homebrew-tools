@@ -21,6 +21,7 @@ struct DetailPane: View {
 }
 
 private struct FindingDetail: View {
+    @Environment(\.fontPalette) private var palette
     let finding: Finding
     let action: Action?
 
@@ -30,14 +31,16 @@ private struct FindingDetail: View {
                 heading
                 if !finding.explanation.isEmpty {
                     Text(finding.explanation)
+                        .font(palette.body)
                         .textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 if !finding.proposedFix.explanation.isEmpty {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Proposed:")
-                            .font(.headline)
+                            .font(palette.headline)
                         Text(finding.proposedFix.explanation)
+                            .font(palette.body)
                             .textSelection(.enabled)
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -68,17 +71,17 @@ private struct FindingDetail: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text(finding.agentLabel)
-                    .font(.subheadline.weight(.medium))
+                    .font(palette.subheadlineMedium)
                     .foregroundStyle(.secondary)
                 Text("·").foregroundStyle(.tertiary)
                 Text(finding.title)
-                    .font(.title3.weight(.semibold))
+                    .font(palette.heading)
             }
             HStack(spacing: 8) {
                 Image(systemName: "doc.text")
                     .foregroundStyle(.secondary)
                 Text("\(finding.file):\(finding.lineStart)-\(finding.lineEnd)")
-                    .font(.callout.monospaced())
+                    .font(palette.codeInline)
                     .textSelection(.enabled)
                 Text("·").foregroundStyle(.tertiary)
                 Text("score")
@@ -88,12 +91,13 @@ private struct FindingDetail: View {
                 Text("·").foregroundStyle(.tertiary)
                 BadgeView(action: action, suggestion: finding.selection)
             }
-            .font(.callout)
+            .font(palette.body)
         }
     }
 }
 
 private struct GroupSummary: View {
+    @Environment(\.fontPalette) private var palette
     let headerRow: Row
     let groupKey: String
     let state: TriageState
@@ -102,15 +106,15 @@ private struct GroupSummary: View {
         let indices = state.indices(forGroupHeader: headerRow.kind)
         VStack(alignment: .leading, spacing: 12) {
             Text(groupKey)
-                .font(.title.weight(.semibold))
+                .font(palette.title)
             Text("\(indices.count) finding\(indices.count == 1 ? "" : "s")")
-                .font(.headline)
+                .font(palette.headline)
                 .foregroundStyle(.secondary)
             Text(Tally.breakdown(indices: indices, actions: state.actions, showZeros: true))
-                .font(.body.monospaced())
+                .font(palette.code)
             Spacer()
             Text("Tip: press `f`, `s`, or `d` (or ⌘F / ⌘K / ⌘D) on this group header to apply an action to every item at once.")
-                .font(.callout)
+                .font(palette.body)
                 .foregroundStyle(.secondary)
         }
         .padding(24)
@@ -119,20 +123,21 @@ private struct GroupSummary: View {
 }
 
 private struct PlanOverview: View {
+    @Environment(\.fontPalette) private var palette
     let state: TriageState
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Ready to submit?")
-                .font(.title.weight(.semibold))
+                .font(palette.title)
             Text(state.planSummary)
-                .font(.body.monospaced())
+                .font(palette.code)
             if state.discussWithoutPromptCount > 0 {
                 Label(
                     "\(state.discussWithoutPromptCount) discuss item\(state.discussWithoutPromptCount == 1 ? "" : "s") have no prompt — you can still ship as-is.",
                     systemImage: "exclamationmark.triangle"
                 )
-                .font(.callout)
+                .font(palette.body)
                 .foregroundStyle(.secondary)
             }
             Spacer()

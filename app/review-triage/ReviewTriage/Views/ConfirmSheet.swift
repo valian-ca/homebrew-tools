@@ -1,21 +1,22 @@
 import SwiftUI
 
 struct ConfirmSheet: View {
+    @Environment(\.fontPalette) private var palette
     @Bindable var state: TriageState
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Submit triage decisions?")
-                .font(.title2.weight(.semibold))
+                .font(palette.heading)
             VStack(alignment: .leading, spacing: 6) {
                 Text(state.planSummary)
-                    .font(.body.monospaced())
+                    .font(palette.code)
                 if state.discussWithoutPromptCount > 0 {
                     Label(
                         "\(state.discussWithoutPromptCount) discuss item\(state.discussWithoutPromptCount == 1 ? "" : "s") without a prompt — you can still ship as-is.",
                         systemImage: "exclamationmark.triangle"
                     )
-                    .font(.callout)
+                    .font(palette.body)
                     .foregroundStyle(.secondary)
                 }
             }

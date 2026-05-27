@@ -8,6 +8,7 @@ struct ContractTests {
         let json = """
         {
           "schemaVersion": 1,
+          "title": "Full review · SMA-21: User profile page",
           "branch": "feat/x",
           "mergeBase": "abc123",
           "findings": [{
@@ -21,10 +22,31 @@ struct ContractTests {
         """.data(using: .utf8)!
         let input = try Input.parse(json)
         #expect(input.schemaVersion == 1)
+        #expect(input.title == "Full review · SMA-21: User profile page")
         #expect(input.findings.count == 1)
         #expect(input.findings[0].selection == .fix)
         #expect(input.findings[0].proposedFix.edits.count == 1)
         #expect(input.findings[0].proposedFix.edits[0].find == "alpha")
+    }
+
+    @Test func titleIsOptionalAndDefaultsToEmpty() throws {
+        // Earlier rodage builds (0.2.x) emitted no `title`. The parser must
+        // tolerate that and produce an empty string so the window falls back
+        // to its generic banner — anything stricter would break the upgrade.
+        let json = """
+        {
+          "schemaVersion": 1, "branch": "feat/x", "mergeBase": "abc123",
+          "findings": [{
+            "id": 1, "title": "T", "group": "g", "agentLabel": "#1: g", "score": 50,
+            "explanation": "", "file": "f", "lineStart": 1, "lineEnd": 1,
+            "language": "go", "codeExcerpt": "a",
+            "proposedFix": {"explanation": "", "edits": [{"find": "a", "replace": "b"}]},
+            "selection": null
+          }]
+        }
+        """.data(using: .utf8)!
+        let input = try Input.parse(json)
+        #expect(input.title == "")
     }
 
     @Test func schemaMismatchRejected() {

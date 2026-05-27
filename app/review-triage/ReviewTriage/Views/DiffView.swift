@@ -10,6 +10,7 @@ extension DiffLine: Identifiable {
 }
 
 struct DiffView: View {
+    @Environment(\.fontPalette) private var palette
     let lines: [DiffLine]
     let language: String
 
@@ -25,7 +26,7 @@ struct DiffView: View {
                 )
             }
         }
-        .font(.system(.callout, design: .monospaced))
+        .font(palette.code)
         .clipShape(RoundedRectangle(cornerRadius: 6))
         .overlay(
             RoundedRectangle(cornerRadius: 6)
@@ -35,6 +36,7 @@ struct DiffView: View {
 }
 
 private struct DiffLineRow: View {
+    @Environment(\.fontPalette) private var palette
     let line: DiffLine
     let language: String
     let numColumnWidth: CGFloat
@@ -53,7 +55,7 @@ private struct DiffLineRow: View {
             Text(line.newNum > 0 ? String(line.newNum) : "")
                 .frame(width: numColumnWidth, alignment: .trailing)
         }
-        .font(.caption.monospacedDigit())
+        .font(palette.captionMonoDigits)
         .foregroundStyle(DiffColors.gutterForeground)
         .padding(.horizontal, 8)
         .padding(.vertical, 1)

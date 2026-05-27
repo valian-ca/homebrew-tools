@@ -3,6 +3,7 @@ import SwiftUI
 struct DiscussSheet: View {
     private static let maxExcerptPreviewLines = 5
 
+    @Environment(\.fontPalette) private var palette
     @Bindable var state: TriageState
     @FocusState private var textareaFocused: Bool
 
@@ -12,7 +13,7 @@ struct DiscussSheet: View {
                 header(for: state.findings[idx])
             }
             TextEditor(text: $state.discussDraft)
-                .font(.body)
+                .font(palette.body)
                 .scrollContentBackground(.hidden)
                 .padding(8)
                 .frame(minHeight: 140)
@@ -43,17 +44,17 @@ struct DiscussSheet: View {
     private func header(for finding: Finding) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(finding.agentLabel)
-                .font(.caption.weight(.medium))
+                .font(palette.captionMedium)
                 .foregroundStyle(.secondary)
             Text(finding.title)
-                .font(.headline)
+                .font(palette.headline)
             Text("\(finding.file):\(finding.lineStart)-\(finding.lineEnd)")
-                .font(.caption.monospaced())
+                .font(palette.codeCaption)
                 .foregroundStyle(.secondary)
                 .textSelection(.enabled)
             if !finding.codeExcerpt.isEmpty {
                 Text(compactExcerpt(finding.codeExcerpt))
-                    .font(.callout.monospaced())
+                    .font(palette.codeInline)
                     .foregroundStyle(.secondary)
                     .padding(8)
                     .frame(maxWidth: .infinity, alignment: .leading)

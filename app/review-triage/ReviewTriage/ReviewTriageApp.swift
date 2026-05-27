@@ -6,8 +6,18 @@ struct ReviewTriageApp: App {
     @State private var launchOutcome: LaunchOutcome
     @NSApplicationDelegateAdaptor(QuitGuard.self) private var quitGuard
     @AppStorage(AppTheme.defaultsKey) private var appTheme: AppTheme = .auto
+    @AppStorage(AppSettingsKeys.textFontSize) private var textFontSize: Double = AppSettingsDefaults.textFontSize
+    @AppStorage(AppSettingsKeys.codeFontSize) private var codeFontSize: Double = AppSettingsDefaults.codeFontSize
+    @AppStorage(AppSettingsKeys.textFontFamily) private var textFontFamily: String = AppSettingsDefaults.textFontFamily
+    @AppStorage(AppSettingsKeys.codeFontFamily) private var codeFontFamily: String = AppSettingsDefaults.codeFontFamily
 
     init() {
+        // Single-instance synchronous tool — the CLI shim blocks until this
+        // process exits, so window tabs don't fit the model (a second tab
+        // would have no input and confuse the developer). Turn the feature
+        // off globally so `⌘T` and the View → Show Tab Bar item disappear.
+        NSWindow.allowsAutomaticWindowTabbing = false
+
         let args = CommandLine.arguments
 
         if Self.isRunningHostedTests() {
@@ -47,12 +57,37 @@ struct ReviewTriageApp: App {
         WindowGroup(id: "triage") {
             content
                 .frame(minWidth: 900, minHeight: 600)
-                .navigationTitle("Review Triage")
+                .navigationTitle(windowTitle)
                 .preferredColorScheme(appTheme.colorScheme)
+                .environment(\.fontPalette, palette)
         }
         .windowResizability(.contentSize)
         .commands {
             CommandsMenu(state: launchOutcome.triageState)
+        }
+
+        Settings {
+            SettingsView()
+                .preferredColorScheme(appTheme.colorScheme)
+                .environment(\.fontPalette, palette)
+        }
+    }
+
+    private var palette: FontPalette {
+        FontPalette(
+            textSize: textFontSize,
+            codeSize: codeFontSize,
+            textFamily: textFontFamily,
+            codeFamily: codeFontFamily
+        )
+    }
+
+    private var windowTitle: String {
+        switch launchOutcome {
+        case .ready(let state) where !state.inputTitle.isEmpty:
+            return state.inputTitle
+        case .ready, .testHost:
+            return "Review Triage"
         }
     }
 

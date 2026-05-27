@@ -69,15 +69,33 @@ public struct Finding: Codable, Sendable, Hashable, Identifiable {
 
 public struct Input: Codable, Sendable {
     public let schemaVersion: Int
+    public let title: String
     public let branch: String
     public let mergeBase: String
     public let findings: [Finding]
 
-    public init(schemaVersion: Int, branch: String, mergeBase: String, findings: [Finding]) {
+    public init(schemaVersion: Int, title: String = "", branch: String, mergeBase: String, findings: [Finding]) {
         self.schemaVersion = schemaVersion
+        self.title = title
         self.branch = branch
         self.mergeBase = mergeBase
         self.findings = findings
+    }
+
+    /// Tolerate inputs from the 0.2.x rodage that omit `title` — decode it as
+    /// an empty string rather than failing the whole parse. The window then
+    /// falls back to a generic banner; everything else still works.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decode(Int.self, forKey: .schemaVersion)
+        title = try container.decodeIfPresent(String.self, forKey: .title) ?? ""
+        branch = try container.decode(String.self, forKey: .branch)
+        mergeBase = try container.decode(String.self, forKey: .mergeBase)
+        findings = try container.decode([Finding].self, forKey: .findings)
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion, title, branch, mergeBase, findings
     }
 
     public static func parse(_ data: Data) throws -> Input {
