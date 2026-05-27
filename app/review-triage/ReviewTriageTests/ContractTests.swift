@@ -13,7 +13,8 @@ struct ContractTests {
           "findings": [{
             "id": 1, "title": "T", "group": "g", "agentLabel": "#1: g", "score": 50,
             "explanation": "e", "file": "f.ts", "lineStart": 1, "lineEnd": 2,
-            "language": "typescript", "codeExcerpt": "a", "proposedFix": {"explanation": "x", "code": "b"},
+            "language": "typescript", "codeExcerpt": "alpha\\nbeta",
+            "proposedFix": {"explanation": "x", "edits": [{"find": "alpha", "replace": "gamma"}]},
             "selection": "fix"
           }]
         }
@@ -22,6 +23,8 @@ struct ContractTests {
         #expect(input.schemaVersion == 1)
         #expect(input.findings.count == 1)
         #expect(input.findings[0].selection == .fix)
+        #expect(input.findings[0].proposedFix.edits.count == 1)
+        #expect(input.findings[0].proposedFix.edits[0].find == "alpha")
     }
 
     @Test func schemaMismatchRejected() {
@@ -32,19 +35,73 @@ struct ContractTests {
         }
     }
 
-    @Test func bothSidesEmptyRejected() {
+    @Test func emptyEditsListRejected() {
         let json = """
         {
           "schemaVersion": 1, "branch": "", "mergeBase": "",
           "findings": [{
             "id": 7, "title": "T", "group": "g", "agentLabel": "#7", "score": 0,
             "explanation": "", "file": "f", "lineStart": 1, "lineEnd": 1,
-            "language": "go", "codeExcerpt": "", "proposedFix": {"explanation": "", "code": ""},
+            "language": "go", "codeExcerpt": "x", "proposedFix": {"explanation": "", "edits": []},
             "selection": null
           }]
         }
         """.data(using: .utf8)!
-        #expect(throws: ContractError.bothSidesEmpty(findingId: 7)) {
+        #expect(throws: ContractError.editsListEmpty(findingId: 7)) {
+            try Input.parse(json)
+        }
+    }
+
+    @Test func emptyFindRejected() {
+        let json = """
+        {
+          "schemaVersion": 1, "branch": "", "mergeBase": "",
+          "findings": [{
+            "id": 3, "title": "T", "group": "g", "agentLabel": "#3", "score": 0,
+            "explanation": "", "file": "f", "lineStart": 1, "lineEnd": 1,
+            "language": "go", "codeExcerpt": "x",
+            "proposedFix": {"explanation": "", "edits": [{"find": "", "replace": "y"}]},
+            "selection": null
+          }]
+        }
+        """.data(using: .utf8)!
+        #expect(throws: ContractError.editError(findingId: 3, underlying: .findEmpty(editIndex: 0))) {
+            try Input.parse(json)
+        }
+    }
+
+    @Test func anchorNotFoundRejected() {
+        let json = """
+        {
+          "schemaVersion": 1, "branch": "", "mergeBase": "",
+          "findings": [{
+            "id": 4, "title": "T", "group": "g", "agentLabel": "#4", "score": 0,
+            "explanation": "", "file": "f", "lineStart": 1, "lineEnd": 1,
+            "language": "go", "codeExcerpt": "alpha",
+            "proposedFix": {"explanation": "", "edits": [{"find": "missing", "replace": "z"}]},
+            "selection": null
+          }]
+        }
+        """.data(using: .utf8)!
+        #expect(throws: ContractError.editError(findingId: 4, underlying: .notFound(editIndex: 0))) {
+            try Input.parse(json)
+        }
+    }
+
+    @Test func ambiguousAnchorRejected() {
+        let json = """
+        {
+          "schemaVersion": 1, "branch": "", "mergeBase": "",
+          "findings": [{
+            "id": 5, "title": "T", "group": "g", "agentLabel": "#5", "score": 0,
+            "explanation": "", "file": "f", "lineStart": 1, "lineEnd": 1,
+            "language": "go", "codeExcerpt": "foo bar foo",
+            "proposedFix": {"explanation": "", "edits": [{"find": "foo", "replace": "baz"}]},
+            "selection": null
+          }]
+        }
+        """.data(using: .utf8)!
+        #expect(throws: ContractError.editError(findingId: 5, underlying: .ambiguous(editIndex: 0, occurrences: 2))) {
             try Input.parse(json)
         }
     }
@@ -56,7 +113,8 @@ struct ContractTests {
           "findings": [{
             "id": 1, "title": "T", "group": "g", "agentLabel": "x", "score": 1,
             "explanation": "", "file": "f", "lineStart": 1, "lineEnd": 1,
-            "language": "go", "codeExcerpt": "a", "proposedFix": {"explanation": "", "code": ""},
+            "language": "go", "codeExcerpt": "a",
+            "proposedFix": {"explanation": "", "edits": [{"find": "a", "replace": "b"}]},
             "selection": null
           }]
         }

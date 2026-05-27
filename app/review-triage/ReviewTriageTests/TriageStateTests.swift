@@ -205,7 +205,7 @@ struct TriageStateTests {
                 id: i + 1, title: "T\(i)", group: group, agentLabel: "#\(i+1): \(group)",
                 score: 50, explanation: "", file: "f.ts", lineStart: 1, lineEnd: 1,
                 language: "typescript", codeExcerpt: "x",
-                proposedFix: ProposedFix(explanation: "", code: "y"),
+                proposedFix: ProposedFix(explanation: "", edits: [Edit(find: "x", replace: "y")]),
                 selection: selection
             )
         }
@@ -226,7 +226,7 @@ struct TriageStateTests {
             id: id, title: "T\(id)", group: group, agentLabel: "#\(id): \(group)",
             score: score, explanation: "", file: "f.ts", lineStart: 1, lineEnd: 1,
             language: "typescript", codeExcerpt: "x",
-            proposedFix: ProposedFix(explanation: "", code: "y"),
+            proposedFix: ProposedFix(explanation: "", edits: [Edit(find: "x", replace: "y")]),
             selection: selection
         )
     }

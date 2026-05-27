@@ -86,7 +86,7 @@ struct GroupingLogicTests {
             id: id, title: "T\(id)", group: group, agentLabel: "#\(id): \(group)",
             score: score, explanation: "", file: "f.ts", lineStart: 1, lineEnd: 1,
             language: "typescript", codeExcerpt: "x",
-            proposedFix: ProposedFix(explanation: "", code: "y"),
+            proposedFix: ProposedFix(explanation: "", edits: [Edit(find: "x", replace: "y")]),
             selection: nil
         )
     }
