@@ -1,6 +1,6 @@
 cask "review-triage" do
   version "0.3.1"
-  sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+  sha256 "05d3290774f9eb335d8912e909f9a6008ec692d294eb1ddaf5f529ec05e5af41"
 
   url "https://github.com/valian-ca/homebrew-tools/releases/download/review-triage-app-#{version}/ReviewTriage-#{version}.zip"
   name "Review Triage"
