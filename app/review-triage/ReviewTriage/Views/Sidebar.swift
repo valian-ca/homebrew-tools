@@ -6,30 +6,10 @@ struct Sidebar: View {
     @Bindable var state: TriageState
 
     var body: some View {
-        VStack(spacing: 0) {
-            if !state.inputTitle.isEmpty {
-                titleBanner
-            }
-            list
-        }
-    }
-
-    private var titleBanner: some View {
-        Text(state.inputTitle)
-            .font(palette.subheadlineSemibold)
-            .foregroundStyle(.secondary)
-            .lineLimit(2)
-            .multilineTextAlignment(.leading)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .background(Color(nsColor: .underPageBackgroundColor))
-            .overlay(alignment: .bottom) {
-                Divider()
-            }
-    }
-
-    private var list: some View {
+        // The review title lives in the macOS title bar (set via
+        // `.navigationTitle(state.inputTitle)` in `ReviewTriageApp`). The
+        // sidebar deliberately doesn't repeat it — duplicating the same
+        // string a few pixels apart was just visual noise.
         List(state.rows, selection: $state.selectedRowID) { row in
             rowView(for: row)
                 .tag(row.id)
@@ -82,8 +62,7 @@ struct Sidebar: View {
         case .item(let findingIdx):
             ItemRow(
                 finding: state.findings[findingIdx],
-                action: state.actions[findingIdx],
-                hideGroupSuffix: state.groupBy == .type
+                action: state.actions[findingIdx]
             )
         case .submit:
             SubmitRow(planSummary: state.planSummary)
@@ -139,11 +118,14 @@ private struct ItemRow: View {
     @Environment(\.fontPalette) private var palette
     let finding: Finding
     let action: Action?
-    let hideGroupSuffix: Bool
 
     var body: some View {
         HStack(spacing: 6) {
-            Text(label)
+            // `finding.id` is the positional row number from the review table
+            // (the `#` column in the All-issues output). Using it here matches
+            // how the developer refers to a finding in chat ("the #4")
+            // — and unlike the agent label, it is unique across the sidebar.
+            Text("#\(finding.id)")
                 .font(palette.captionMedium)
                 .foregroundStyle(.secondary)
                 .monospacedDigit()
@@ -157,16 +139,12 @@ private struct ItemRow: View {
                 .foregroundStyle(.secondary)
             BadgeView(action: action, suggestion: finding.selection)
         }
+        // Indent items under their group header so the hierarchy reads at a
+        // glance — the header carries the chevron and group name at the
+        // default indent, items sit shifted right.
+        .padding(.leading, 16)
         .padding(.vertical, 2)
         .contentShape(Rectangle())
-    }
-
-    private var label: String {
-        hideGroupSuffix ? agentLabelWithoutGroupSuffix : finding.agentLabel
-    }
-
-    private var agentLabelWithoutGroupSuffix: String {
-        finding.agentLabel.replacingOccurrences(of: ": \(finding.group)", with: "")
     }
 }
 
