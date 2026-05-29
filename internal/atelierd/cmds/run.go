@@ -63,7 +63,9 @@ heartbeat to /users/{uid}.lastHeartbeat every 60s. Writes a status snapshot to
 re-link without requiring brew services restart. Watches ~/.atelier/sessions/
 and tails the Claude Code transcript JSONL for each registered session,
 deriving hook:user-prompt-submit, hook:pre-tool-use, hook:post-tool-use, and
-hook:assistant-turn events into the outbox (cf. VAL-201).
+hook:assistant-turn events into the outbox (cf. VAL-201). Watches the Claude
+Desktop session store and derives transcript:ai-title / transcript:custom-title
+events for sessions that never write a title into the transcript (cf. VAL-243).
 
 On Firebase Auth 401/403, enters "auth-lost" mode: ship + heartbeat + refresh
 loops pause; the outbox accumulates; the status file marks authState=auth-lost.
@@ -129,13 +131,14 @@ func runRun(cmd *cobra.Command, _ []string) error {
 	atelierlog.Info("atelierd run started", "uid", state.snapshot().UID, "host", host, "version", Version)
 
 	var wg sync.WaitGroup
-	wg.Add(6)
+	wg.Add(7)
 	go func() { defer wg.Done(); shipperLoop(rootCtx, state) }()
 	go func() { defer wg.Done(); refresherLoop(rootCtx, state) }()
 	go func() { defer wg.Done(); heartbeatLoop(rootCtx, state) }()
 	go func() { defer wg.Done(); statusWriterLoop(rootCtx, state) }()
 	go func() { defer wg.Done(); credentialsWatcherLoop(rootCtx, state) }()
 	go func() { defer wg.Done(); sessionsManagerLoop(rootCtx, state) }()
+	go func() { defer wg.Done(); sessionStoreWatcherLoop(rootCtx, state) }()
 
 	wg.Wait()
 	atelierlog.Info("atelierd run stopped")

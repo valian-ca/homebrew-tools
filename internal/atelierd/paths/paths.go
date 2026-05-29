@@ -43,6 +43,23 @@ func EnsureDir(dir string) error {
 // Outbox returns ~/.atelier/outbox.
 func Outbox() string { return filepath.Join(MustRoot(), "outbox") }
 
+// SessionTitles returns ~/.atelier/session-titles — the last-emitted title
+// state for the Claude Desktop session-store watcher (VAL-243).
+func SessionTitles() string { return filepath.Join(MustRoot(), "session-titles") }
+
+// ClaudeDesktopSessionStore returns the Claude Code Desktop session store dir,
+// <home>/Library/Application Support/Claude/claude-code-sessions. Unlike every
+// other path here it lives outside ~/.atelier: Claude Desktop owns it and
+// atelierd only reads it, so resolution returns an error rather than panicking
+// when the home dir is unavailable.
+func ClaudeDesktopSessionStore() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, "Library", "Application Support", "Claude", "claude-code-sessions"), nil
+}
+
 // Credentials returns ~/.atelier/credentials.
 func Credentials() string { return filepath.Join(MustRoot(), "credentials") }
 
