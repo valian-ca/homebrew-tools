@@ -31,13 +31,31 @@ func (e *Error) Error() string {
 	return fmt.Sprintf("firestore: HTTP %d: %s", e.Status, e.Message)
 }
 
-// IsAuthLost reports whether err means the bearer token was rejected.
+// IsAuthLost reports whether err means the bearer token was rejected (401).
+// A 403 is NOT auth-lost: the token is valid but this specific write is
+// forbidden by security rules — see IsPermissionDenied. Conflating the two
+// used to send users to `atelierd link` (which cannot fix a permission error)
+// and froze the outbox on a single rejected event.
 func IsAuthLost(err error) bool {
 	var fe *Error
 	if !errors.As(err, &fe) {
 		return false
 	}
-	return fe.Status == http.StatusUnauthorized || fe.Status == http.StatusForbidden
+	return fe.Status == http.StatusUnauthorized
+}
+
+// IsPermissionDenied reports whether err is a Firestore 403 PERMISSION_DENIED:
+// the bearer token is valid but the write was rejected by security rules. The
+// canonical case is an /events/{ulid} document that already exists — the rule
+// allows create but not update, so re-shipping a duplicate is denied. Callers
+// treat this as a permanent, per-event failure (quarantine and move on), never
+// as a reason to refresh the token or declare auth-lost.
+func IsPermissionDenied(err error) bool {
+	var fe *Error
+	if !errors.As(err, &fe) {
+		return false
+	}
+	return fe.Status == http.StatusForbidden
 }
 
 // EventDoc is the shape persisted at /events/{ulid}. Mirrors EventZod in
