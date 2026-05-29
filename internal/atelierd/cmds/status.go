@@ -53,9 +53,9 @@ func NewStatusCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "status",
 		Short: "Print health checks and exit non-zero if any FAIL",
-		Long: `Run seven diagnostic checks (Firebase link, Token age, Firestore
-connectivity, Outbox watcher, Heartbeat, Auth state, Outbox backlog) and print
-each with OK / WARN / FAIL.
+		Long: `Run eight diagnostic checks (Firebase link, Token age, Firestore
+connectivity, Outbox watcher, Heartbeat, Auth state, Outbox backlog, Rejected
+events) and print each with OK / WARN / FAIL.
 
 Exit code: 0 if no FAIL; 1 otherwise.`,
 		Args: cobra.NoArgs,
@@ -77,6 +77,7 @@ func runStatus(cmd *cobra.Command, _ []string) error {
 	results = append(results, checkHeartbeat(statusFile))
 	results = append(results, checkAuthState(statusFile))
 	results = append(results, checkOutboxBacklog())
+	results = append(results, checkRejected())
 
 	worst := tierOK
 	for _, r := range results {
@@ -223,5 +224,25 @@ func checkOutboxBacklog() checkResult {
 		return checkResult{name: "Outbox backlog", tier: tierWarn, note: fmt.Sprintf("%d files pending (>%d)", count, outboxBacklogWarn)}
 	default:
 		return checkResult{name: "Outbox backlog", tier: tierOK, note: fmt.Sprintf("%d file(s) pending", count)}
+	}
+}
+
+// checkRejected reports events Firestore permanently refused (403), quarantined
+// by the shipper as *.json.rejected. This is distinct from Auth state: a
+// non-zero count means a permission problem (e.g. duplicate events inherited
+// from a copied outbox), not a rejected token — so it never advises `atelierd
+// link`.
+func checkRejected() checkResult {
+	count, err := outbox.CountRejected()
+	if err != nil {
+		return checkResult{name: "Rejected events", tier: tierWarn, note: "read failed: " + err.Error()}
+	}
+	if count == 0 {
+		return checkResult{name: "Rejected events", tier: tierOK, note: "none"}
+	}
+	return checkResult{
+		name: "Rejected events",
+		tier: tierWarn,
+		note: fmt.Sprintf("%d event(s) quarantined by Firestore (permission) — see ~/.atelier/atelierd.log", count),
 	}
 }

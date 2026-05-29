@@ -1,6 +1,8 @@
 package cmds
 
 import (
+	"errors"
+	"net/http"
 	"path/filepath"
 	"testing"
 	"time"
@@ -8,6 +10,8 @@ import (
 	"github.com/fsnotify/fsnotify"
 
 	"github.com/valian-ca/homebrew-tools/internal/atelierd/credentials"
+	"github.com/valian-ca/homebrew-tools/internal/atelierd/firebaseauth"
+	"github.com/valian-ca/homebrew-tools/internal/atelierd/firestore"
 	"github.com/valian-ca/homebrew-tools/internal/atelierd/status"
 )
 
@@ -170,6 +174,35 @@ func TestRunStateUpdateCreds(t *testing.T) {
 	got.UID = "mutated"
 	if state.currentCreds().UID != "new" {
 		t.Fatalf("currentCreds should return a defensive copy")
+	}
+}
+
+func TestClassifyShipError(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		err  error
+		want shipOutcome
+	}{
+		// A real token rejection from Firestore (401) or a revoked refresh
+		// token must pause the daemon — this is the only path to auth-lost.
+		{"firestore 401 -> auth-lost", &firestore.Error{Status: http.StatusUnauthorized}, shipOutcomeAuthLost},
+		{"refresh token rejected -> auth-lost", &firebaseauth.AuthError{Status: http.StatusUnauthorized}, shipOutcomeAuthLost},
+		// A 403 is a permission error on this specific write (e.g. a duplicate
+		// /events doc) — it must be quarantined, never mistaken for auth loss.
+		{"firestore 403 -> quarantine", &firestore.Error{Status: http.StatusForbidden}, shipOutcomeQuarantine},
+		// Everything else is transient and retried with backoff.
+		{"firestore 500 -> transient", &firestore.Error{Status: http.StatusInternalServerError}, shipOutcomeTransient},
+		{"network error -> transient", errors.New("dial tcp: i/o timeout"), shipOutcomeTransient},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := classifyShipError(tc.err); got != tc.want {
+				t.Fatalf("classifyShipError(%v) = %d, want %d", tc.err, got, tc.want)
+			}
+		})
 	}
 }
 
