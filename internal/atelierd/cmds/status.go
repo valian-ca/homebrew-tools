@@ -247,11 +247,9 @@ func checkOutboxBacklog() checkResult {
 	}
 }
 
-// checkRejected reports events Firestore permanently refused (403), quarantined
-// by the shipper as *.json.rejected. This is distinct from Auth state: a
-// non-zero count means a permission problem (e.g. duplicate events inherited
-// from a copied outbox), not a rejected token — so it never advises `atelierd
-// link`.
+// checkRejected counts *.json.rejected files — events Firestore refused with a
+// 403 (e.g. duplicates from a copied outbox). Not an auth check: the token is
+// valid, so it never advises `atelierd link`.
 func checkRejected() checkResult {
 	count, err := outbox.CountRejected()
 	if err != nil {

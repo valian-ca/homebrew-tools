@@ -98,11 +98,9 @@ func Count() (int, error) {
 	return n, nil
 }
 
-// CountRejected returns the number of *.json.rejected files in the outbox —
-// events Firestore permanently refused (a 403 PERMISSION_DENIED, e.g. a
-// duplicate that already exists). The shipper quarantines them under this
-// suffix so they leave the active *.json queue; `atelierd status` surfaces the
-// count as a distinct WARN, separate from an auth-lost token.
+// CountRejected returns the number of *.json.rejected files — events Firestore
+// refused with a 403 (e.g. a duplicate that already exists), quarantined by the
+// shipper out of the active *.json queue.
 func CountRejected() (int, error) {
 	entries, err := os.ReadDir(paths.Outbox())
 	if err != nil {

@@ -33,9 +33,7 @@ func (e *Error) Error() string {
 
 // IsAuthLost reports whether err means the bearer token was rejected (401).
 // A 403 is NOT auth-lost: the token is valid but this specific write is
-// forbidden by security rules — see IsPermissionDenied. Conflating the two
-// used to send users to `atelierd link` (which cannot fix a permission error)
-// and froze the outbox on a single rejected event.
+// forbidden by security rules — see IsPermissionDenied.
 func IsAuthLost(err error) bool {
 	var fe *Error
 	if !errors.As(err, &fe) {
@@ -45,11 +43,9 @@ func IsAuthLost(err error) bool {
 }
 
 // IsPermissionDenied reports whether err is a Firestore 403 PERMISSION_DENIED:
-// the bearer token is valid but the write was rejected by security rules. The
-// canonical case is an /events/{ulid} document that already exists — the rule
-// allows create but not update, so re-shipping a duplicate is denied. Callers
-// treat this as a permanent, per-event failure (quarantine and move on), never
-// as a reason to refresh the token or declare auth-lost.
+// the token is valid but the write was rejected by security rules. The
+// canonical case is an /events/{ulid} doc that already exists — the rule allows
+// create but not update, so re-shipping a duplicate is denied.
 func IsPermissionDenied(err error) bool {
 	var fe *Error
 	if !errors.As(err, &fe) {
