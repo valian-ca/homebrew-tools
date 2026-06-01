@@ -136,7 +136,7 @@ func consumeStoreEntry(entry sessionstore.Entry) {
 		state = nil
 	}
 
-	envelopes, derr := sessionstore.Derive(state, entry, nil, ulid.New)
+	envelopes, derr := sessionstore.Derive(state, entry, nil, ulid.NewAt)
 	if derr != nil {
 		atelierlog.Warn("session-store-watcher: derive failed", "session", entry.CliSessionID, "err", derr.Error())
 		return

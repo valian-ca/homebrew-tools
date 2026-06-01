@@ -17,21 +17,45 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // Entry is the slice of a Desktop store file atelierd acts on: the CLI session
-// id (identical to the claudeSessionId carried on every event) and the current
-// title with its source.
+// id (identical to the claudeSessionId carried on every event), the current
+// title with its source, and the session's real last-activity time.
+//
+// ActivityAt is the session's own clock, not the scan's. The derived title
+// event is stamped with it so a startup scan of long-idle sessions does not
+// re-date them to "now" — which would otherwise resurrect dead sessions and
+// shipped cards in the dashboard for the freshness window. Zero when the store
+// file carries no usable timestamp; Derive falls back to its Clock then.
 type Entry struct {
 	CliSessionID string
 	Title        string
 	TitleSource  string
+	ActivityAt   time.Time
 }
 
 type storeFile struct {
-	CliSessionID string `json:"cliSessionId"`
-	Title        string `json:"title"`
-	TitleSource  string `json:"titleSource"`
+	CliSessionID   string `json:"cliSessionId"`
+	Title          string `json:"title"`
+	TitleSource    string `json:"titleSource"`
+	LastActivityAt int64  `json:"lastActivityAt"`
+	CreatedAt      int64  `json:"createdAt"`
+}
+
+// resolveActivityAt picks the session's real activity time from the store file:
+// lastActivityAt, falling back to createdAt, both epoch milliseconds. Returns
+// the zero time when neither is present so Derive can fall back to its Clock.
+func resolveActivityAt(sf storeFile) time.Time {
+	switch {
+	case sf.LastActivityAt > 0:
+		return time.UnixMilli(sf.LastActivityAt).UTC()
+	case sf.CreatedAt > 0:
+		return time.UnixMilli(sf.CreatedAt).UTC()
+	default:
+		return time.Time{}
+	}
 }
 
 // ScanEntries walks the Desktop session store rooted at root and returns one
@@ -75,6 +99,7 @@ func ScanEntries(root string) ([]Entry, error) {
 			CliSessionID: sf.CliSessionID,
 			Title:        sf.Title,
 			TitleSource:  sf.TitleSource,
+			ActivityAt:   resolveActivityAt(sf),
 		})
 		return nil
 	})
