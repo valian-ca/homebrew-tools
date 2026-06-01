@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"sort"
 	"testing"
+	"time"
 )
 
 func writeStoreFile(t *testing.T, dir, name, body string) {
@@ -64,5 +65,37 @@ func TestScanEntries_MissingRootIsEmpty(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Errorf("want no entries, got %d", len(entries))
+	}
+}
+
+func TestScanEntries_ResolvesActivityAt(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "acct", "ws")
+	// lastActivityAt wins over createdAt.
+	writeStoreFile(t, dir, "local_act.json",
+		`{"cliSessionId":"cs-act","title":"T","titleSource":"auto","createdAt":1000,"lastActivityAt":2000}`)
+	// createdAt is the fallback when lastActivityAt is absent.
+	writeStoreFile(t, dir, "local_created.json",
+		`{"cliSessionId":"cs-created","title":"T","titleSource":"auto","createdAt":3000}`)
+	// Neither present → zero time (Derive will fall back to its clock).
+	writeStoreFile(t, dir, "local_none.json",
+		`{"cliSessionId":"cs-none","title":"T","titleSource":"auto"}`)
+
+	entries, err := ScanEntries(root)
+	if err != nil {
+		t.Fatalf("ScanEntries: %v", err)
+	}
+	got := map[string]time.Time{}
+	for _, e := range entries {
+		got[e.CliSessionID] = e.ActivityAt
+	}
+	if !got["cs-act"].Equal(time.UnixMilli(2000).UTC()) {
+		t.Errorf("cs-act ActivityAt = %v, want lastActivityAt 2000ms", got["cs-act"])
+	}
+	if !got["cs-created"].Equal(time.UnixMilli(3000).UTC()) {
+		t.Errorf("cs-created ActivityAt = %v, want createdAt 3000ms", got["cs-created"])
+	}
+	if !got["cs-none"].IsZero() {
+		t.Errorf("cs-none ActivityAt = %v, want zero", got["cs-none"])
 	}
 }

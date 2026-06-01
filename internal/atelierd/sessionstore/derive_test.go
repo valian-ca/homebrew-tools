@@ -10,10 +10,19 @@ func fakeClock(t time.Time) Clock { return func() time.Time { return t } }
 
 func fakeULID() ULIDFn {
 	var n int
-	return func() string {
+	return func(time.Time) string {
 		s := "ulid-" + strconv.Itoa(n)
 		n++
 		return s
+	}
+}
+
+// capturingULID records the timestamp Derive stamps into the ULID so tests can
+// assert it carries the session's activity time, not wall-clock.
+func capturingULID(captured *time.Time) ULIDFn {
+	return func(t time.Time) string {
+		*captured = t
+		return "ulid-captured"
 	}
 }
 
@@ -122,5 +131,32 @@ func TestDerive_FirstSightEmptyTitleStaysSilent(t *testing.T) {
 	}
 	if len(envs) != 0 {
 		t.Errorf("first sight of an untitled session must emit nothing, got %#v", envs)
+	}
+}
+
+func TestDerive_StampsULIDWithActivityAt(t *testing.T) {
+	activity := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	entry := Entry{CliSessionID: "cs-8", Title: "Old session", TitleSource: "auto", ActivityAt: activity}
+	var stamped time.Time
+	// fakeClock far in the future to prove the stamp is the activity time, not now.
+	_, err := Derive(nil, entry, fakeClock(time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC)), capturingULID(&stamped))
+	if err != nil {
+		t.Fatalf("Derive: %v", err)
+	}
+	if !stamped.Equal(activity) {
+		t.Errorf("ULID stamp = %v, want session activity time %v", stamped, activity)
+	}
+}
+
+func TestDerive_FallsBackToClockWhenActivityZero(t *testing.T) {
+	now := time.Date(2026, 5, 29, 12, 0, 0, 0, time.UTC)
+	entry := Entry{CliSessionID: "cs-9", Title: "No timestamp", TitleSource: "auto"} // ActivityAt zero
+	var stamped time.Time
+	_, err := Derive(nil, entry, fakeClock(now), capturingULID(&stamped))
+	if err != nil {
+		t.Fatalf("Derive: %v", err)
+	}
+	if !stamped.Equal(now) {
+		t.Errorf("ULID stamp = %v, want clock fallback %v", stamped, now)
 	}
 }

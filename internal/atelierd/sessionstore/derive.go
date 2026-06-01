@@ -9,9 +9,11 @@ import (
 )
 
 // Clock and ULIDFn are injection points so tests can drive derivation
-// deterministically; production passes nil and gets time.Now() and ulid.New().
+// deterministically; production passes nil and gets time.Now() and ulid.NewAt.
+// ULIDFn takes the timestamp to stamp into the ULID — the session's real
+// activity time, not wall-clock — so a startup scan doesn't re-date old events.
 type Clock func() time.Time
-type ULIDFn func() string
+type ULIDFn func(time.Time) string
 
 // Derive compares the freshly-scanned entry against the last-emitted state and
 // returns the envelope to ship, or nil when nothing should be emitted. It does
@@ -23,7 +25,7 @@ type ULIDFn func() string
 // no title stays silent, so we never null a field that was never set.
 func Derive(state *State, entry Entry, now Clock, newULID ULIDFn) ([]*outbox.Envelope, error) {
 	if newULID == nil {
-		newULID = ulid.New
+		newULID = ulid.NewAt
 	}
 	if now == nil {
 		now = func() time.Time { return time.Now().UTC() }
@@ -36,8 +38,15 @@ func Derive(state *State, entry Entry, now Clock, newULID ULIDFn) ([]*outbox.Env
 		return nil, nil
 	}
 
+	// Stamp the event with the session's real activity time, not wall-clock, so
+	// a startup scan of idle sessions doesn't bump their downstream lastEventAt.
+	stamp := entry.ActivityAt
+	if stamp.IsZero() {
+		stamp = now()
+	}
+
 	return []*outbox.Envelope{{
-		ULID:            newULID(),
+		ULID:            newULID(stamp),
 		Type:            string(eventTypeFor(entry.TitleSource)),
 		ClaudeSessionID: entry.CliSessionID,
 		Payload:         map[string]any{"title": entry.Title},
