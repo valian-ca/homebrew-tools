@@ -59,11 +59,52 @@ struct EditApplyTests {
         #expect(!result.contains("ref.watch(equipmentsPreloaderProvider).value ?? const {};"))
     }
 
-    @Test func emptyFindThrows() {
+    @Test func emptyFindThrowsAgainstNonEmptySource() {
+        // An empty `find` is only legal when there's nothing to anchor against.
+        // With existing content, it still requires an anchor.
         #expect(throws: EditApplyError.findEmpty(editIndex: 0)) {
             try EditApply.apply(
                 edits: [Edit(find: "", replace: "z")],
                 to: "anything"
+            )
+        }
+    }
+
+    @Test func emptyFindCreatesFileFromEmptySource() throws {
+        // File-creation case: an empty `codeExcerpt` plus a single empty-anchor
+        // edit yields the full file body. This is how a finding proposing a
+        // brand-new file is expressed.
+        let body = "import Foundation\n\nlet answer = 42\n"
+        let result = try EditApply.apply(
+            edits: [Edit(find: "", replace: body)],
+            to: ""
+        )
+        #expect(result == body)
+    }
+
+    @Test func creationEditCanBeFollowedByInPlaceEdit() throws {
+        // After the empty-anchor edit materializes content, later edits anchor
+        // into it like any normal in-place edit.
+        let result = try EditApply.apply(
+            edits: [
+                Edit(find: "", replace: "alpha\nbeta\n"),
+                Edit(find: "beta", replace: "BETA"),
+            ],
+            to: ""
+        )
+        #expect(result == "alpha\nBETA\n")
+    }
+
+    @Test func secondEmptyFindThrowsOnceContentExists() {
+        // The first empty-anchor edit creates content; a second empty-anchor
+        // edit then has something to anchor against, so it must throw.
+        #expect(throws: EditApplyError.findEmpty(editIndex: 1)) {
+            try EditApply.apply(
+                edits: [
+                    Edit(find: "", replace: "alpha\n"),
+                    Edit(find: "", replace: "beta\n"),
+                ],
+                to: ""
             )
         }
     }

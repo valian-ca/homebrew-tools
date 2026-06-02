@@ -6,10 +6,20 @@ public enum EditApply {
     /// text (so earlier edits can introduce, remove, or duplicate anchors for
     /// later edits — and we surface the error at the edit that fails, not
     /// retroactively).
+    ///
+    /// One special case: an empty `find` against an empty in-progress text is a
+    /// **file-creation** edit — `replace` becomes the whole content. This is how
+    /// a finding proposes a brand-new file: `codeExcerpt` is empty and a single
+    /// empty-anchor edit supplies the full file body. Once any content exists, an
+    /// anchor is required again (an empty `find` then throws as before).
     public static func apply(edits: [Edit], to source: String) throws -> String {
         var current = source
         for (index, edit) in edits.enumerated() {
             if edit.find.isEmpty {
+                if current.isEmpty {
+                    current = edit.replace
+                    continue
+                }
                 throw EditApplyError.findEmpty(editIndex: index)
             }
             let ranges = current.ranges(of: edit.find)
