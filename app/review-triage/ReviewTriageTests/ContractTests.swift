@@ -74,7 +74,8 @@ struct ContractTests {
         }
     }
 
-    @Test func emptyFindRejected() {
+    @Test func emptyFindRejectedAgainstNonEmptyExcerpt() {
+        // An empty `find` with existing excerpt content has no anchor — rejected.
         let json = """
         {
           "schemaVersion": 1, "branch": "", "mergeBase": "",
@@ -90,6 +91,33 @@ struct ContractTests {
         #expect(throws: ContractError.editError(findingId: 3, underlying: .findEmpty(editIndex: 0))) {
             try Input.parse(json)
         }
+    }
+
+    @Test func newFileCreationParses() throws {
+        // A finding proposing a brand-new file: empty `codeExcerpt` plus a single
+        // empty-anchor edit whose `replace` is the full file body. Validation
+        // materializes it without error, and the diff renders as all-additions.
+        let json = """
+        {
+          "schemaVersion": 1, "branch": "feat/x", "mergeBase": "abc123",
+          "findings": [{
+            "id": 1, "title": "Add round-trip test", "group": "quality",
+            "agentLabel": "#7: quality & tests", "score": 75,
+            "explanation": "No test covers the new fields.",
+            "file": "test/foo_test.dart", "lineStart": 1, "lineEnd": 1,
+            "language": "dart", "codeExcerpt": "",
+            "proposedFix": {"explanation": "Create the test.", "edits": [{"find": "", "replace": "void main() {}\\n"}]},
+            "selection": "fix"
+          }]
+        }
+        """.data(using: .utf8)!
+        let input = try Input.parse(json)
+        #expect(input.findings.count == 1)
+        let created = try EditApply.apply(
+            edits: input.findings[0].proposedFix.edits,
+            to: input.findings[0].codeExcerpt
+        )
+        #expect(created == "void main() {}\n")
     }
 
     @Test func anchorNotFoundRejected() {
