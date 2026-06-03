@@ -123,7 +123,7 @@ func pollForLink(ctx context.Context, cmd *cobra.Command, code string) (string, 
 		case <-ctx.Done():
 			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 				cmd.Println()
-				return "", errors.New("Timed out. Re-run `atelierd link`.")
+				return "", errors.New("timed out, re-run `atelierd link`")
 			}
 			return "", ctx.Err()
 		case <-ticker.C:

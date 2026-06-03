@@ -104,7 +104,7 @@ func SessionFile(key string) string {
 // writing state files outside ~/.atelier/sessions/.
 func validateKey(key string) error {
 	parts := strings.Split(key, "/")
-	if !(len(parts) == 1 || (len(parts) == 3 && parts[1] == "subagents")) {
+	if len(parts) != 1 && (len(parts) != 3 || parts[1] != "subagents") {
 		return fmt.Errorf("invalid session key shape: %q", key)
 	}
 	for _, p := range parts {
