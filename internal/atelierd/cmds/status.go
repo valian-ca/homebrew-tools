@@ -53,9 +53,9 @@ func NewStatusCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "status",
 		Short: "Print health checks and exit non-zero if any FAIL",
-		Long: `Run seven diagnostic checks (Firebase link, Token age, Firestore
-connectivity, Outbox watcher, Heartbeat, Auth state, Outbox backlog) and print
-each with OK / WARN / FAIL.
+		Long: `Print the running version and last update check, then run seven
+diagnostic checks (Firebase link, Token age, Firestore connectivity, Outbox
+watcher, Heartbeat, Auth state, Outbox backlog), each as OK / WARN / FAIL.
 
 Exit code: 0 if no FAIL; 1 otherwise.`,
 		Args: cobra.NoArgs,
@@ -66,10 +66,11 @@ Exit code: 0 if no FAIL; 1 otherwise.`,
 func runStatus(cmd *cobra.Command, _ []string) error {
 	results := []checkResult{}
 
+	statusFile, _ := status.Load()
+	results = append(results, checkVersion(statusFile))
+
 	creds, credsResult := checkCredentials()
 	results = append(results, credsResult)
-
-	statusFile, _ := status.Load()
 
 	results = append(results, checkTokenAge(creds))
 	results = append(results, checkFirestore(cmd.Context(), creds))
@@ -104,6 +105,24 @@ var errStatusFail = fmt.Errorf("atelierd status: at least one check failed")
 // IsStatusFail reports whether err is the sentinel returned by status when at
 // least one check is FAIL.
 func IsStatusFail(err error) bool { return err != nil && err.Error() == errStatusFail.Error() }
+
+func checkVersion(s *status.File) checkResult {
+	version := Version
+	if s != nil && s.Version != "" {
+		version = s.Version
+	}
+	if version == devVersion {
+		return checkResult{name: "Version", tier: tierOK, note: version + " (dev build — auto-update disabled)"}
+	}
+	if s == nil || s.LastUpdateCheckAt.IsZero() {
+		return checkResult{name: "Version", tier: tierOK, note: version + " (no update check yet)"}
+	}
+	return checkResult{
+		name: "Version",
+		tier: tierOK,
+		note: fmt.Sprintf("%s (last update check %s ago)", version, time.Since(s.LastUpdateCheckAt).Round(time.Second)),
+	}
+}
 
 func checkCredentials() (*credentials.Credentials, checkResult) {
 	creds, err := credentials.Load()

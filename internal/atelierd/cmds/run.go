@@ -23,17 +23,32 @@ import (
 	"github.com/valian-ca/homebrew-tools/internal/atelierd/paths"
 	"github.com/valian-ca/homebrew-tools/internal/atelierd/status"
 	"github.com/valian-ca/homebrew-tools/internal/atelierd/ulid"
+	"github.com/valian-ca/homebrew-tools/internal/atelierd/updater"
 )
 
 // Version is overwritten via -ldflags by cmd/atelierd/main.go. Kept here so
 // the run loop can stamp it into the status file without a circular import.
 var Version = "dev"
 
+// devVersion is the sentinel a local/untagged build carries — the updater
+// refuses to touch it so a developer's working binary is never replaced.
+const devVersion = "dev"
+
 const (
 	heartbeatInterval = 60 * time.Second
 	statusInterval    = 30 * time.Second
 	reconcileInterval = 5 * time.Second
 	refreshLeadTime   = 5 * time.Minute
+
+	updateCheckInterval = 24 * time.Hour
+	// updateCheckDedup suppresses the at-startup check when one ran recently,
+	// so a crash-respawn storm doesn't hammer brew while still re-checking on a
+	// real machine boot after the daemon was off overnight. Wall-clock based,
+	// like the refresher, to survive macOS sleep.
+	updateCheckDedup = 20 * time.Hour
+	// updateTimeout caps the brew update+upgrade run; the upgrade compiles from
+	// source, so it must be generous.
+	updateTimeout = 10 * time.Minute
 	// refreshPollInterval is how often the refresher re-checks the wall-clock
 	// expiry of the idToken. We poll instead of using one long time.After()
 	// because Go timers track the monotonic clock, which is frozen during
@@ -55,7 +70,7 @@ const (
 func NewRunCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "run",
-		Short: "Run the atelierd daemon (shipper + heartbeat + refresher)",
+		Short: "Run the atelierd daemon (shipper + heartbeat + refresher + updater)",
 		Long: `Long-lived loop. Watches ~/.atelier/outbox/ and ships every event to
 Firestore /events/{ulid}. Refreshes the idToken before expiry. Writes a
 heartbeat to /users/{uid}.lastHeartbeat every 60s. Writes a status snapshot to
@@ -66,6 +81,8 @@ deriving hook:user-prompt-submit, hook:pre-tool-use, hook:post-tool-use, and
 hook:assistant-turn events into the outbox (cf. VAL-201). Watches the Claude
 Desktop session store and derives transcript:ai-title / transcript:custom-title
 events for sessions that never write a title into the transcript (cf. VAL-243).
+Checks for a newer published version via brew at startup and every 24h, installing
+it and restarting onto the new binary (dev builds are exempt).
 
 On Firebase Auth 401/403, enters "auth-lost" mode: ship + heartbeat + refresh
 loops pause; the outbox accumulates; the status file marks authState=auth-lost.
@@ -105,6 +122,12 @@ func runRun(cmd *cobra.Command, _ []string) error {
 		lastTick:  time.Now().UTC(),
 	}
 
+	// Carry the previous run's last update-check time forward so the at-startup
+	// check can dedup against it across a respawn.
+	if prev, perr := status.Load(); perr == nil && prev != nil {
+		state.lastUpdateCheck = prev.LastUpdateCheckAt
+	}
+
 	// Initial status file write so `atelierd status` doesn't WARN on first
 	// invocation before the writer goroutine has had a chance to tick.
 	if err := writeStatusSnapshot(state); err != nil {
@@ -131,7 +154,7 @@ func runRun(cmd *cobra.Command, _ []string) error {
 	atelierlog.Info("atelierd run started", "uid", state.snapshot().UID, "host", host, "version", Version)
 
 	var wg sync.WaitGroup
-	wg.Add(7)
+	wg.Add(8)
 	go func() { defer wg.Done(); shipperLoop(rootCtx, state) }()
 	go func() { defer wg.Done(); refresherLoop(rootCtx, state) }()
 	go func() { defer wg.Done(); heartbeatLoop(rootCtx, state) }()
@@ -139,6 +162,7 @@ func runRun(cmd *cobra.Command, _ []string) error {
 	go func() { defer wg.Done(); credentialsWatcherLoop(rootCtx, state) }()
 	go func() { defer wg.Done(); sessionsManagerLoop(rootCtx, state) }()
 	go func() { defer wg.Done(); sessionStoreWatcherLoop(rootCtx, state) }()
+	go func() { defer wg.Done(); updaterLoop(rootCtx, state, cancel) }()
 
 	wg.Wait()
 	atelierlog.Info("atelierd run stopped")
@@ -150,30 +174,32 @@ func runRun(cmd *cobra.Command, _ []string) error {
 
 // runState is the mutex-guarded shared state across run's goroutines.
 type runState struct {
-	mu             sync.RWMutex
-	creds          *credentials.Credentials
-	host           string
-	authState      status.AuthState
-	lastTick       time.Time
-	lastHeartbeat  time.Time
-	lastShip       time.Time
-	outboxBacklog  int
-	currentBackoff time.Duration
+	mu              sync.RWMutex
+	creds           *credentials.Credentials
+	host            string
+	authState       status.AuthState
+	lastTick        time.Time
+	lastHeartbeat   time.Time
+	lastShip        time.Time
+	lastUpdateCheck time.Time
+	outboxBacklog   int
+	currentBackoff  time.Duration
 }
 
 func (s *runState) snapshot() *status.File {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return &status.File{
-		Version:          Version,
-		UID:              s.creds.UID,
-		Host:             s.host,
-		LastTickAt:       s.lastTick,
-		LastHeartbeatAt:  s.lastHeartbeat,
-		LastShipAt:       s.lastShip,
-		OutboxBacklog:    s.outboxBacklog,
-		AuthState:        s.authState,
-		IDTokenExpiresAt: s.creds.IDTokenExpiresAt,
+		Version:           Version,
+		UID:               s.creds.UID,
+		Host:              s.host,
+		LastTickAt:        s.lastTick,
+		LastHeartbeatAt:   s.lastHeartbeat,
+		LastShipAt:        s.lastShip,
+		LastUpdateCheckAt: s.lastUpdateCheck,
+		OutboxBacklog:     s.outboxBacklog,
+		AuthState:         s.authState,
+		IDTokenExpiresAt:  s.creds.IDTokenExpiresAt,
 	}
 }
 
@@ -239,6 +265,18 @@ func (s *runState) markHeartbeat(when time.Time) {
 	s.mu.Lock()
 	s.lastHeartbeat = when
 	s.mu.Unlock()
+}
+
+func (s *runState) markUpdateCheck(when time.Time) {
+	s.mu.Lock()
+	s.lastUpdateCheck = when
+	s.mu.Unlock()
+}
+
+func (s *runState) lastUpdateCheckAt() time.Time {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.lastUpdateCheck
 }
 
 func (s *runState) nextBackoff() time.Duration {
@@ -604,7 +642,7 @@ func doHeartbeat(ctx context.Context, state *runState) {
 	hbCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	err := withAuthRecovery(ctx, state, "heartbeat", func(idToken string) error {
-		return firestore.SetUserHeartbeat(hbCtx, idToken, uid)
+		return firestore.SetUserHeartbeat(hbCtx, idToken, uid, Version)
 	})
 	if err != nil {
 		// withAuthRecovery already marked auth-lost where appropriate; here we
@@ -743,4 +781,77 @@ func handleCredentialsChange(state *runState) {
 	state.updateCreds(creds)
 	state.clearAuthLost("credentials reloaded after re-link")
 	atelierlog.Info("credentials-watcher: credentials reloaded", "uid", creds.UID, "email", creds.Email)
+}
+
+// ============================================================================
+// Goroutine 8 — updaterLoop
+// ============================================================================
+
+// updaterLoop keeps atelierd on the latest published version: it upgrades via
+// brew at startup (deduped against the persisted last-check time) and every
+// 24h after. It never inspects auth state — an associate in auth-lost mode
+// still receives updates. When a newer version is installed, requestRestart
+// routes through the normal shutdown path; the process exits and launchd's
+// keep_alive respawns the new binary.
+func updaterLoop(ctx context.Context, state *runState, requestRestart func()) {
+	if Version == devVersion {
+		atelierlog.Info("updater: dev build, auto-update disabled")
+		return
+	}
+
+	up, err := updater.New()
+	if err != nil {
+		atelierlog.Error("updater: brew not found, auto-update disabled until restart", "err", err.Error())
+		return
+	}
+
+	if time.Since(state.lastUpdateCheckAt()) >= updateCheckDedup {
+		runUpdateCheck(ctx, state, up, requestRestart)
+	}
+
+	tick := time.NewTicker(updateCheckInterval)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+			runUpdateCheck(ctx, state, up, requestRestart)
+		}
+	}
+}
+
+// runUpdateCheck performs one update cycle. Every failure is logged and
+// swallowed so the daemon keeps running on its current version and retries at
+// the next tick; it restarts only when brew actually installed a new version.
+// upgrader is the subset of *updater.Updater's methods runUpdateCheck needs,
+// declared as an interface so tests can drive the restart decision with a fake.
+type upgrader interface {
+	Upgrade(ctx context.Context) error
+	InstalledVersion(ctx context.Context) (string, error)
+}
+
+func runUpdateCheck(ctx context.Context, state *runState, up upgrader, requestRestart func()) {
+	atelierlog.Info("updater: checking for a newer version", "current", Version)
+	state.markUpdateCheck(time.Now().UTC())
+
+	upCtx, cancel := context.WithTimeout(ctx, updateTimeout)
+	defer cancel()
+
+	if err := up.Upgrade(upCtx); err != nil {
+		atelierlog.Warn("updater: upgrade failed, staying on current version", "err", err.Error())
+		return
+	}
+
+	installed, err := up.InstalledVersion(upCtx)
+	if err != nil {
+		atelierlog.Warn("updater: could not read installed version", "err", err.Error())
+		return
+	}
+	if installed == "" || installed == Version {
+		return
+	}
+
+	atelierlog.Info("updater: new version installed, restarting", "from", Version, "to", installed)
+	requestRestart()
 }

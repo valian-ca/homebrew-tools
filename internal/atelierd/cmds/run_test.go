@@ -1,7 +1,10 @@
 package cmds
 
 import (
+	"context"
+	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -189,5 +192,123 @@ func TestDrainEvents_StopsAfterQuietWindow(t *testing.T) {
 	}
 	if elapsed > 500*time.Millisecond {
 		t.Fatalf("drainEvents took too long: %s", elapsed)
+	}
+}
+
+func TestRunStateMarkUpdateCheck(t *testing.T) {
+	t.Parallel()
+	state := &runState{authState: status.AuthOk}
+
+	if !state.lastUpdateCheckAt().IsZero() {
+		t.Fatalf("new state should have zero last update check")
+	}
+
+	now := time.Now().UTC()
+	state.markUpdateCheck(now)
+	if !state.lastUpdateCheckAt().Equal(now) {
+		t.Fatalf("markUpdateCheck did not persist, got %v want %v", state.lastUpdateCheckAt(), now)
+	}
+}
+
+func TestCheckVersion(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name     string
+		file     *status.File
+		contains string
+	}{
+		{
+			name:     "checked recently",
+			file:     &status.File{Version: "0.7.0", LastUpdateCheckAt: time.Now().Add(-3 * time.Hour)},
+			contains: "last update check",
+		},
+		{
+			name:     "never checked",
+			file:     &status.File{Version: "0.7.0"},
+			contains: "no update check yet",
+		},
+		{
+			name:     "dev build",
+			file:     &status.File{Version: "dev"},
+			contains: "dev build",
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := checkVersion(tc.file)
+			if got.tier != tierOK {
+				t.Fatalf("checkVersion tier = %v, want OK (informational)", got.tier)
+			}
+			if !strings.Contains(got.note, tc.contains) {
+				t.Fatalf("checkVersion note %q does not contain %q", got.note, tc.contains)
+			}
+		})
+	}
+}
+
+type fakeUpgrader struct {
+	upgradeErr   error
+	installed    string
+	installErr   error
+	upgradeCalls int
+}
+
+func (f *fakeUpgrader) Upgrade(context.Context) error {
+	f.upgradeCalls++
+	return f.upgradeErr
+}
+
+func (f *fakeUpgrader) InstalledVersion(context.Context) (string, error) {
+	return f.installed, f.installErr
+}
+
+func TestRunUpdateCheck(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name        string
+		up          *fakeUpgrader
+		wantRestart bool
+	}{
+		{"upgrade error: no restart", &fakeUpgrader{upgradeErr: errors.New("offline")}, false},
+		{"installed version unreadable: no restart", &fakeUpgrader{installErr: errors.New("exec failed")}, false},
+		{"installed empty: no restart", &fakeUpgrader{installed: ""}, false},
+		{"installed unchanged: no restart", &fakeUpgrader{installed: Version}, false},
+		{"installed changed: restart", &fakeUpgrader{installed: "9.9.9-test"}, true},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			state := &runState{authState: status.AuthOk}
+			restarted := false
+			runUpdateCheck(context.Background(), state, tc.up, func() { restarted = true })
+			if restarted != tc.wantRestart {
+				t.Fatalf("restart = %v, want %v", restarted, tc.wantRestart)
+			}
+			if tc.up.upgradeCalls != 1 {
+				t.Fatalf("Upgrade called %d times, want exactly 1", tc.up.upgradeCalls)
+			}
+			if state.lastUpdateCheckAt().IsZero() {
+				t.Fatal("runUpdateCheck must record the check time even on a no-op")
+			}
+		})
+	}
+}
+
+func TestUpdaterLoopDevExemption(t *testing.T) {
+	t.Parallel()
+	// In tests Version is the dev sentinel (no -ldflags), so updaterLoop must
+	// bail out before locating brew or requesting a restart. The guard keeps a
+	// stamped build from spawning a real brew run here.
+	if Version != devVersion {
+		t.Skipf("Version is %q, not the dev sentinel", Version)
+	}
+	state := &runState{authState: status.AuthOk}
+	restarted := false
+	updaterLoop(context.Background(), state, func() { restarted = true })
+	if restarted {
+		t.Fatal("dev build must not request a restart")
 	}
 }

@@ -1,14 +1,9 @@
-// Package firestore is a thin REST client for the two Firestore operations
-// the daemon performs as the authenticated end user:
+// Package firestore is a thin REST + Bearer-idToken client for the Firestore
+// writes the daemon performs as the authenticated end user.
 //
-//  1. Bulk-write events to /events/{ulid} via the :commit endpoint.
-//  2. Bump /users/{uid}.lastHeartbeat to serverTimestamp via the same endpoint
-//     (using the fieldTransforms.setToServerValue=REQUEST_TIME idiom — the
-//     literal serverTimestamp() semantics AC 14 mandates).
-//
-// We use REST + Bearer idToken (rather than the Firestore Go SDK) because the
-// SDK assumes Application Default Credentials and fights any attempt to
-// authenticate as a user. REST gives us total control with stdlib only.
+// We use REST rather than the Firestore Go SDK because the SDK assumes
+// Application Default Credentials and fights any attempt to authenticate as a
+// user; REST gives us total control with stdlib only.
 package firestore
 
 import (
@@ -75,23 +70,32 @@ func CommitEvents(ctx context.Context, idToken string, events []*EventDoc) error
 	return commit(ctx, idToken, writes)
 }
 
-// SetUserHeartbeat writes /users/{uid}.lastHeartbeat to serverTimestamp
-// (REQUEST_TIME). The doc is expected to already exist (created at first login).
-func SetUserHeartbeat(ctx context.Context, idToken, uid string) error {
-	writes := []map[string]any{
+// SetUserHeartbeat stamps lastHeartbeat (server time) and the daemon's running
+// version onto /users/{uid} in a single commit. updateMask scopes the literal
+// write to atelierdVersion so the rest of the presence doc is preserved, while
+// the transform sets lastHeartbeat server-side. The doc is expected to already
+// exist (created at first login).
+func SetUserHeartbeat(ctx context.Context, idToken, uid, version string) error {
+	return commit(ctx, idToken, userHeartbeatWrites(uid, version))
+}
+
+func userHeartbeatWrites(uid, version string) []map[string]any {
+	doc := "projects/" + app.FirebaseProjectID + "/databases/(default)/documents/users/" + uid
+	return []map[string]any{
 		{
-			"transform": map[string]any{
-				"document": "projects/" + app.FirebaseProjectID + "/databases/(default)/documents/users/" + uid,
-				"fieldTransforms": []map[string]any{
-					{
-						"fieldPath":        "lastHeartbeat",
-						"setToServerValue": "REQUEST_TIME",
-					},
+			"update": map[string]any{
+				"name":   doc,
+				"fields": map[string]any{"atelierdVersion": stringValue(version)},
+			},
+			"updateMask": map[string]any{"fieldPaths": []string{"atelierdVersion"}},
+			"updateTransforms": []map[string]any{
+				{
+					"fieldPath":        "lastHeartbeat",
+					"setToServerValue": "REQUEST_TIME",
 				},
 			},
 		},
 	}
-	return commit(ctx, idToken, writes)
 }
 
 // PingUser performs a minimal read of /users/{uid} as a connectivity probe.
