@@ -1,11 +1,34 @@
+# golangci-lint v2 configuration.
+# Migrated from the v1 schema. CI installs golangci-lint through
+# golangci-lint-action@v9 (the first action major that ships v2.x); the
+# previous @v6 capped at v1.64.8, which rejects this v2 config.
+version: "2"
+
 run:
   timeout: 3m
 
 linters:
-  disable-all: true
+  default: none
   enable:
     - errcheck
     - govet
     - ineffassign
     - staticcheck
     - unused
+  settings:
+    staticcheck:
+      # v2 folded the former gosimple (S*) and stylecheck (ST*) linters into
+      # staticcheck. v1 only ran staticcheck's SA* checks, so restrict to SA*
+      # to keep the exact same set of checks (ST1005/QF1001 stay unreported).
+      checks:
+        - SA*
+  exclusions:
+    # v1 enabled these default exclusion presets out of the box; v2 ships them
+    # disabled. Re-enable them to preserve the previously reported set — most
+    # notably std-error-handling, which excludes unchecked Close/Fprintf/Remove.
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
