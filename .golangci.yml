@@ -15,13 +15,6 @@ linters:
     - ineffassign
     - staticcheck
     - unused
-  settings:
-    staticcheck:
-      # v2 folded the former gosimple (S*) and stylecheck (ST*) linters into
-      # staticcheck. v1 only ran staticcheck's SA* checks, so restrict to SA*
-      # to keep the exact same set of checks (ST1005/QF1001 stay unreported).
-      checks:
-        - SA*
   exclusions:
     # v1 enabled these default exclusion presets out of the box; v2 ships them
     # disabled. Re-enable them to preserve the previously reported set — most

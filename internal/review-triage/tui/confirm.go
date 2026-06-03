@@ -38,13 +38,13 @@ func (m *model) viewConfirm() string {
 
 	var b strings.Builder
 	b.WriteString(m.th.header.Render("Plan") + "\n\n")
-	b.WriteString(fmt.Sprintf("  %d fix\n", c.fix))
+	fmt.Fprintf(&b, "  %d fix\n", c.fix)
 	discLine := fmt.Sprintf("  %d discuss", c.discuss)
 	if noPrompt > 0 {
 		discLine += fmt.Sprintf("  (%d without prompt)", noPrompt)
 	}
 	b.WriteString(discLine + "\n")
-	b.WriteString(fmt.Sprintf("  %d skip\n", c.skip))
+	fmt.Fprintf(&b, "  %d skip\n", c.skip)
 
 	if c.undecided > 0 {
 		b.WriteString("\n" + m.th.dim.Render(fmt.Sprintf("%d finding(s) still undecided", c.undecided)) + "\n")
