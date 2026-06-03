@@ -28,15 +28,16 @@ const (
 
 // File is the on-disk shape of ~/.atelier/status.
 type File struct {
-	Version          string    `json:"version"`
-	UID              string    `json:"uid"`
-	Host             string    `json:"host"`
-	LastTickAt       time.Time `json:"lastTickAt"`
-	LastHeartbeatAt  time.Time `json:"lastHeartbeatAt"`
-	LastShipAt       time.Time `json:"lastShipAt"`
-	OutboxBacklog    int       `json:"outboxBacklog"`
-	AuthState        AuthState `json:"authState"`
-	IDTokenExpiresAt time.Time `json:"idTokenExpiresAt"`
+	Version           string    `json:"version"`
+	UID               string    `json:"uid"`
+	Host              string    `json:"host"`
+	LastTickAt        time.Time `json:"lastTickAt"`
+	LastHeartbeatAt   time.Time `json:"lastHeartbeatAt"`
+	LastShipAt        time.Time `json:"lastShipAt"`
+	LastUpdateCheckAt time.Time `json:"lastUpdateCheckAt"`
+	OutboxBacklog     int       `json:"outboxBacklog"`
+	AuthState         AuthState `json:"authState"`
+	IDTokenExpiresAt  time.Time `json:"idTokenExpiresAt"`
 }
 
 // Load reads ~/.atelier/status. Returns nil, nil if the file is absent
