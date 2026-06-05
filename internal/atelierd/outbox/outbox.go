@@ -98,6 +98,26 @@ func Count() (int, error) {
 	return n, nil
 }
 
+// CountRejected returns the number of *.json.rejected files — events Firestore
+// refused with a 403 (e.g. a duplicate that already exists), quarantined by the
+// shipper out of the active *.json queue.
+func CountRejected() (int, error) {
+	entries, err := os.ReadDir(paths.Outbox())
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("read outbox dir: %w", err)
+	}
+	n := 0
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".json.rejected") {
+			n++
+		}
+	}
+	return n, nil
+}
+
 // Read parses a single outbox JSON file.
 func Read(path string) (*Envelope, error) {
 	bytes, err := os.ReadFile(path)

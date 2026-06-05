@@ -53,9 +53,10 @@ func NewStatusCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "status",
 		Short: "Print health checks and exit non-zero if any FAIL",
-		Long: `Print the running version and last update check, then run seven
+		Long: `Print the running version and last update check, then run eight
 diagnostic checks (Firebase link, Token age, Firestore connectivity, Outbox
-watcher, Heartbeat, Auth state, Outbox backlog), each as OK / WARN / FAIL.
+watcher, Heartbeat, Auth state, Outbox backlog, Rejected events), each as
+OK / WARN / FAIL.
 
 Exit code: 0 if no FAIL; 1 otherwise.`,
 		Args: cobra.NoArgs,
@@ -78,6 +79,7 @@ func runStatus(cmd *cobra.Command, _ []string) error {
 	results = append(results, checkHeartbeat(statusFile))
 	results = append(results, checkAuthState(statusFile))
 	results = append(results, checkOutboxBacklog())
+	results = append(results, checkRejected())
 
 	worst := tierOK
 	for _, r := range results {
@@ -242,5 +244,23 @@ func checkOutboxBacklog() checkResult {
 		return checkResult{name: "Outbox backlog", tier: tierWarn, note: fmt.Sprintf("%d files pending (>%d)", count, outboxBacklogWarn)}
 	default:
 		return checkResult{name: "Outbox backlog", tier: tierOK, note: fmt.Sprintf("%d file(s) pending", count)}
+	}
+}
+
+// checkRejected counts *.json.rejected files — events Firestore refused with a
+// 403 (e.g. duplicates from a copied outbox). Not an auth check: the token is
+// valid, so it never advises `atelierd link`.
+func checkRejected() checkResult {
+	count, err := outbox.CountRejected()
+	if err != nil {
+		return checkResult{name: "Rejected events", tier: tierWarn, note: "read failed: " + err.Error()}
+	}
+	if count == 0 {
+		return checkResult{name: "Rejected events", tier: tierOK, note: "none"}
+	}
+	return checkResult{
+		name: "Rejected events",
+		tier: tierWarn,
+		note: fmt.Sprintf("%d event(s) quarantined by Firestore (permission) — see ~/.atelier/atelierd.log", count),
 	}
 }

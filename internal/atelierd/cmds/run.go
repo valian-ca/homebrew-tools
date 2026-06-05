@@ -261,6 +261,15 @@ func (s *runState) markShipped(when time.Time, backlog int) {
 	s.mu.Unlock()
 }
 
+// recordShipProgress advances lastShip without resetting the retry backoff —
+// for partial progress that may still be interrupted, where zeroing the backoff
+// would defeat the caller's escalation on the next failure.
+func (s *runState) recordShipProgress(when time.Time) {
+	s.mu.Lock()
+	s.lastShip = when
+	s.mu.Unlock()
+}
+
 func (s *runState) markHeartbeat(when time.Time) {
 	s.mu.Lock()
 	s.lastHeartbeat = when
@@ -441,13 +450,18 @@ func tryShip(ctx context.Context, state *runState) {
 		batch := files[:batchSize]
 		files = files[batchSize:]
 
-		if err := shipBatch(ctx, state, batch); err != nil {
-			if firestore.IsAuthLost(err) || firebaseauth.IsAuthLost(err) {
+		err := shipBatch(ctx, state, batch)
+		if err != nil && classifyShipError(err) == shipOutcomeQuarantine {
+			// A rejected atomic batch blocks every event behind it; isolate so
+			// healthy events ship and rejected ones are quarantined.
+			err = shipFilesIndividually(ctx, state, batch)
+		}
+		if err != nil {
+			if classifyShipError(err) == shipOutcomeAuthLost {
 				state.markAuthLost("ship: " + err.Error())
 				updateBacklog(state)
 				return
 			}
-			// Transient — back off and retry next reconcile.
 			delay := state.nextBackoff()
 			atelierlog.Warn("shipper: batch failed, backing off", "err", err.Error(), "next", delay.String())
 			select {
@@ -474,33 +488,16 @@ func updateBacklog(state *runState) {
 }
 
 func shipBatch(ctx context.Context, state *runState, files []string) error {
-	creds := state.currentCreds()
 	docs := make([]*firestore.EventDoc, 0, len(files))
 	keep := make([]string, 0, len(files))
 
 	for _, f := range files {
-		env, err := outbox.Read(f)
+		doc, err := buildEventDoc(state, f)
 		if err != nil {
-			atelierlog.Warn("shipper: skipping unreadable outbox file", "file", filepath.Base(f), "err", err.Error())
-			// Move it aside so we don't loop forever — append .corrupt suffix.
-			_ = os.Rename(f, f+".corrupt")
+			// buildEventDoc already moved the file aside as .corrupt.
 			continue
 		}
-		ts, err := ulid.Timestamp(env.ULID)
-		if err != nil {
-			atelierlog.Warn("shipper: bad ULID in outbox file", "file", filepath.Base(f), "err", err.Error())
-			_ = os.Rename(f, f+".corrupt")
-			continue
-		}
-		docs = append(docs, &firestore.EventDoc{
-			ULID:            env.ULID,
-			Type:            env.Type,
-			ClaudeSessionID: env.ClaudeSessionID,
-			UID:             creds.UID,
-			Host:            state.host,
-			TS:              ts,
-			Payload:         env.Payload,
-		})
+		docs = append(docs, doc)
 		keep = append(keep, f)
 	}
 
@@ -526,6 +523,110 @@ func shipBatch(ctx context.Context, state *runState, files []string) error {
 	}
 	state.markShipped(time.Now().UTC(), 0) // backlog will be re-counted post-loop
 	atelierlog.Info("shipper: shipped batch", "count", len(docs))
+	return nil
+}
+
+// buildEventDoc reads an outbox file and enriches it into a Firestore EventDoc:
+// uid from the current credentials, host from the run state, ts decoded from
+// the ULID prefix (the three fields `atelierd emit` intentionally omits). On an
+// unreadable file or a bad ULID it moves the file aside with a .corrupt suffix
+// so the shipper never loops on it, and returns the error.
+func buildEventDoc(state *runState, f string) (*firestore.EventDoc, error) {
+	env, err := outbox.Read(f)
+	if err != nil {
+		atelierlog.Warn("shipper: skipping unreadable outbox file", "file", filepath.Base(f), "err", err.Error())
+		_ = os.Rename(f, f+".corrupt")
+		return nil, err
+	}
+	ts, err := ulid.Timestamp(env.ULID)
+	if err != nil {
+		atelierlog.Warn("shipper: bad ULID in outbox file", "file", filepath.Base(f), "err", err.Error())
+		_ = os.Rename(f, f+".corrupt")
+		return nil, err
+	}
+	creds := state.currentCreds()
+	return &firestore.EventDoc{
+		ULID:            env.ULID,
+		Type:            env.Type,
+		ClaudeSessionID: env.ClaudeSessionID,
+		UID:             creds.UID,
+		Host:            state.host,
+		TS:              ts,
+		Payload:         env.Payload,
+	}, nil
+}
+
+type shipOutcome int
+
+const (
+	shipOutcomeAuthLost   shipOutcome = iota // 401 — token rejected; pause everything
+	shipOutcomeQuarantine                    // 403 — permission denied; this event is permanently unshippable
+	shipOutcomeTransient                     // 5xx / network — retry later with backoff
+)
+
+func classifyShipError(err error) shipOutcome {
+	switch {
+	case firestore.IsAuthLost(err) || firebaseauth.IsAuthLost(err):
+		return shipOutcomeAuthLost
+	case firestore.IsPermissionDenied(err):
+		return shipOutcomeQuarantine
+	default:
+		return shipOutcomeTransient
+	}
+}
+
+// shipFilesIndividually retries each file in its own single-document commit
+// after an atomic batch was rejected with PERMISSION_DENIED. Because a batch
+// fails all-or-nothing, one event Firestore refuses (e.g. a duplicate that
+// already exists — the /events rule allows create but not update) would
+// otherwise block every event behind it forever. Isolating lets the healthy
+// events through and quarantines the rejected ones.
+func shipFilesIndividually(ctx context.Context, state *runState, files []string) error {
+	shipped, quarantined := 0, 0
+	// recordShipProgress (not markShipped) on every exit path: an interrupted
+	// run must not reset the caller's backoff just because it shipped a few.
+	defer func() {
+		if shipped > 0 {
+			state.recordShipProgress(time.Now().UTC())
+		}
+	}()
+	for _, f := range files {
+		doc, err := buildEventDoc(state, f)
+		if err != nil {
+			continue // already moved aside as .corrupt
+		}
+		commitCtx, cancel := context.WithTimeout(ctx, shipBatchTime+10*time.Second)
+		err = withAuthRecovery(ctx, state, "ship", func(idToken string) error {
+			return firestore.CommitEvents(commitCtx, idToken, []*firestore.EventDoc{doc})
+		})
+		cancel()
+
+		if err == nil {
+			if derr := outbox.Delete(f); derr != nil {
+				atelierlog.Warn("shipper: delete after ship failed", "file", filepath.Base(f), "err", derr.Error())
+			}
+			shipped++
+			continue
+		}
+
+		switch classifyShipError(err) {
+		case shipOutcomeQuarantine:
+			if rerr := os.Rename(f, f+".rejected"); rerr != nil {
+				atelierlog.Warn("shipper: quarantine rename failed", "file", filepath.Base(f), "err", rerr.Error())
+			} else {
+				atelierlog.Warn("shipper: event rejected by Firestore, quarantined", "file", filepath.Base(f), "ulid", doc.ULID)
+			}
+			quarantined++
+		case shipOutcomeAuthLost:
+			atelierlog.Info("shipper: isolation interrupted by auth-lost", "shipped", shipped, "quarantined", quarantined)
+			return err
+		default: // transient — stop isolating, let the caller back off; the
+			// remaining files stay queued for the next reconcile.
+			atelierlog.Info("shipper: isolation interrupted by transient error", "shipped", shipped, "quarantined", quarantined)
+			return err
+		}
+	}
+	atelierlog.Info("shipper: isolation complete", "shipped", shipped, "quarantined", quarantined)
 	return nil
 }
 
