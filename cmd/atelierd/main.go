@@ -45,6 +45,7 @@ func main() {
 		cmds.NewUnlinkCmd(),
 		cmds.NewStatusCmd(),
 		cmds.NewRunCmd(),
+		cmds.NewWorktreeModeCmd(),
 	)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
