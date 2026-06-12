@@ -71,3 +71,10 @@ func Log() string { return filepath.Join(MustRoot(), "atelierd.log") }
 
 // OutboxFile returns ~/.atelier/outbox/<ulid>.json.
 func OutboxFile(ulid string) string { return filepath.Join(Outbox(), ulid+".json") }
+
+// Devices returns ~/.atelier/devices.json — the device-bank state (VAL-268).
+func Devices() string { return filepath.Join(MustRoot(), "devices.json") }
+
+// DevicesLock returns ~/.atelier/devices.lock — the flock guarding every
+// read-modify-write of the device-bank state.
+func DevicesLock() string { return filepath.Join(MustRoot(), "devices.lock") }

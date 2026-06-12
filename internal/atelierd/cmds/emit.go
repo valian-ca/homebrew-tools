@@ -6,6 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/valian-ca/homebrew-tools/internal/atelierd/devicebank"
 	"github.com/valian-ca/homebrew-tools/internal/atelierd/events"
 	"github.com/valian-ca/homebrew-tools/internal/atelierd/outbox"
 	"github.com/valian-ca/homebrew-tools/internal/atelierd/transcript"
@@ -74,7 +75,14 @@ Examples:
 				Payload:         payload,
 				CreatedAt:       time.Now().UTC(),
 			}
-			return outbox.Write(env)
+			if err := outbox.Write(env); err != nil {
+				return err
+			}
+			// Every emit renews the session's device leases; session-end
+			// releases them (VAL-268). Best-effort by design — a lease-state
+			// failure never fails the emit.
+			devicebank.OnEmit(claudeSessionID, eventType == string(events.HookSessionEnd))
+			return nil
 		},
 	}
 	c.Flags().StringArrayVar(&dataPairs, "data", nil, "key=value entry to add to payload (repeatable)")
