@@ -1,7 +1,10 @@
 package devicebank
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -138,4 +141,128 @@ func TestPickIOSRuntimeNewestAvailable(t *testing.T) {
 	if got != want {
 		t.Errorf("pickIOSRuntime() = %q, want %q", got, want)
 	}
+}
+
+func TestAndroidEnvPinsAndRespectsOverrides(t *testing.T) {
+	t.Run("pins both when absent", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		// Register unsets via t.Setenv first, then os.Unsetenv to clear them.
+		t.Setenv("ANDROID_USER_HOME", "")
+		os.Unsetenv("ANDROID_USER_HOME")
+		t.Setenv("ANDROID_AVD_HOME", "")
+		os.Unsetenv("ANDROID_AVD_HOME")
+
+		env := androidEnv()
+		envMap := make(map[string]string)
+		for _, e := range env {
+			parts := strings.SplitN(e, "=", 2)
+			if len(parts) == 2 {
+				envMap[parts[0]] = parts[1]
+			}
+		}
+
+		wantUserHome := filepath.Join(home, ".android")
+		wantAVDHome := filepath.Join(home, ".android", "avd")
+
+		if envMap["ANDROID_USER_HOME"] != wantUserHome {
+			t.Errorf("ANDROID_USER_HOME = %q, want %q", envMap["ANDROID_USER_HOME"], wantUserHome)
+		}
+		if envMap["ANDROID_AVD_HOME"] != wantAVDHome {
+			t.Errorf("ANDROID_AVD_HOME = %q, want %q", envMap["ANDROID_AVD_HOME"], wantAVDHome)
+		}
+	})
+
+	t.Run("respects caller override", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		customUserHome := "/custom"
+		t.Setenv("ANDROID_USER_HOME", customUserHome)
+
+		env := androidEnv()
+		envMap := make(map[string]string)
+		for _, e := range env {
+			parts := strings.SplitN(e, "=", 2)
+			if len(parts) == 2 {
+				envMap[parts[0]] = parts[1]
+			}
+		}
+
+		if envMap["ANDROID_USER_HOME"] != customUserHome {
+			t.Errorf("ANDROID_USER_HOME = %q, want %q", envMap["ANDROID_USER_HOME"], customUserHome)
+		}
+
+		wantAVDHome := filepath.Join(home, ".android", "avd")
+		if envMap["ANDROID_AVD_HOME"] != wantAVDHome {
+			t.Errorf("ANDROID_AVD_HOME = %q, want %q", envMap["ANDROID_AVD_HOME"], wantAVDHome)
+		}
+	})
+}
+
+func TestSdkToolPrefersSDKOverPath(t *testing.T) {
+	t.Run("prefers SDK location over PATH", func(t *testing.T) {
+		root := t.TempDir()
+		t.Setenv("ANDROID_HOME", root)
+
+		// Create fake executable at cmdline-tools/latest/bin/avdmanager.
+		cmdlineToolsPath := filepath.Join(root, "cmdline-tools", "latest", "bin")
+		if err := os.MkdirAll(cmdlineToolsPath, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		avdmanagerPath := filepath.Join(cmdlineToolsPath, "avdmanager")
+		if err := os.WriteFile(avdmanagerPath, []byte("fake"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+
+		got, err := sdkTool("avdmanager", "cmdline-tools/latest/bin", "tools/bin")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != avdmanagerPath {
+			t.Errorf("sdkTool() = %q, want %q", got, avdmanagerPath)
+		}
+	})
+
+	t.Run("first relative directory wins", func(t *testing.T) {
+		root := t.TempDir()
+		t.Setenv("ANDROID_HOME", root)
+
+		// Create both paths; cmdline-tools/latest/bin should win.
+		cmdlineToolsPath := filepath.Join(root, "cmdline-tools", "latest", "bin")
+		if err := os.MkdirAll(cmdlineToolsPath, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		cmdlineAvdmanagerPath := filepath.Join(cmdlineToolsPath, "avdmanager")
+		if err := os.WriteFile(cmdlineAvdmanagerPath, []byte("fake"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+
+		toolsPath := filepath.Join(root, "tools", "bin")
+		if err := os.MkdirAll(toolsPath, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		toolsAvdmanagerPath := filepath.Join(toolsPath, "avdmanager")
+		if err := os.WriteFile(toolsAvdmanagerPath, []byte("fake"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+
+		got, err := sdkTool("avdmanager", "cmdline-tools/latest/bin", "tools/bin")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != cmdlineAvdmanagerPath {
+			t.Errorf("sdkTool() = %q, want %q (cmdline-tools should win)", got, cmdlineAvdmanagerPath)
+		}
+	})
+
+	t.Run("not found returns error", func(t *testing.T) {
+		root := t.TempDir()
+		t.Setenv("ANDROID_HOME", root)
+		t.Setenv("PATH", "")
+
+		_, err := sdkTool("definitely-not-a-real-tool-xyz", "cmdline-tools/latest/bin")
+		if err == nil {
+			t.Errorf("sdkTool() = nil, want error")
+		}
+	})
 }

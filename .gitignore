@@ -2,6 +2,8 @@
 
 # Locally built tool binaries (go build ./cmd/<tool> drops these at the repo root)
 /review-triage
+/atelierd
+/frn
 
 # Xcode / Swift artifacts under app/<tool>/ — project files are generated from project.yml via xcodegen
 **/*.xcodeproj

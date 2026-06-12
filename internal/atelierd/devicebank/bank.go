@@ -17,6 +17,11 @@ const namePrefix = "atelier-"
 // 5584: collisions would need ~15 simultaneous manual emulators.
 const emulatorTopPort = 5584
 
+// MaxAndroidBank is the hard cap on Android bank size: the adb discovery
+// range [5554, 5584] holds 16 even console ports, and EmulatorPort descends
+// from the top — a 17th AVD would land below 5554, invisible to adb.
+const MaxAndroidBank = 16
+
 func bankName(platform Platform, index int) string {
 	return fmt.Sprintf("%s%s-%d", namePrefix, platform, index)
 }

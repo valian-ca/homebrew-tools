@@ -179,9 +179,15 @@ func Acquire(ctx context.Context, session, workdir string, platform Platform, pr
 func Release(ctx context.Context, session string, platform Platform) error {
 	return WithLock(func(s *State) error {
 		now := time.Now()
-		reapLocked(ctx, s, now)
+		reaped := reapLocked(ctx, s, now)
+		hadLeases := len(s.Leases)
 		for _, d := range releaseSession(s, session, platform, now) {
 			_ = SpawnRecycle(d.Name)
+		}
+		// Physical lease drops return no virtual device to recycle but still
+		// mutate state; compare lease counts rather than recycle slice.
+		if !reaped && len(s.Leases) == hadLeases {
+			return errNoChange
 		}
 		return nil
 	})
@@ -264,6 +270,9 @@ func InitBank(ctx context.Context, nIOS, nAndroid int, out io.Writer) error {
 	}
 	if !hasAndroid {
 		fmt.Fprintln(out, "warning: Android SDK not found — skipping the Android side of the bank")
+	}
+	if nAndroid > MaxAndroidBank {
+		return fmt.Errorf("android bank size %d exceeds the maximum of %d (adb discovers console ports 5554-5584 only)", nAndroid, MaxAndroidBank)
 	}
 	return WithLock(func(s *State) error {
 		now := time.Now()

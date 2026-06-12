@@ -1,6 +1,8 @@
 package devicebank
 
 import (
+	"context"
+	"io"
 	"testing"
 	"time"
 )
@@ -121,5 +123,18 @@ func TestOnEmitRenewsAndNoOps(t *testing.T) {
 			OnEmit(tt.session, false)
 			tt.checkPost(t)
 		})
+	}
+}
+
+// TestInitBankRejectsOversizedAndroidBank verifies that InitBank rejects
+// nAndroid > MaxAndroidBank before any toolchain exec.
+func TestInitBankRejectsOversizedAndroidBank(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	err := InitBank(context.Background(), 0, 17, io.Discard)
+	if err == nil {
+		t.Fatal("InitBank(0, 17) must error, got nil")
+	}
+	if err.Error() != "android bank size 17 exceeds the maximum of 16 (adb discovers console ports 5554-5584 only)" {
+		t.Fatalf("InitBank(0, 17) error = %q, want message about maximum of 16", err.Error())
 	}
 }
