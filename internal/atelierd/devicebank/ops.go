@@ -109,9 +109,13 @@ func Acquire(ctx context.Context, session, workdir string, platform Platform, pr
 		err := WithLock(func(s *State) error {
 			now := time.Now()
 			reaped := reapLocked(ctx, s, now)
+			// Every device command carrying a session ID renews all that
+			// session's leases (ticket lifecycle rule), not just the one on
+			// the requested platform.
+			touched := touchSession(s, session, now)
 			noGrant := func(sentinel error) error {
 				outcome = sentinel
-				if reaped {
+				if reaped || touched > 0 {
 					return nil
 				}
 				return errNoChange
@@ -180,13 +184,17 @@ func Release(ctx context.Context, session string, platform Platform) error {
 	return WithLock(func(s *State) error {
 		now := time.Now()
 		reaped := reapLocked(ctx, s, now)
+		// Renew before dropping: a platform-scoped release must still
+		// refresh the session's leases on the other platforms (ticket
+		// lifecycle rule — every device command renews).
+		touched := touchSession(s, session, now)
 		hadLeases := len(s.Leases)
 		for _, d := range releaseSession(s, session, platform, now) {
 			_ = SpawnRecycle(d.Name)
 		}
 		// Physical lease drops return no virtual device to recycle but still
 		// mutate state; compare lease counts rather than recycle slice.
-		if !reaped && len(s.Leases) == hadLeases {
+		if !reaped && touched == 0 && len(s.Leases) == hadLeases {
 			return errNoChange
 		}
 		return nil

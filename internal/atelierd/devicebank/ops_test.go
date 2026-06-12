@@ -198,6 +198,43 @@ func TestReleaseNoChangeAndPhysicalDrop(t *testing.T) {
 		}
 	})
 
+	t.Run("platform-scoped release renews the other platform's lease", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		stale := time.Now().Add(-10 * time.Minute)
+		err := WithLock(func(s *State) error {
+			*s = *bankOfTwo()
+			now := time.Now()
+			for _, d := range s.Devices {
+				d.LastUsedAt = now
+			}
+			l := commitLease(s, &Candidate{Device: s.Devices[0]}, "sess-a", "/wd", PlatformIOS, now)
+			l.RenewedAt = stale
+			commitLease(s, &Candidate{Physical: &PhysicalDevice{ID: "serial-1", Name: "Pixel", Platform: PlatformAndroid}},
+				"sess-a", "/wd", PlatformAndroid, now)
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := Release(context.Background(), "sess-a", PlatformAndroid); err != nil {
+			t.Fatal(err)
+		}
+		s, err := Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if s.FindLease("sess-a", PlatformAndroid) != nil {
+			t.Fatal("android lease must be gone after platform-scoped release")
+		}
+		ios := s.FindLease("sess-a", PlatformIOS)
+		if ios == nil {
+			t.Fatal("iOS lease must survive an android-only release")
+		}
+		if !ios.RenewedAt.After(stale) {
+			t.Fatalf("the surviving lease must be renewed by the device command, RenewedAt=%v", ios.RenewedAt)
+		}
+	})
+
 	t.Run("physical lease drop persists", func(t *testing.T) {
 		t.Setenv("HOME", t.TempDir())
 		err := WithLock(func(s *State) error {
