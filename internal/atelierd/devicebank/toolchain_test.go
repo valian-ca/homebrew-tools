@@ -178,6 +178,8 @@ func TestAndroidEnvPinsAndRespectsOverrides(t *testing.T) {
 		t.Setenv("HOME", home)
 		customUserHome := "/custom"
 		t.Setenv("ANDROID_USER_HOME", customUserHome)
+		t.Setenv("ANDROID_AVD_HOME", "")
+		os.Unsetenv("ANDROID_AVD_HOME")
 
 		env := androidEnv()
 		envMap := make(map[string]string)
@@ -204,7 +206,6 @@ func TestSdkToolPrefersSDKOverPath(t *testing.T) {
 		root := t.TempDir()
 		t.Setenv("ANDROID_HOME", root)
 
-		// Create fake executable at cmdline-tools/latest/bin/avdmanager.
 		cmdlineToolsPath := filepath.Join(root, "cmdline-tools", "latest", "bin")
 		if err := os.MkdirAll(cmdlineToolsPath, 0o755); err != nil {
 			t.Fatal(err)
@@ -227,7 +228,6 @@ func TestSdkToolPrefersSDKOverPath(t *testing.T) {
 		root := t.TempDir()
 		t.Setenv("ANDROID_HOME", root)
 
-		// Create both paths; cmdline-tools/latest/bin should win.
 		cmdlineToolsPath := filepath.Join(root, "cmdline-tools", "latest", "bin")
 		if err := os.MkdirAll(cmdlineToolsPath, 0o755); err != nil {
 			t.Fatal(err)

@@ -271,7 +271,9 @@ func InitBank(ctx context.Context, nIOS, nAndroid int, out io.Writer) error {
 	if !hasAndroid {
 		fmt.Fprintln(out, "warning: Android SDK not found — skipping the Android side of the bank")
 	}
-	if nAndroid > MaxAndroidBank {
+	// The cap only matters when the Android side will actually provision —
+	// a missing SDK keeps the documented degrade-with-warning, exit-0 path.
+	if hasAndroid && nAndroid > MaxAndroidBank {
 		return fmt.Errorf("android bank size %d exceeds the maximum of %d (adb discovers console ports 5554-5584 only)", nAndroid, MaxAndroidBank)
 	}
 	return WithLock(func(s *State) error {
