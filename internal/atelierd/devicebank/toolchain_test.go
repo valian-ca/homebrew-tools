@@ -143,15 +143,22 @@ func TestPickIOSRuntimeNewestAvailable(t *testing.T) {
 	}
 }
 
+// unsetEnv clears key for the test body. t.Setenv first registers the
+// ambient value for restore at cleanup; the os.Unsetenv is the load-bearing
+// clear — an empty-valued var still counts as present to androidEnv's
+// HasPrefix check, so t.Setenv alone would not trigger the re-pin.
+func unsetEnv(t *testing.T, key string) {
+	t.Helper()
+	t.Setenv(key, "")
+	os.Unsetenv(key)
+}
+
 func TestAndroidEnvPinsAndRespectsOverrides(t *testing.T) {
 	t.Run("pins both when absent", func(t *testing.T) {
 		home := t.TempDir()
 		t.Setenv("HOME", home)
-		// Register unsets via t.Setenv first, then os.Unsetenv to clear them.
-		t.Setenv("ANDROID_USER_HOME", "")
-		os.Unsetenv("ANDROID_USER_HOME")
-		t.Setenv("ANDROID_AVD_HOME", "")
-		os.Unsetenv("ANDROID_AVD_HOME")
+		unsetEnv(t, "ANDROID_USER_HOME")
+		unsetEnv(t, "ANDROID_AVD_HOME")
 
 		env := androidEnv()
 		envMap := make(map[string]string)
@@ -178,8 +185,7 @@ func TestAndroidEnvPinsAndRespectsOverrides(t *testing.T) {
 		t.Setenv("HOME", home)
 		customUserHome := "/custom"
 		t.Setenv("ANDROID_USER_HOME", customUserHome)
-		t.Setenv("ANDROID_AVD_HOME", "")
-		os.Unsetenv("ANDROID_AVD_HOME")
+		unsetEnv(t, "ANDROID_AVD_HOME")
 
 		env := androidEnv()
 		envMap := make(map[string]string)
