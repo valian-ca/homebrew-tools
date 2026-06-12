@@ -12,6 +12,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/valian-ca/homebrew-tools/internal/atelierd/devicebank"
 	"github.com/valian-ca/homebrew-tools/internal/device"
 	"github.com/valian-ca/homebrew-tools/internal/flavor"
 	"github.com/valian-ca/homebrew-tools/internal/state"
@@ -107,6 +108,7 @@ func run(ctx context.Context) error {
 	}
 
 	probe := device.ProbeAll(ctx)
+	annotateBankLeases(&probe)
 	out, err := ui.Run(ctx, ui.Input{
 		InitialSelection: sel,
 		InitialProbe:     probe,
@@ -135,6 +137,21 @@ func run(ctx context.Context) error {
 	fmt.Fprintf(os.Stderr, "→ flutter run %s\n", strings.Join(flutterArgs, " "))
 
 	return execFlutter(flutterArgs)
+}
+
+// annotateBankLeases suffixes picker labels with the atelier device-bank
+// lease state (VAL-268), so a human avoids stepping on a running forge.
+// Display only — frn never takes a lease.
+func annotateBankLeases(probe *device.Result) {
+	annotations := devicebank.LeaseAnnotations()
+	if len(annotations) == 0 {
+		return
+	}
+	for _, list := range [][]device.Device{probe.Physical, probe.Virtual} {
+		for i := range list {
+			list[i].Label = devicebank.AnnotateLabel(annotations, list[i].Label, list[i].ID)
+		}
+	}
 }
 
 func defaultFlavor(flavors []string) string {

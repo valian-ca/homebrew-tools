@@ -46,6 +46,7 @@ func main() {
 		cmds.NewStatusCmd(),
 		cmds.NewRunCmd(),
 		cmds.NewWorktreeModeCmd(),
+		cmds.NewDeviceCmd(),
 	)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -58,6 +59,6 @@ func main() {
 			os.Exit(1)
 		}
 		fmt.Fprintln(os.Stderr, "atelierd: "+err.Error())
-		os.Exit(1)
+		os.Exit(cmds.ExitCode(err))
 	}
 }

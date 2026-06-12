@@ -1,6 +1,6 @@
 module github.com/valian-ca/homebrew-tools
 
-go 1.24
+go 1.24.0
 
 require (
 	github.com/alecthomas/chroma/v2 v2.24.1
@@ -10,6 +10,7 @@ require (
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/charmbracelet/x/ansi v0.9.3
 	github.com/fsnotify/fsnotify v1.9.0
+	github.com/gofrs/flock v0.12.1
 	github.com/oklog/ulid/v2 v2.1.1
 	github.com/sergi/go-diff v1.4.0
 	github.com/spf13/cobra v1.10.2
