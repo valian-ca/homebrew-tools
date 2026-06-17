@@ -396,7 +396,44 @@ func newestSystemImage() (string, error) {
 	return bestPkg, nil
 }
 
-// CreateAVD provisions a new bank AVD on the newest installed system image.
+// fallbackDevice is the profile new AVDs fall back to when the catalog
+// exposes no base Pixel. medium_phone is the modern AVD default
+// (1080x2400 @ 420dpi) and ships in every catalog — never the tiny
+// 320x640 / 160dpi generic avdmanager would otherwise pick on its own.
+const fallbackDevice = "medium_phone"
+
+// basePixelID matches a base Pixel id line from `avdmanager list device`
+// (lines like `id: 42 or "pixel_8"`). Suffixed variants — pixel_8_pro,
+// pixel_8a, pixel_9_pro_fold, pixel_tablet, pixel_xl — are deliberately
+// excluded: the base phone is the realistic dev target, mirroring the iOS
+// side's "newest base iPhone".
+var basePixelID = regexp.MustCompile(`(?m)^\s*id:\s*\d+\s+or\s+"(pixel_(\d+))"\s*$`)
+
+// pickAndroidDevice returns the newest base Pixel id in `avdmanager list
+// device` output, or fallbackDevice when none is present. The catalog is
+// shipped inside the cmdline-tools package, so the pick advances on its own
+// as the SDK tooling is updated — no hardcoded device to go stale.
+func pickAndroidDevice(out []byte) string {
+	best, bestID := -1, ""
+	for _, m := range basePixelID.FindAllStringSubmatch(string(out), -1) {
+		n, err := strconv.Atoi(m[2])
+		if err != nil {
+			continue
+		}
+		if n > best {
+			best, bestID = n, m[1]
+		}
+	}
+	if bestID == "" {
+		return fallbackDevice
+	}
+	return bestID
+}
+
+// CreateAVD provisions a new bank AVD on the newest installed system image,
+// cut from the newest base Pixel profile in the catalog. Without a -d
+// profile avdmanager defaults to a 320x640 / 160dpi generic screen — the
+// "tiny emulator" forge runs used to lease.
 func CreateAVD(ctx context.Context, name string) error {
 	avdmanager, err := avdmanagerPath()
 	if err != nil {
@@ -408,9 +445,16 @@ func CreateAVD(ctx context.Context, name string) error {
 	}
 	execCtx, cancel := context.WithTimeout(ctx, bootTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(execCtx, avdmanager, "create", "avd", "-n", name, "-k", pkg)
+	listCmd := exec.CommandContext(execCtx, avdmanager, "list", "device")
+	listCmd.Env = androidEnv()
+	devData, err := listCmd.Output()
+	if err != nil {
+		return fmt.Errorf("avdmanager list device: %w", err)
+	}
+	cmd := exec.CommandContext(execCtx, avdmanager, "create", "avd", "-n", name, "-k", pkg, "-d", pickAndroidDevice(devData))
 	cmd.Env = androidEnv()
-	// avdmanager prompts for a custom hardware profile; decline.
+	// avdmanager only prompts for a custom hardware profile when -d is absent;
+	// with the device pinned it skips the prompt, but decline defensively.
 	cmd.Stdin = strings.NewReader("no\n")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("avdmanager create avd %s: %w: %s", name, err, strings.TrimSpace(string(out)))
@@ -486,4 +530,3 @@ func KillEmulator(ctx context.Context, serial string) {
 	defer cancel()
 	_ = exec.CommandContext(execCtx, "adb", "-s", serial, "emu", "kill").Run()
 }
-
