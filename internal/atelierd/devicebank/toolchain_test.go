@@ -95,6 +95,52 @@ func TestPickIPhoneDeviceTypeNewestBaseModel(t *testing.T) {
 	}
 }
 
+// Captured from `avdmanager list device` (trimmed): base Pixels mixed with
+// suffixed variants, a generic profile, and a non-Pixel — the pick must
+// land on the highest base pixel_N and ignore every suffixed id.
+const avdmanagerListDeviceOutput = `Available devices definitions:
+id: 9 or "Galaxy Nexus"
+    Name: Galaxy Nexus
+id: 12 or "medium_phone"
+    Name: Medium Phone
+id: 35 or "pixel_5"
+    Name: Pixel 5
+id: 42 or "pixel_8"
+    Name: Pixel 8
+id: 43 or "pixel_8_pro"
+    Name: Pixel 8 Pro
+id: 44 or "pixel_8a"
+    Name: Pixel 8a
+id: 47 or "pixel_9_pro_fold"
+    Name: Pixel 9 Pro Fold
+id: 53 or "pixel_10"
+    Name: Pixel 10
+id: 52 or "pixel_xl"
+    Name: Pixel XL
+`
+
+func TestPickAndroidDeviceNewestBasePixel(t *testing.T) {
+	got := pickAndroidDevice([]byte(avdmanagerListDeviceOutput))
+	want := "pixel_10"
+	if got != want {
+		t.Errorf("pickAndroidDevice() = %q, want %q", got, want)
+	}
+}
+
+func TestPickAndroidDeviceFallsBackToMediumPhone(t *testing.T) {
+	// No base pixel_N in the catalog — only a suffixed variant and a TV.
+	const noBasePixel = `Available devices definitions:
+id: 47 or "pixel_9_pro_fold"
+    Name: Pixel 9 Pro Fold
+id: 56 or "tv_1080p"
+    Name: Television (1080p)
+`
+	got := pickAndroidDevice([]byte(noBasePixel))
+	if got != fallbackDevice {
+		t.Errorf("pickAndroidDevice() = %q, want %q", got, fallbackDevice)
+	}
+}
+
 // Captured from `xcrun simctl list runtimes --json` (trimmed).
 const simctlRuntimesJSON = `{
   "runtimes" : [

@@ -400,6 +400,29 @@ func resizeAndroid(ctx context.Context, s *State, n int, now time.Time, out io.W
 	}
 
 	plan := planResize(s, PlatformAndroid, n)
+
+	// Re-cut the surviving in-range AVDs so a device-profile change reaches
+	// them too: avdmanager bakes the profile at create time, so an existing
+	// AVD keeps its old (possibly 320x640) screen until torn down. Leased or
+	// recycling AVDs can't be recreated under a live forge — they keep their
+	// current profile and warn. Computed before the Create loop so freshly
+	// created AVDs (already on the target profile) are not re-cut.
+	var recreate []*Device
+	for _, d := range s.Devices {
+		if d.Platform != PlatformAndroid {
+			continue
+		}
+		idx := bankIndex(PlatformAndroid, d.Name)
+		if idx < 1 || idx > n {
+			continue // excess is handled by Delete/Keep below
+		}
+		if d.State == StateLeased || d.State == StateRecycling {
+			fmt.Fprintf(out, "warning: %s is leased — kept on its current profile, will be recreated on a later bank init\n", d.Name)
+			continue
+		}
+		recreate = append(recreate, d)
+	}
+
 	for _, name := range plan.Create {
 		if err := CreateAVD(ctx, name); err != nil {
 			return err
@@ -409,6 +432,18 @@ func resizeAndroid(ctx context.Context, s *State, n int, now time.Time, out io.W
 			Port: EmulatorPort(bankIndex(PlatformAndroid, name)), State: StateOff, LastUsedAt: now,
 		})
 		fmt.Fprintf(out, "created AVD %s\n", name)
+	}
+	for _, d := range recreate {
+		KillEmulator(ctx, d.TargetID())
+		if err := DeleteAVD(ctx, d.Name); err != nil {
+			return err
+		}
+		if err := CreateAVD(ctx, d.Name); err != nil {
+			return err
+		}
+		d.State = StateOff
+		d.LastUsedAt = now
+		fmt.Fprintf(out, "recreated AVD %s\n", d.Name)
 	}
 	for _, name := range plan.Delete {
 		d := s.FindDevice(name)
