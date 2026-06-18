@@ -34,6 +34,14 @@ import (
 //     emitted. Kept (not pruned) so a replay after
 //     kill -9 between outbox.Write and SaveState
 //     doesn't re-emit the pre or the post (AC 4).
+//   - LastTitle / LastTitleType — the last (title, event-type) pair emitted as
+//     a transcript:ai-title / transcript:custom-title. The dedup key for
+//     titles: unlike the other records a title line carries no id, and the
+//     file is re-read from offset 0 whenever it is detected as truncated (see
+//     consume). Without this key an unchanged title re-emits on every replay,
+//     stamped at re-read time — which advances the card's lastEventAt and
+//     resurrects shipped/finished cards on the dashboard. Emit only on a real
+//     change (title or kind).
 //
 // WatcherKey distinguishes the on-disk file basis from the ClaudeSessionID
 // emitted on envelopes. Empty for parent transcripts (file basis =
@@ -52,6 +60,8 @@ type State struct {
 	LastPromptID     string            `json:"lastPromptId,omitempty"`
 	OpenToolUseTools map[string]string `json:"openToolUseTools,omitempty"`
 	ClosedToolUseIDs map[string]bool   `json:"closedToolUseIds,omitempty"`
+	LastTitle        string            `json:"lastTitle,omitempty"`
+	LastTitleType    string            `json:"lastTitleType,omitempty"`
 	LastActivityAt   time.Time         `json:"lastActivityAt"`
 }
 
