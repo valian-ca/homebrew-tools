@@ -314,9 +314,10 @@ func TestDerive_CustomTitleEmitsOneEnvelope(t *testing.T) {
 	}
 }
 
-// Empty title still emits — the JSONL line existing is itself a signal,
-// and last-write-wins on the backend means a deliberate clear should
-// reach Firestore rather than being silently absorbed.
+// Empty title still emits when it is a *change* — a deliberate clear should
+// reach Firestore rather than being silently absorbed. (Each case below flips
+// the title kind, so every line is a genuine change; consecutive identical
+// titles are deduped, see TestDerive_TitleDedupOnReplay.)
 func TestDerive_EmptyTitleStillEmitsEnvelope(t *testing.T) {
 	now := fakeClock(time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC))
 	state := newTestState()
@@ -346,6 +347,42 @@ func TestDerive_EmptyTitleStillEmitsEnvelope(t *testing.T) {
 		if envs[0].Payload["title"] != "" {
 			t.Errorf("%s: Payload[title] = %v, want empty string", c.typ, envs[0].Payload["title"])
 		}
+	}
+}
+
+func TestDerive_TitleDedupOnReplay(t *testing.T) {
+	// Reproduces the 2026-06-18 burst: when consume detects the JSONL as
+	// truncated it resets the offset to 0 and re-reads every line. An unchanged
+	// title must NOT re-emit (else its event is stamped at re-read time and
+	// resurrects shipped cards). A genuine retitle must still fire.
+	now := fakeClock(time.Date(2026, 6, 18, 12, 0, 0, 0, time.UTC))
+	state := newTestState()
+
+	line := []byte(`{"type":"custom-title","customTitle":"Forge FLEX-167"}`)
+	envs1, _ := Derive(state, line, now, fakeULID())
+	if len(envs1) != 1 || envs1[0].Type != "transcript:custom-title" {
+		t.Fatalf("first sight: want one transcript:custom-title, got %#v", envs1)
+	}
+	if state.LastTitle != "Forge FLEX-167" || state.LastTitleType != "transcript:custom-title" {
+		t.Fatalf("state not recorded: %q / %q", state.LastTitle, state.LastTitleType)
+	}
+
+	// Replay the same line (offset-reset re-read). No re-emit.
+	envs2, _ := Derive(state, line, now, fakeULID())
+	if len(envs2) != 0 {
+		t.Errorf("unchanged title re-emitted on replay: %#v", envs2)
+	}
+
+	// A real retitle still fires.
+	envs3, _ := Derive(state, []byte(`{"type":"custom-title","customTitle":"Forge FLEX-200"}`), now, fakeULID())
+	if len(envs3) != 1 {
+		t.Errorf("changed title should emit, got %#v", envs3)
+	}
+
+	// Same string but a different kind (ai vs custom) is also a change.
+	envs4, _ := Derive(state, []byte(`{"type":"ai-title","aiTitle":"Forge FLEX-200"}`), now, fakeULID())
+	if len(envs4) != 1 || envs4[0].Type != "transcript:ai-title" {
+		t.Errorf("kind change should emit a transcript:ai-title, got %#v", envs4)
 	}
 }
 

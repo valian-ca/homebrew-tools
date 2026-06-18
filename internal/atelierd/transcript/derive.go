@@ -70,6 +70,19 @@ func Derive(state *State, line []byte, now Clock, newULID ULIDFn) ([]*outbox.Env
 }
 
 func deriveTitle(state *State, eventType events.Type, title string, now Clock, newULID ULIDFn) []*outbox.Envelope {
+	// Dedup on the (title, kind) pair. A title line carries no id of its own, so
+	// it is the only record type without a natural dedup key — and consume
+	// re-reads the whole file from offset 0 whenever it detects truncation. On
+	// such a replay every other record is suppressed by LastMsgID / LastPromptID
+	// / ClosedToolUseIDs; an unchanged title had nothing and was re-emitted,
+	// stamped at re-read time, which advanced the card's lastEventAt and
+	// resurfaced shipped/finished cards on the dashboard. Emit only on a real
+	// change; a genuine retitle (string or ai→custom) still fires.
+	if title == state.LastTitle && string(eventType) == state.LastTitleType {
+		return nil
+	}
+	state.LastTitle = title
+	state.LastTitleType = string(eventType)
 	return []*outbox.Envelope{{
 		ULID:            newULID(),
 		Type:            string(eventType),
