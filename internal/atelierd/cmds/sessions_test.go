@@ -723,3 +723,69 @@ func TestSubagentDirManager_SkipsDormantFullyConsumedStates(t *testing.T) {
 		t.Fatal("subagentDirManager did not exit after ctx cancel")
 	}
 }
+
+// The tree keep-alive invariant: a parent whose own JSONL is quiet must not
+// idle-exit while one of its subagents still streams — the subagent's
+// consumes touch the shared tracker. Once the subagent goes quiet too, the
+// whole tree idle-exits.
+func TestRunSessionWatcher_StaysAliveWhileSubagentStreams(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	old, oldPre, oldIdle := sessionPollInterval, subagentPreAttachInterval, sessionIdleTimeout
+	sessionPollInterval = 20 * time.Millisecond
+	subagentPreAttachInterval = 20 * time.Millisecond
+	sessionIdleTimeout = 150 * time.Millisecond
+	t.Cleanup(func() {
+		sessionPollInterval = old
+		subagentPreAttachInterval = oldPre
+		sessionIdleTimeout = oldIdle
+	})
+
+	jsonlRoot := t.TempDir()
+	parentJSONL := filepath.Join(jsonlRoot, "cs-keepalive.jsonl")
+	line := `{"type":"user","promptId":"p1","message":{"role":"user","content":"x"}}`
+	writeJSONL(t, parentJSONL, line)
+	if err := transcript.SaveState(&transcript.State{
+		ClaudeSessionID: "cs-keepalive",
+		JSONLPath:       parentJSONL,
+		Offset:          int64(len(line) + 1),
+		LastActivityAt:  time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("save parent state: %v", err)
+	}
+
+	subagentJSONL := filepath.Join(strings.TrimSuffix(parentJSONL, ".jsonl"), subagentDirName, "agent-s.jsonl")
+	writeJSONL(t, subagentJSONL, `{"type":"user","promptId":"p0","message":{"role":"user","content":"start"}}`)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runSessionWatcher(context.Background(), "cs-keepalive")
+	}()
+
+	for i := 0; i < 15; i++ {
+		f, err := os.OpenFile(subagentJSONL, os.O_APPEND|os.O_WRONLY, 0o600)
+		if err != nil {
+			t.Fatalf("open subagent jsonl for append: %v", err)
+		}
+		if _, err := f.WriteString(fmt.Sprintf(`{"type":"user","promptId":"p%d","message":{"role":"user","content":"tick"}}`, i+1) + "\n"); err != nil {
+			t.Fatalf("append to subagent jsonl: %v", err)
+		}
+		if err := f.Close(); err != nil {
+			t.Fatalf("close subagent jsonl: %v", err)
+		}
+		time.Sleep(40 * time.Millisecond)
+	}
+
+	select {
+	case <-done:
+		t.Fatal("parent idle-exited while its subagent was still streaming")
+	default:
+	}
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("parent did not idle-exit after the subagent went quiet")
+	}
+}
