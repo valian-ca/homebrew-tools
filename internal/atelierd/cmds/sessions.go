@@ -43,9 +43,9 @@ var sessionPollInterval = 5 * time.Second
 // quickly, and the manager flips back to sessionPollInterval on attach.
 var subagentPreAttachInterval = 30 * time.Second
 
-// sessionIdleTimeout bounds watching to active sessions (VAL-287): a session
-// tree with no consumed line for this long releases its watchers, and dormant
-// states on disk don't get one at startup. Var so tests can shrink it.
+// sessionIdleTimeout bounds watching to active sessions: a session tree with
+// no consumed line for this long releases its watchers, and dormant states
+// on disk don't get one at startup. Var so tests can shrink it.
 var sessionIdleTimeout = 30 * time.Minute
 
 // dormantScanInterval paces the revival check of dormant sessions — one
@@ -146,7 +146,7 @@ func sessionsManagerLoop(ctx context.Context, _ *runState) {
 
 	// Initial scan: rehydrate only the parent sessions worth watching —
 	// active ones, plus dormant ones whose JSONL grew while the daemon was
-	// down (VAL-287). The rest stay on disk for the dormant scan. Subagent
+	// down. The rest stay on disk for the dormant scan. Subagent
 	// state files are inspected only to flag orphans — a parent's
 	// subagentDirManager will rediscover its live subagents from
 	// <jsonl>/subagents/ and resume from the persisted offset.
@@ -281,8 +281,8 @@ func sessionIDFromEventName(name string) string {
 }
 
 // The function returns when ctx is cancelled or when the whole session tree
-// (this parent plus its subagent watchers) has been idle ≥ sessionIdleTimeout
-// (VAL-287); hook:session-end is emitted by the bash hook, not by atelierd.
+// (this parent plus its subagent watchers) has been idle ≥ sessionIdleTimeout;
+// hook:session-end is emitted by the bash hook, not by atelierd.
 // The idle-exit return path runs the same defers as cancellation — fsnotify
 // watcher closed, subagent manager cancelled — and the manager's spawn filter
 // keeps the session dormant until new bytes appear.
@@ -304,12 +304,16 @@ func runSessionWatcher(ctx context.Context, claudeSessionID string) {
 
 	tree := newActivityTracker()
 
+	// Copied before the goroutine launch: the watcher loop reassigns state on
+	// every consume, and the manager goroutine must not read through it.
+	jsonlPath := state.JSONLPath
+
 	subCtx, subCancel := context.WithCancel(ctx)
 	var subWG sync.WaitGroup
 	subWG.Add(1)
 	go func() {
 		defer subWG.Done()
-		subagentDirManager(subCtx, claudeSessionID, state.JSONLPath, tree)
+		subagentDirManager(subCtx, claudeSessionID, jsonlPath, tree)
 	}()
 	defer func() {
 		subCancel()
@@ -389,6 +393,11 @@ func subagentDirManager(ctx context.Context, parentSessionID, parentJSONLPath st
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 
+	// dormantOffsets caches the offset of subagents skipped as dormant, so
+	// the 5 s re-scan costs one os.Stat per dormant file instead of a full
+	// state read + unmarshal. Only the manager goroutine touches it.
+	dormantOffsets := map[string]int64{}
+
 	spawn := func(jsonlPath string) {
 		base := filepath.Base(jsonlPath)
 		if !strings.HasPrefix(base, subagentFilePrefix) || !strings.HasSuffix(base, ".jsonl") {
@@ -396,6 +405,14 @@ func subagentDirManager(ctx context.Context, parentSessionID, parentJSONLPath st
 		}
 		agentBase := strings.TrimSuffix(base, ".jsonl")
 		watcherKey := transcript.SubagentWatcherKey(parentSessionID, agentBase)
+
+		if off, ok := dormantOffsets[watcherKey]; ok {
+			st, serr := os.Stat(jsonlPath)
+			if serr != nil || st.Size() == off {
+				return
+			}
+			delete(dormantOffsets, watcherKey)
+		}
 
 		mu.Lock()
 		if _, exists := spawned[watcherKey]; exists {
@@ -431,6 +448,7 @@ func subagentDirManager(ctx context.Context, parentSessionID, parentJSONLPath st
 				return
 			}
 		} else if !shouldSpawnWatcher(existing, time.Now()) {
+			dormantOffsets[watcherKey] = existing.Offset
 			mu.Lock()
 			delete(spawned, watcherKey)
 			mu.Unlock()
@@ -618,8 +636,8 @@ func runSubagentWatcher(ctx context.Context, watcherKey string, tree *activityTr
 
 // stateGCLoop purges session states whose transcript JSONL no longer exists
 // (Claude Code deletes transcripts after ~30 days) so ~/.atelier/sessions/
-// stops growing without bound (VAL-287). Startup run + daily ticker, same
-// shape as updaterLoop.
+// stops growing without bound. Startup run + daily ticker, same shape as
+// updaterLoop.
 func stateGCLoop(ctx context.Context, _ *runState) {
 	runStateGC()
 	tick := time.NewTicker(stateGCInterval)

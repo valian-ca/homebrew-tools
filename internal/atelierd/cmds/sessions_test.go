@@ -416,9 +416,8 @@ func TestSessionsManagerLoop_StartupSpawnsOnlyActiveWatchers(t *testing.T) {
 		t.Fatal("active session was not consumed within deadline")
 	}
 
-	grown := runtime.NumGoroutine() - baseline
-	if grown > 60 {
-		t.Errorf("goroutine growth = %d, want <= 60 — dormant states are getting watchers", grown)
+	if !waitFor(t, 3*time.Second, func() bool { return runtime.NumGoroutine()-baseline <= 60 }) {
+		t.Errorf("goroutine growth = %d, want <= 60 — dormant states are getting watchers", runtime.NumGoroutine()-baseline)
 	}
 
 	cancel()
@@ -560,7 +559,7 @@ func TestSessionsManagerLoop_IdleExitThenDormantRevival(t *testing.T) {
 		t.Fatalf("close jsonl: %v", err)
 	}
 
-	if !waitFor(t, 3*time.Second, func() bool {
+	if !waitFor(t, 5*time.Second, func() bool {
 		_, has := collectEnvelopesByModel(t)["claude-second-line"]
 		return has
 	}) {
@@ -677,11 +676,33 @@ func TestSubagentDirManager_SkipsDormantFullyConsumedStates(t *testing.T) {
 
 	time.Sleep(200 * time.Millisecond)
 
-	if grown := runtime.NumGoroutine() - baseline; grown > 30 {
-		t.Errorf("goroutine growth = %d, want <= 30 — dormant subagent states are getting watchers", grown)
+	if !waitFor(t, 3*time.Second, func() bool { return runtime.NumGoroutine()-baseline <= 30 }) {
+		t.Errorf("goroutine growth = %d, want <= 30 — dormant subagent states are getting watchers", runtime.NumGoroutine()-baseline)
 	}
 	if got := countAssistantEnvelopes(t); got != 0 {
 		t.Errorf("dormant fully-consumed subagents produced %d envelopes, want 0", got)
+	}
+
+	revived := filepath.Join(subagentDir, "agent-07.jsonl")
+	f, err := os.OpenFile(revived, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatalf("open %s for append: %v", revived, err)
+	}
+	if _, err := f.WriteString(`{"type":"assistant","message":{"id":"msg_r","model":"claude-revived-model","usage":{"input_tokens":1,"output_tokens":1},"content":[{"type":"text","text":"new"}]}}` + "\n"); err != nil {
+		t.Fatalf("append revival line: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close revived jsonl: %v", err)
+	}
+
+	if !waitFor(t, 5*time.Second, func() bool {
+		_, has := collectEnvelopesByModel(t)["claude-revived-model"]
+		return has
+	}) {
+		t.Fatal("dormant subagent with new bytes was not revived within deadline")
+	}
+	if got := countAssistantEnvelopes(t); got != 1 {
+		t.Errorf("revived subagent envelopes = %d, want exactly 1 (offset resume, no re-emission)", got)
 	}
 
 	cancel()

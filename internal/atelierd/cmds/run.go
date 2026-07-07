@@ -357,7 +357,6 @@ func withAuthRecovery(ctx context.Context, state *runState, opName string, op fu
 		return rerr
 	}
 
-	// Retry the op once with the fresh idToken.
 	creds = state.currentCreds()
 	err = op(creds.IDToken)
 	if err == nil {

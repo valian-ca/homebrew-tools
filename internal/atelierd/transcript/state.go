@@ -15,8 +15,7 @@ import (
 )
 
 // State is the persisted per-session watcher state. It encodes everything
-// needed to resume from a kill -9 without duplicating events already shipped
-// (VAL-201 AC 4):
+// needed to resume from a kill -9 without duplicating events already shipped:
 //
 //   - Offset       — byte position immediately past the last \n we've fully consumed.
 //   - LastMsgID    — last assistant message.id for which we emitted hook:assistant-turn.
