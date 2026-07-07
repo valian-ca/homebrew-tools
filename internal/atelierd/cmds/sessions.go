@@ -174,17 +174,11 @@ func sessionsManagerLoop(ctx context.Context, _ *runState) {
 		}
 	}
 
-	watcher, err := fsnotify.NewWatcher()
-	if err != nil {
-		atelierlog.Error("sessions-manager: fsnotify init failed; relying on poll only", "err", err.Error())
-	} else {
-		defer watcher.Close()
-		if werr := watcher.Add(transcript.SessionsDir()); werr != nil {
-			atelierlog.Error("sessions-manager: fsnotify add failed", "err", werr.Error())
-			watcher = nil
-		}
-	}
-
+	// No fsnotify on SessionsDir: watching a directory on kqueue opens one fd
+	// per file inside it, so the watch alone would pin as many descriptors as
+	// there are state files on disk (the 30-day session backlog). The 5 s
+	// poll below is the discovery path; its worst case is exactly the ≤ 5 s
+	// bound promised for fresh sessions.
 	tick := time.NewTicker(sessionPollInterval)
 	defer tick.Stop()
 	dormantTick := time.NewTicker(dormantScanInterval)
@@ -229,25 +223,6 @@ func sessionsManagerLoop(ctx context.Context, _ *runState) {
 					atelierlog.Info("sessions-manager: dormant session revived", "session", s.ClaudeSessionID)
 				}
 			}
-		case ev, ok := <-watcherEventsRaw(watcher):
-			if !ok {
-				continue
-			}
-			if !shouldHandleSessionEvent(ev) {
-				continue
-			}
-			id := sessionIDFromEventName(ev.Name)
-			if id == "" {
-				continue
-			}
-			s, lerr := transcript.LoadState(id)
-			if lerr != nil {
-				atelierlog.Warn("sessions-manager: load state failed", "session", id, "err", lerr.Error())
-				continue
-			}
-			if shouldSpawnWatcher(s, time.Now()) {
-				spawn(s)
-			}
 		}
 	}
 }
@@ -257,27 +232,6 @@ func watcherEventsRaw(w *fsnotify.Watcher) <-chan fsnotify.Event {
 		return nil
 	}
 	return w.Events
-}
-
-func shouldHandleSessionEvent(ev fsnotify.Event) bool {
-	if ev.Op&(fsnotify.Create|fsnotify.Write) == 0 {
-		return false
-	}
-	if !strings.HasSuffix(ev.Name, ".json") {
-		return false
-	}
-	if strings.HasSuffix(ev.Name, ".tmp") {
-		return false
-	}
-	return true
-}
-
-func sessionIDFromEventName(name string) string {
-	base := filepath.Base(name)
-	if !strings.HasSuffix(base, ".json") {
-		return ""
-	}
-	return strings.TrimSuffix(base, ".json")
 }
 
 // The function returns when ctx is cancelled or when the whole session tree
