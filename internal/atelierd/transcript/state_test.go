@@ -224,3 +224,70 @@ func keys(states []*State) []string {
 	}
 	return ks
 }
+
+func TestDeleteState_Parent(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	if err := SaveState(&State{ClaudeSessionID: "cs-del", JSONLPath: "/tmp/cs-del.jsonl"}); err != nil {
+		t.Fatalf("SaveState: %v", err)
+	}
+	if err := DeleteState("cs-del"); err != nil {
+		t.Fatalf("DeleteState: %v", err)
+	}
+	if _, err := LoadState("cs-del"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("state should be gone, got err=%v", err)
+	}
+	if _, err := os.Stat(SessionsDir()); err != nil {
+		t.Errorf("SessionsDir itself must survive a parent delete: %v", err)
+	}
+}
+
+func TestDeleteState_SubagentPrunesEmptyDirs(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	key := SubagentWatcherKey("cs-p", "agent-1")
+	if err := SaveState(&State{ClaudeSessionID: "cs-p", WatcherKey: key, JSONLPath: "/tmp/a.jsonl"}); err != nil {
+		t.Fatalf("SaveState: %v", err)
+	}
+	if err := DeleteState(key); err != nil {
+		t.Fatalf("DeleteState: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(SessionsDir(), "cs-p")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("emptied subagent tree should be pruned, got err=%v", err)
+	}
+	if _, err := os.Stat(SessionsDir()); err != nil {
+		t.Errorf("SessionsDir itself must survive the prune: %v", err)
+	}
+}
+
+func TestDeleteState_SubagentKeepsSiblings(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	keyA := SubagentWatcherKey("cs-p", "agent-a")
+	keyB := SubagentWatcherKey("cs-p", "agent-b")
+	for _, k := range []string{keyA, keyB} {
+		if err := SaveState(&State{ClaudeSessionID: "cs-p", WatcherKey: k, JSONLPath: "/tmp/x.jsonl"}); err != nil {
+			t.Fatalf("SaveState %s: %v", k, err)
+		}
+	}
+	if err := DeleteState(keyA); err != nil {
+		t.Fatalf("DeleteState: %v", err)
+	}
+	if _, err := LoadState(keyB); err != nil {
+		t.Errorf("sibling subagent state should survive: %v", err)
+	}
+}
+
+func TestDeleteState_InvalidKeyRejected(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if err := DeleteState("../escape"); err == nil {
+		t.Fatal("DeleteState with traversal key should fail")
+	}
+}
+
+func TestDeleteState_AbsentReturnsErrNotExist(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if err := DeleteState("never-saved"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("DeleteState on absent state: want ErrNotExist, got %v", err)
+	}
+}

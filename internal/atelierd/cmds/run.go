@@ -154,7 +154,7 @@ func runRun(cmd *cobra.Command, _ []string) error {
 	atelierlog.Info("atelierd run started", "uid", state.snapshot().UID, "host", host, "version", Version)
 
 	var wg sync.WaitGroup
-	wg.Add(8)
+	wg.Add(9)
 	go func() { defer wg.Done(); shipperLoop(rootCtx, state) }()
 	go func() { defer wg.Done(); refresherLoop(rootCtx, state) }()
 	go func() { defer wg.Done(); heartbeatLoop(rootCtx, state) }()
@@ -163,10 +163,10 @@ func runRun(cmd *cobra.Command, _ []string) error {
 	go func() { defer wg.Done(); sessionsManagerLoop(rootCtx, state) }()
 	go func() { defer wg.Done(); sessionStoreWatcherLoop(rootCtx, state) }()
 	go func() { defer wg.Done(); updaterLoop(rootCtx, state, cancel) }()
+	go func() { defer wg.Done(); stateGCLoop(rootCtx, state) }()
 
 	wg.Wait()
 	atelierlog.Info("atelierd run stopped")
-	// Write a final status snapshot capturing shutdown time.
 	state.touchTick()
 	_ = writeStatusSnapshot(state)
 	return nil
@@ -369,10 +369,6 @@ func withAuthRecovery(ctx context.Context, state *runState, opName string, op fu
 	}
 	return err
 }
-
-// ============================================================================
-// Goroutine 1 — shipperLoop
-// ============================================================================
 
 func shipperLoop(ctx context.Context, state *runState) {
 	watcher, err := fsnotify.NewWatcher()
@@ -630,10 +626,6 @@ func shipFilesIndividually(ctx context.Context, state *runState, files []string)
 	return nil
 }
 
-// ============================================================================
-// Goroutine 2 — refresherLoop
-// ============================================================================
-
 func refresherLoop(ctx context.Context, state *runState) {
 	tick := time.NewTicker(refreshPollInterval)
 	defer tick.Stop()
@@ -715,10 +707,6 @@ func performRefresh(ctx context.Context, state *runState) error {
 	return nil
 }
 
-// ============================================================================
-// Goroutine 3 — heartbeatLoop
-// ============================================================================
-
 func heartbeatLoop(ctx context.Context, state *runState) {
 	tick := time.NewTicker(heartbeatInterval)
 	defer tick.Stop()
@@ -754,10 +742,6 @@ func doHeartbeat(ctx context.Context, state *runState) {
 	state.markHeartbeat(time.Now().UTC())
 }
 
-// ============================================================================
-// Goroutine 4 — statusWriterLoop
-// ============================================================================
-
 func statusWriterLoop(ctx context.Context, state *runState) {
 	tick := time.NewTicker(statusInterval)
 	defer tick.Stop()
@@ -780,10 +764,6 @@ func statusWriterLoop(ctx context.Context, state *runState) {
 		}
 	}
 }
-
-// ============================================================================
-// Goroutine 5 — credentialsWatcherLoop
-// ============================================================================
 
 // credentialsWatcherLoop watches ~/.atelier/ for changes to the credentials
 // file. When `atelierd link` rewrites it (atomic os.Rename via
@@ -883,10 +863,6 @@ func handleCredentialsChange(state *runState) {
 	state.clearAuthLost("credentials reloaded after re-link")
 	atelierlog.Info("credentials-watcher: credentials reloaded", "uid", creds.UID, "email", creds.Email)
 }
-
-// ============================================================================
-// Goroutine 8 — updaterLoop
-// ============================================================================
 
 // updaterLoop keeps atelierd on the latest published version: it upgrades via
 // brew at startup (deduped against the persisted last-check time) and every

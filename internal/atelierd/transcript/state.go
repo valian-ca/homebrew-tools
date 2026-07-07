@@ -187,6 +187,26 @@ func SaveState(s *State) error {
 	return nil
 }
 
+// DeleteState removes a persisted state file. Empty directories left behind
+// by a subagent deletion (<parent>/subagents/, then <parent>/) are pruned so
+// GC leaves no skeleton tree; the prune stops at the first non-empty
+// directory and never climbs past SessionsDir().
+func DeleteState(key string) error {
+	if err := validateKey(key); err != nil {
+		return err
+	}
+	if err := os.Remove(SessionFile(key)); err != nil {
+		return err
+	}
+	root := SessionsDir()
+	for dir := filepath.Dir(SessionFile(key)); dir != root && strings.HasPrefix(dir, root+string(filepath.Separator)); dir = filepath.Dir(dir) {
+		if err := os.Remove(dir); err != nil {
+			break
+		}
+	}
+	return nil
+}
+
 // ListStates returns every persisted session state on disk, sorted by key.
 // Walks the sessions tree to depth 2 — top-level <id>.json (parents) and
 // <parentId>/subagents/<agentBase>.json (subagents). Files at any other depth
