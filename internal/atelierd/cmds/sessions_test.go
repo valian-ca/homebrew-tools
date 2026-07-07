@@ -605,6 +605,11 @@ func TestRunStateGC_RemovesOrphansKeepsLive(t *testing.T) {
 			WatcherKey:      transcript.SubagentWatcherKey("cs-headless", "agent-h"),
 			JSONLPath:       headlessJSONL,
 		},
+		{
+			ClaudeSessionID: "cs-live",
+			WatcherKey:      transcript.SubagentWatcherKey("cs-live", "agent-gone"),
+			JSONLPath:       "/nonexistent/cs-live/subagents/agent-gone.jsonl",
+		},
 	}
 	for _, s := range states {
 		if err := transcript.SaveState(s); err != nil {
@@ -628,6 +633,12 @@ func TestRunStateGC_RemovesOrphansKeepsLive(t *testing.T) {
 	}
 	if _, err := transcript.LoadState(transcript.SubagentWatcherKey("cs-headless", "agent-h")); !os.IsNotExist(err) {
 		t.Errorf("subagent without a parent state should be gone, got err=%v", err)
+	}
+	if _, err := transcript.LoadState(transcript.SubagentWatcherKey("cs-live", "agent-gone")); !os.IsNotExist(err) {
+		t.Errorf("subagent with a live parent but missing JSONL should be gone, got err=%v", err)
+	}
+	if _, err := transcript.LoadState("cs-live"); err != nil {
+		t.Errorf("live parent must survive its subagent's purge: %v", err)
 	}
 }
 

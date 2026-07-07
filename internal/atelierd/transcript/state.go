@@ -32,7 +32,7 @@ import (
 //   - ClosedToolUseIDs — tool_use_ids whose post-tool-use was already
 //     emitted. Kept (not pruned) so a replay after
 //     kill -9 between outbox.Write and SaveState
-//     doesn't re-emit the pre or the post (AC 4).
+//     doesn't re-emit the pre or the post.
 //   - LastTitle / LastTitleType — the last (title, event-type) pair emitted as
 //     a transcript:ai-title / transcript:custom-title. The dedup key for
 //     titles: unlike the other records a title line carries no id, and the
