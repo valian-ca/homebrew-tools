@@ -12,21 +12,15 @@ homebrew-tools/
 ├── cmd/<tool>/          # Go tool entrypoints (when Go fits)
 │   └── main.go
 ├── internal/            # Go packages shared across cmd/* tools
-├── app/<tool>/          # Native macOS apps (Swift + SwiftUI, distributed as casks)
-│   ├── project.yml      # XcodeGen source of truth (.xcodeproj is .gitignored)
-│   └── Configs/, <Tool>/, <Tool>CLI/, <Tool>Tests/
 ├── Formula/             # One Ruby formula per source-built tool
 │   └── frn.rb
-├── Casks/               # One Ruby cask per signed/notarized .app
-│   └── review-triage.rb
 ├── go.mod / go.sum
-├── .github/workflows/   # CI (go test, shellcheck, swift test, formula+cask audit, release)
+├── .github/workflows/   # CI (go test, shellcheck, formula audit)
 └── README.md
 ```
 
-Install any tool with `brew install valian-ca/tools/<name>` (formulae) or
-`brew install --cask valian-ca/tools/<name>` (apps). `brew tap valian-ca/tools`
-is implicit on first install.
+Install any tool with `brew install valian-ca/tools/<name>`.
+`brew tap valian-ca/tools` is implicit on first install.
 
 ## Conventions for adding a new tool
 
@@ -35,11 +29,7 @@ zero and portability across the team's macOS machines is trivial. Reach for
 Go when bash genuinely doesn't fit: parallel subprocess orchestration with
 timeouts, non-trivial JSON, state machines, or anything over ~300 lines.
 `frn` is an example — it lives under `cmd/frn/` with shared code in
-`internal/`. Reach for **Swift + SwiftUI** when the tool is a full GUI macOS
-app (windows, menus, sheets, keyboard shortcuts beyond TTY) — `review-triage`
-is the reference. Swift apps live under `app/<tool>/` and ship as **casks**
-(not formulae), signed with a Developer ID Application certificate and
-notarized via `notarytool` in CI.
+`internal/`.
 
 **Naming.** Short, memorable, **no `flutter-` prefix** — asdf's flutter
 plugin shims anything matching that pattern and routes it to `flutter
@@ -122,58 +112,6 @@ The formula name (filename + class) matches the binary name. Use
 per-tool git tags like `frn-0.3.0` so multiple tools can version
 independently.
 
-## Adding a native macOS app (Swift + SwiftUI)
-
-Full GUI apps ship as **casks**, not formulae. They're signed with a
-Developer ID Application certificate and notarized through Apple's
-`notarytool` service in CI, then distributed as `.zip` GitHub release
-assets.
-
-Layout under `app/<tool>/`:
-
-- `project.yml` — [XcodeGen](https://github.com/yonaskolb/XcodeGen) source
-  of truth. The `.xcodeproj` is **generated** by `xcodegen generate` and
-  **not committed** (it's in `.gitignore`).
-- `Configs/*.xcconfig` — per-target build settings (deployment target,
-  signing identity, hardened runtime, bundle identifier). Plain-text and
-  diff-friendly; PR review reads these, not `project.pbxproj`.
-- `<Tool>/` — the GUI app target (SwiftUI sources, asset catalog,
-  entitlements).
-- `<Tool>CLI/` — a CLI shim target embedded inside
-  `Contents/MacOS/<tool>-cli` of the .app bundle. The cask's `binary`
-  stanza points at this shim so `which <tool>` resolves to a CLI entry
-  point that forwards args to the GUI.
-- `<Tool>Tests/` — XCTest unit tests, ad-hoc signed.
-
-Cask file at `Casks/<tool>.rb` follows `Casks/review-triage.rb`. Per-tool
-tags use the `<tool>-app-X.Y.Z` motif (note the `-app-` segment to keep
-the namespace distinct from any sibling Go formula sharing the name).
-
-The release workflow at `.github/workflows/release-app.yml` triggers on
-tags matching `<tool>-app-*` and handles signing, notarization, stapling,
-and the GitHub release upload. Required secrets:
-
-- `APPLE_DEVELOPER_ID_CERT` / `APPLE_DEVELOPER_ID_CERT_PASSWORD` —
-  base64-encoded .p12 and its password.
-- `APPLE_NOTARY_ISSUER_ID` / `APPLE_NOTARY_KEY_ID` / `APPLE_NOTARY_KEY` —
-  App Store Connect API key.
-- `APPLE_TEAM_ID` — 10-char Apple Developer team ID.
-
-**Tag-first release sequence** (same shape as Go formulae, with a CI
-notarization step):
-
-1. PR with all source + cask scaffold (`sha256 "0000…"`).
-2. CI builds Swift + runs tests on the PR.
-3. Push tag `<tool>-app-0.1.0` on the PR HEAD.
-4. `release-app.yml` triggers: signs, notarizes, uploads the `.zip`.
-5. Commit cask update with the real `sha256` (printed in the release notes).
-6. `brew-audit` job re-runs (now with `--online`) and passes.
-7. Merge PR.
-
-Install: `brew install --cask valian-ca/tools/<name>`. The cask also drops
-the `<name>` CLI shim in the Homebrew `PATH`, so the same name resolves
-from the shell.
-
 ## Release process
 
 1. Make changes on a branch, PR, review, merge to `main`.
@@ -220,14 +158,6 @@ normalisation.
 - `go vet ./...`, `go test ./...`, and `golangci-lint run` on every PR
 - `shellcheck -x bin/*` when `bin/` isn't empty
 - `brew audit --strict --online Formula/*.rb` if any formula changed
-- `brew audit --strict --cask Casks/*.rb` (offline on PRs, online after
-  the release artifact exists) if any cask changed
-- `xcodebuild test` on `app/review-triage/` (macOS runner) when the
-  Swift project is present
-
-`.github/workflows/release-app.yml` triggers on `<tool>-app-*` tags —
-signs, notarizes, staples, and publishes the .zip as a GitHub release
-asset.
 
 Keep all jobs mandatory via branch protection on `main`.
 

@@ -1,20 +1,5 @@
 .DS_Store
 
 # Locally built tool binaries (go build ./cmd/<tool> drops these at the repo root)
-/review-triage
 /atelierd
 /frn
-
-# Xcode / Swift artifacts under app/<tool>/ — project files are generated from project.yml via xcodegen
-**/*.xcodeproj
-**/*.xcworkspace
-**/xcuserdata/
-**/.swiftpm/
-**/DerivedData/
-app/**/build/
-
-# Local Apple keychain artifacts that may surface during signing experiments
-*.p12
-*.cer
-*.keychain-db
-*.mobileprovision
