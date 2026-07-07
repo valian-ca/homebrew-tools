@@ -15,8 +15,7 @@ import (
 )
 
 // State is the persisted per-session watcher state. It encodes everything
-// needed to resume from a kill -9 without duplicating events already shipped
-// (VAL-201 AC 4):
+// needed to resume from a kill -9 without duplicating events already shipped:
 //
 //   - Offset       — byte position immediately past the last \n we've fully consumed.
 //   - LastMsgID    — last assistant message.id for which we emitted hook:assistant-turn.
@@ -33,7 +32,7 @@ import (
 //   - ClosedToolUseIDs — tool_use_ids whose post-tool-use was already
 //     emitted. Kept (not pruned) so a replay after
 //     kill -9 between outbox.Write and SaveState
-//     doesn't re-emit the pre or the post (AC 4).
+//     doesn't re-emit the pre or the post.
 //   - LastTitle / LastTitleType — the last (title, event-type) pair emitted as
 //     a transcript:ai-title / transcript:custom-title. The dedup key for
 //     titles: unlike the other records a title line carries no id, and the
@@ -183,6 +182,26 @@ func SaveState(s *State) error {
 	if err := os.Rename(tmp, target); err != nil {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("rename session state file: %w", err)
+	}
+	return nil
+}
+
+// DeleteState removes a persisted state file. Empty directories left behind
+// by a subagent deletion (<parent>/subagents/, then <parent>/) are pruned so
+// GC leaves no skeleton tree; the prune stops at the first non-empty
+// directory and never climbs past SessionsDir().
+func DeleteState(key string) error {
+	if err := validateKey(key); err != nil {
+		return err
+	}
+	if err := os.Remove(SessionFile(key)); err != nil {
+		return err
+	}
+	root := SessionsDir()
+	for dir := filepath.Dir(SessionFile(key)); dir != root && strings.HasPrefix(dir, root+string(filepath.Separator)); dir = filepath.Dir(dir) {
+		if err := os.Remove(dir); err != nil {
+			break
+		}
 	}
 	return nil
 }

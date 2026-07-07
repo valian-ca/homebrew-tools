@@ -43,6 +43,65 @@ var sessionPollInterval = 5 * time.Second
 // quickly, and the manager flips back to sessionPollInterval on attach.
 var subagentPreAttachInterval = 30 * time.Second
 
+// sessionIdleTimeout bounds watching to active sessions: a session tree with
+// no consumed line for this long releases its watchers, and dormant states
+// on disk don't get one at startup. Var so tests can shrink it.
+var sessionIdleTimeout = 30 * time.Minute
+
+// dormantScanInterval paces the revival check of dormant sessions — one
+// os.Stat of the parent JSONL per dormant state per scan, instead of an
+// open+read every 5 s. 30 s keeps the resume-latency promise (≤ 30 s) at
+// ~2 % of the old per-session cost.
+var dormantScanInterval = 30 * time.Second
+
+// stateGCInterval paces the orphan-state purge after the startup run. Claude
+// Code deletes transcripts after ~30 days, so daily is more than enough.
+var stateGCInterval = 24 * time.Hour
+
+func isSessionActive(s *transcript.State, now time.Time) bool {
+	return now.Sub(s.LastActivityAt) < sessionIdleTimeout
+}
+
+// hasUnconsumedBytes reports whether the JSONL holds bytes the offset hasn't
+// consumed. Size below the offset (truncation) counts too — consume resets
+// to 0 and re-reads. A missing or unreadable JSONL is "nothing to consume".
+func hasUnconsumedBytes(s *transcript.State) bool {
+	stat, err := os.Stat(s.JSONLPath)
+	if err != nil {
+		return false
+	}
+	return stat.Size() != s.Offset
+}
+
+func shouldSpawnWatcher(s *transcript.State, now time.Time) bool {
+	return isSessionActive(s, now) || hasUnconsumedBytes(s)
+}
+
+// activityTracker is the shared last-progress clock of one session tree: the
+// parent watcher and every subagent watcher touch it on each consumed batch,
+// and the parent idle-exits only when the whole tree has been quiet — a
+// parent must not tear down while its subagents still stream.
+type activityTracker struct {
+	mu   sync.Mutex
+	last time.Time
+}
+
+func newActivityTracker() *activityTracker {
+	return &activityTracker{last: time.Now()}
+}
+
+func (a *activityTracker) touch() {
+	a.mu.Lock()
+	a.last = time.Now()
+	a.mu.Unlock()
+}
+
+func (a *activityTracker) idleFor(now time.Time) time.Duration {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return now.Sub(a.last)
+}
+
 // Subagent transcripts are not spawned here: each parent's runSessionWatcher
 // owns a sibling subagentDirManager that watches its own
 // <parentJsonl-without-ext>/subagents/ directory.
@@ -60,14 +119,14 @@ func sessionsManagerLoop(ctx context.Context, _ *runState) {
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 
-	spawn := func(state *transcript.State) {
+	spawn := func(state *transcript.State) bool {
 		if state.IsSubagent() {
-			return
+			return false
 		}
 		mu.Lock()
 		if _, exists := watchers[state.ClaudeSessionID]; exists {
 			mu.Unlock()
-			return
+			return false
 		}
 		wctx, cancel := context.WithCancel(ctx)
 		watchers[state.ClaudeSessionID] = live{cancel: cancel}
@@ -82,16 +141,20 @@ func sessionsManagerLoop(ctx context.Context, _ *runState) {
 			}()
 			runSessionWatcher(wctx, state.ClaudeSessionID)
 		}()
+		return true
 	}
 
-	// Initial scan: rehydrate every parent session that was on disk when
-	// atelierd run started. Subagent state files are inspected only to flag
-	// orphans — a parent's subagentDirManager will rediscover its live
-	// subagents from <jsonl>/subagents/ and resume from the persisted offset.
+	// Initial scan: rehydrate only the parent sessions worth watching —
+	// active ones, plus dormant ones whose JSONL grew while the daemon was
+	// down. The rest stay on disk for the dormant scan. Subagent
+	// state files are inspected only to flag orphans — a parent's
+	// subagentDirManager will rediscover its live subagents from
+	// <jsonl>/subagents/ and resume from the persisted offset.
 	states, err := transcript.ListStates()
 	if err != nil {
 		atelierlog.Warn("sessions-manager: initial scan failed", "err", err.Error())
 	}
+	now := time.Now()
 	parentIDs := map[string]bool{}
 	for _, s := range states {
 		if !s.IsSubagent() {
@@ -100,7 +163,9 @@ func sessionsManagerLoop(ctx context.Context, _ *runState) {
 	}
 	for _, s := range states {
 		if !s.IsSubagent() {
-			spawn(s)
+			if shouldSpawnWatcher(s, now) {
+				spawn(s)
+			}
 			continue
 		}
 		if !parentIDs[s.ParentSessionID()] {
@@ -109,19 +174,15 @@ func sessionsManagerLoop(ctx context.Context, _ *runState) {
 		}
 	}
 
-	watcher, err := fsnotify.NewWatcher()
-	if err != nil {
-		atelierlog.Error("sessions-manager: fsnotify init failed; relying on poll only", "err", err.Error())
-	} else {
-		defer watcher.Close()
-		if werr := watcher.Add(transcript.SessionsDir()); werr != nil {
-			atelierlog.Error("sessions-manager: fsnotify add failed", "err", werr.Error())
-			watcher = nil
-		}
-	}
-
+	// No fsnotify on SessionsDir: watching a directory on kqueue opens one fd
+	// per file inside it, so the watch alone would pin as many descriptors as
+	// there are state files on disk (the 30-day session backlog). The 5 s
+	// poll below is the discovery path; its worst case is exactly the ≤ 5 s
+	// bound promised for fresh sessions.
 	tick := time.NewTicker(sessionPollInterval)
 	defer tick.Stop()
+	dormantTick := time.NewTicker(dormantScanInterval)
+	defer dormantTick.Stop()
 
 	for {
 		select {
@@ -134,33 +195,34 @@ func sessionsManagerLoop(ctx context.Context, _ *runState) {
 			wg.Wait()
 			return
 		case <-tick.C:
+			// Active states only: stat-ing every dormant JSONL here would put
+			// the whole fleet back on a 5 s cadence — dormants belong to the
+			// slower dormant scan.
 			states, err := transcript.ListStates()
 			if err != nil {
 				continue
 			}
+			now := time.Now()
 			for _, s := range states {
-				if s.IsSubagent() {
+				if s.IsSubagent() || !isSessionActive(s, now) {
 					continue
 				}
 				spawn(s)
 			}
-		case ev, ok := <-watcherEventsRaw(watcher):
-			if !ok {
+		case <-dormantTick.C:
+			states, err := transcript.ListStates()
+			if err != nil {
 				continue
 			}
-			if !shouldHandleSessionEvent(ev) {
-				continue
+			now := time.Now()
+			for _, s := range states {
+				if s.IsSubagent() || isSessionActive(s, now) || !hasUnconsumedBytes(s) {
+					continue
+				}
+				if spawn(s) {
+					atelierlog.Info("sessions-manager: dormant session revived", "session", s.ClaudeSessionID)
+				}
 			}
-			id := sessionIDFromEventName(ev.Name)
-			if id == "" {
-				continue
-			}
-			s, lerr := transcript.LoadState(id)
-			if lerr != nil {
-				atelierlog.Warn("sessions-manager: load state failed", "session", id, "err", lerr.Error())
-				continue
-			}
-			spawn(s)
 		}
 	}
 }
@@ -172,29 +234,12 @@ func watcherEventsRaw(w *fsnotify.Watcher) <-chan fsnotify.Event {
 	return w.Events
 }
 
-func shouldHandleSessionEvent(ev fsnotify.Event) bool {
-	if ev.Op&(fsnotify.Create|fsnotify.Write) == 0 {
-		return false
-	}
-	if !strings.HasSuffix(ev.Name, ".json") {
-		return false
-	}
-	if strings.HasSuffix(ev.Name, ".tmp") {
-		return false
-	}
-	return true
-}
-
-func sessionIDFromEventName(name string) string {
-	base := filepath.Base(name)
-	if !strings.HasSuffix(base, ".json") {
-		return ""
-	}
-	return strings.TrimSuffix(base, ".json")
-}
-
-// The function returns only when ctx is cancelled — there is no idle exit;
+// The function returns when ctx is cancelled or when the whole session tree
+// (this parent plus its subagent watchers) has been idle ≥ sessionIdleTimeout;
 // hook:session-end is emitted by the bash hook, not by atelierd.
+// The idle-exit return path runs the same defers as cancellation — fsnotify
+// watcher closed, subagent manager cancelled — and the manager's spawn filter
+// keeps the session dormant until new bytes appear.
 //
 // Crash-safety: state is saved to disk BEFORE writing envelopes to the
 // outbox. This favors zero-duplication over zero-loss; loss in the small
@@ -211,12 +256,18 @@ func runSessionWatcher(ctx context.Context, claudeSessionID string) {
 
 	atelierlog.Info("session-watcher: started", "session", claudeSessionID, "jsonl", state.JSONLPath, "offset", state.Offset)
 
+	tree := newActivityTracker()
+
+	// Copied before the goroutine launch: the watcher loop reassigns state on
+	// every consume, and the manager goroutine must not read through it.
+	jsonlPath := state.JSONLPath
+
 	subCtx, subCancel := context.WithCancel(ctx)
 	var subWG sync.WaitGroup
 	subWG.Add(1)
 	go func() {
 		defer subWG.Done()
-		subagentDirManager(subCtx, claudeSessionID, state.JSONLPath)
+		subagentDirManager(subCtx, claudeSessionID, jsonlPath, tree)
 	}()
 	defer func() {
 		subCancel()
@@ -234,7 +285,15 @@ func runSessionWatcher(ctx context.Context, claudeSessionID string) {
 		}
 	}
 
-	state = consume(ctx, state)
+	consumeTracked := func() {
+		before := state.Offset
+		state = consume(ctx, state)
+		if state.Offset != before {
+			tree.touch()
+		}
+	}
+
+	consumeTracked()
 
 	tick := time.NewTicker(sessionPollInterval)
 	defer tick.Stop()
@@ -244,7 +303,11 @@ func runSessionWatcher(ctx context.Context, claudeSessionID string) {
 		case <-ctx.Done():
 			return
 		case <-tick.C:
-			state = consume(ctx, state)
+			consumeTracked()
+			if idle := tree.idleFor(time.Now()); idle >= sessionIdleTimeout {
+				atelierlog.Info("session-watcher: idle-exit", "session", claudeSessionID, "idle", idle.String())
+				return
+			}
 		case ev, ok := <-watcherEventsRaw(watcher):
 			if !ok {
 				watcher = nil
@@ -253,7 +316,7 @@ func runSessionWatcher(ctx context.Context, claudeSessionID string) {
 			if ev.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Rename) == 0 {
 				continue
 			}
-			state = consume(ctx, state)
+			consumeTracked()
 		}
 	}
 }
@@ -268,7 +331,7 @@ func runSessionWatcher(ctx context.Context, claudeSessionID string) {
 // while each runSubagentWatcher owns its own file-watch for appends —
 // exactly mirroring sessionsManagerLoop / runSessionWatcher at the parent
 // layer.
-func subagentDirManager(ctx context.Context, parentSessionID, parentJSONLPath string) {
+func subagentDirManager(ctx context.Context, parentSessionID, parentJSONLPath string, tree *activityTracker) {
 	if !strings.HasSuffix(parentJSONLPath, ".jsonl") {
 		atelierlog.Warn("subagent-manager: parent jsonl path lacks .jsonl suffix; subagent watching disabled",
 			"parent", parentSessionID, "path", parentJSONLPath)
@@ -284,6 +347,11 @@ func subagentDirManager(ctx context.Context, parentSessionID, parentJSONLPath st
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 
+	// dormantOffsets caches the offset of subagents skipped as dormant, so
+	// the 5 s re-scan costs one os.Stat per dormant file instead of a full
+	// state read + unmarshal. Only the manager goroutine touches it.
+	dormantOffsets := map[string]int64{}
+
 	spawn := func(jsonlPath string) {
 		base := filepath.Base(jsonlPath)
 		if !strings.HasPrefix(base, subagentFilePrefix) || !strings.HasSuffix(base, ".jsonl") {
@@ -291,6 +359,14 @@ func subagentDirManager(ctx context.Context, parentSessionID, parentJSONLPath st
 		}
 		agentBase := strings.TrimSuffix(base, ".jsonl")
 		watcherKey := transcript.SubagentWatcherKey(parentSessionID, agentBase)
+
+		if off, ok := dormantOffsets[watcherKey]; ok {
+			st, serr := os.Stat(jsonlPath)
+			if serr != nil || st.Size() == off {
+				return
+			}
+			delete(dormantOffsets, watcherKey)
+		}
 
 		mu.Lock()
 		if _, exists := spawned[watcherKey]; exists {
@@ -301,7 +377,8 @@ func subagentDirManager(ctx context.Context, parentSessionID, parentJSONLPath st
 		spawned[watcherKey] = live{cancel: cancel}
 		mu.Unlock()
 
-		if _, err := transcript.LoadState(watcherKey); err != nil {
+		existing, err := transcript.LoadState(watcherKey)
+		if err != nil {
 			if !errors.Is(err, os.ErrNotExist) {
 				atelierlog.Warn("subagent-manager: load state failed", "parent", parentSessionID, "agent", agentBase, "err", err.Error())
 				mu.Lock()
@@ -324,6 +401,13 @@ func subagentDirManager(ctx context.Context, parentSessionID, parentJSONLPath st
 				cancel()
 				return
 			}
+		} else if !shouldSpawnWatcher(existing, time.Now()) {
+			dormantOffsets[watcherKey] = existing.Offset
+			mu.Lock()
+			delete(spawned, watcherKey)
+			mu.Unlock()
+			cancel()
+			return
 		}
 
 		wg.Add(1)
@@ -334,7 +418,7 @@ func subagentDirManager(ctx context.Context, parentSessionID, parentJSONLPath st
 				delete(spawned, watcherKey)
 				mu.Unlock()
 			}()
-			runSubagentWatcher(wctx, watcherKey)
+			runSubagentWatcher(wctx, watcherKey, tree)
 		}()
 	}
 
@@ -443,7 +527,10 @@ func shouldHandleSubagentEvent(ev fsnotify.Event) bool {
 	return true
 }
 
-func runSubagentWatcher(ctx context.Context, watcherKey string) {
+// runSubagentWatcher idle-exits on its own clock — a finished subagent frees
+// its kqueue while the parent lives — but every consumed batch also touches
+// the shared tree tracker so an active subagent keeps its parent alive.
+func runSubagentWatcher(ctx context.Context, watcherKey string, tree *activityTracker) {
 	state, err := transcript.LoadState(watcherKey)
 	if err != nil {
 		atelierlog.Error("subagent-watcher: load state failed; aborting", "watcherKey", watcherKey, "err", err.Error())
@@ -463,7 +550,17 @@ func runSubagentWatcher(ctx context.Context, watcherKey string) {
 		}
 	}
 
-	state = consume(ctx, state)
+	lastOwn := time.Now()
+	consumeTracked := func() {
+		before := state.Offset
+		state = consume(ctx, state)
+		if state.Offset != before {
+			lastOwn = time.Now()
+			tree.touch()
+		}
+	}
+
+	consumeTracked()
 
 	tick := time.NewTicker(sessionPollInterval)
 	defer tick.Stop()
@@ -473,7 +570,11 @@ func runSubagentWatcher(ctx context.Context, watcherKey string) {
 		case <-ctx.Done():
 			return
 		case <-tick.C:
-			state = consume(ctx, state)
+			consumeTracked()
+			if idle := time.Since(lastOwn); idle >= sessionIdleTimeout {
+				atelierlog.Info("subagent-watcher: idle-exit", "watcherKey", watcherKey, "idle", idle.String())
+				return
+			}
 		case ev, ok := <-watcherEventsRaw(watcher):
 			if !ok {
 				watcher = nil
@@ -482,9 +583,77 @@ func runSubagentWatcher(ctx context.Context, watcherKey string) {
 			if ev.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Rename) == 0 {
 				continue
 			}
-			state = consume(ctx, state)
+			consumeTracked()
 		}
 	}
+}
+
+// stateGCLoop purges session states whose transcript JSONL no longer exists
+// (Claude Code deletes transcripts after ~30 days) so ~/.atelier/sessions/
+// stops growing without bound. Startup run + daily ticker, same shape as
+// updaterLoop.
+func stateGCLoop(ctx context.Context, _ *runState) {
+	runStateGC()
+	tick := time.NewTicker(stateGCInterval)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+			runStateGC()
+		}
+	}
+}
+
+// runStateGC deletes a state only when its JSONL stat returns ErrNotExist —
+// any other stat error is indistinguishable from a transient mount/permission
+// hiccup and must not destroy the offset that guards zero-duplication. Two
+// more guards protect the same contract: an active state is never deleted
+// (its JSONL may be transiently absent mid-rotation), and subagent states
+// whose parent state is gone are purged with it — without a registered
+// parent no manager will ever watch them again.
+func runStateGC() {
+	states, err := transcript.ListStates()
+	if err != nil {
+		atelierlog.Warn("state-gc: list states failed", "err", err.Error())
+		return
+	}
+	now := time.Now()
+	deleted := 0
+	remove := func(s *transcript.State) {
+		if derr := transcript.DeleteState(s.Key()); derr != nil {
+			atelierlog.Warn("state-gc: delete failed", "key", s.Key(), "err", derr.Error())
+			return
+		}
+		deleted++
+	}
+	liveParents := map[string]bool{}
+	for _, s := range states {
+		if s.IsSubagent() {
+			continue
+		}
+		if !isSessionActive(s, now) {
+			if _, serr := os.Stat(s.JSONLPath); errors.Is(serr, os.ErrNotExist) {
+				remove(s)
+				continue
+			}
+		}
+		liveParents[s.ClaudeSessionID] = true
+	}
+	for _, s := range states {
+		if !s.IsSubagent() || isSessionActive(s, now) {
+			continue
+		}
+		if !liveParents[s.ParentSessionID()] {
+			remove(s)
+			continue
+		}
+		if _, serr := os.Stat(s.JSONLPath); errors.Is(serr, os.ErrNotExist) {
+			remove(s)
+		}
+	}
+	atelierlog.Info("state-gc: removed orphan states", "scanned", len(states), "deleted", deleted)
 }
 
 // consume reads every complete line newly available past state.Offset, derives
