@@ -1,4 +1,4 @@
-// Package events holds the atelier event taxonomy and the --data payload parser.
+// Package events holds the atelier event taxonomy and the payload parsers.
 //
 // SOURCE OF TRUTH for the type list is
 //
@@ -93,8 +93,8 @@ func ParsePayload(args []string) (map[string]any, error) {
 }
 
 // ParseJSONPayload is the typed counterpart to ParsePayload: --data stays verbatim-string
-// by design (see the VAL-195 docblock above), so nested numeric records like
-// an assistant turn's usage breakdown need this explicit opt-in JSON channel.
+// by design (see the VAL-195 docblock above), so nested or numeric payload
+// fields need this explicit opt-in JSON channel.
 func ParseJSONPayload(args []string) (map[string]any, error) {
 	out := make(map[string]any, len(args))
 	for _, raw := range args {
