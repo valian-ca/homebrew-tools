@@ -43,8 +43,6 @@ func TestAllReturnsFourteenTypes(t *testing.T) {
 }
 
 func TestParsePayload(t *testing.T) {
-	// VAL-195: every value is stored verbatim as a string. Type coercion is
-	// the consumer's responsibility (Zod schemas in valian-dashboards).
 	cases := []struct {
 		name    string
 		args    []string
@@ -123,6 +121,93 @@ func TestParsePayload(t *testing.T) {
 			}
 			if !reflect.DeepEqual(got, c.want) {
 				t.Errorf("ParsePayload(%v) = %v, want %v", c.args, got, c.want)
+			}
+		})
+	}
+}
+
+func TestParseJSONPayload(t *testing.T) {
+	cases := []struct {
+		name    string
+		args    []string
+		want    map[string]any
+		wantErr bool
+	}{
+		{
+			name: "nested object with numeric values",
+			args: []string{`usage={"input_tokens":1200,"cache_creation":{"ephemeral_5m_input_tokens":800}}`},
+			want: map[string]any{"usage": map[string]any{
+				"input_tokens":   float64(1200),
+				"cache_creation": map[string]any{"ephemeral_5m_input_tokens": float64(800)},
+			}},
+		},
+		{
+			name: "scalar number",
+			args: []string{"count=42"},
+			want: map[string]any{"count": float64(42)},
+		},
+		{
+			name: "scalar boolean",
+			args: []string{"success=true"},
+			want: map[string]any{"success": true},
+		},
+		{
+			name: "quoted string",
+			args: []string{`title="2025"`},
+			want: map[string]any{"title": "2025"},
+		},
+		{
+			name: "null value",
+			args: []string{"cost=null"},
+			want: map[string]any{"cost": nil},
+		},
+		{
+			name: "array value",
+			args: []string{"models=[\"a\",\"b\"]"},
+			want: map[string]any{"models": []any{"a", "b"}},
+		},
+		{
+			name: "value containing equals",
+			args: []string{`q="a=b"`},
+			want: map[string]any{"q": "a=b"},
+		},
+		{
+			name:    "bare word is not JSON",
+			args:    []string{"title=hello"},
+			wantErr: true,
+		},
+		{
+			name:    "truncated object",
+			args:    []string{`usage={"input_tokens":`},
+			wantErr: true,
+		},
+		{
+			name:    "empty value",
+			args:    []string{"usage="},
+			wantErr: true,
+		},
+		{
+			name:    "no equals",
+			args:    []string{"usage"},
+			wantErr: true,
+		},
+		{
+			name:    "empty key",
+			args:    []string{"={}"},
+			wantErr: true,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := ParseJSONPayload(c.args)
+			if (err != nil) != c.wantErr {
+				t.Fatalf("ParseJSONPayload(%v) error = %v, wantErr = %v", c.args, err, c.wantErr)
+			}
+			if c.wantErr {
+				return
+			}
+			if !reflect.DeepEqual(got, c.want) {
+				t.Errorf("ParseJSONPayload(%v) = %v, want %v", c.args, got, c.want)
 			}
 		})
 	}
