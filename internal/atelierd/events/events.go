@@ -77,7 +77,7 @@ func IsValid(s string) bool {
 }
 
 // ParsePayload converts a list of "key=value" args into a payload map.
-// Values are stored verbatim as strings — see the package docblock above
+// Values are stored verbatim as strings — see the VAL-195 docblock above
 // for rationale. Returns an error on the first malformed arg ("key=" with
 // no value, or no "=").
 func ParsePayload(args []string) (map[string]any, error) {
