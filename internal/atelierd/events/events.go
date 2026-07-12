@@ -1,4 +1,4 @@
-// Package events holds the atelier event taxonomy and the --data payload parser.
+// Package events holds the atelier event taxonomy and the payload parsers.
 //
 // SOURCE OF TRUTH for the type list is
 //
@@ -12,7 +12,9 @@
 package events
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 )
@@ -46,7 +48,6 @@ const (
 	TranscriptCustomTitle Type = "transcript:custom-title"
 )
 
-// All returns every valid event type, sorted alphabetically (stable for tests).
 func All() []Type {
 	return []Type{
 		HookAssistantTurn,
@@ -66,7 +67,6 @@ func All() []Type {
 	}
 }
 
-// IsValid reports whether s is one of the recognised event types.
 func IsValid(s string) bool {
 	for _, t := range All() {
 		if string(t) == s {
@@ -77,9 +77,8 @@ func IsValid(s string) bool {
 }
 
 // ParsePayload converts a list of "key=value" args into a payload map.
-// Values are stored verbatim as strings — see the package docblock above
-// for rationale. Returns an error on the first malformed arg ("key=" with
-// no value, or no "=").
+// Values are stored verbatim as strings — see the VAL-195 docblock above
+// for rationale.
 func ParsePayload(args []string) (map[string]any, error) {
 	out := make(map[string]any, len(args))
 	for _, raw := range args {
@@ -88,6 +87,25 @@ func ParsePayload(args []string) (map[string]any, error) {
 			return nil, errors.New("invalid --data: must be key=value, got " + strconv.Quote(raw))
 		}
 		out[key] = val
+	}
+	return out, nil
+}
+
+// ParseJSONPayload is the typed counterpart to ParsePayload: --data stays verbatim-string
+// by design (see the VAL-195 docblock above), so nested or numeric payload
+// fields need this explicit opt-in JSON channel.
+func ParseJSONPayload(args []string) (map[string]any, error) {
+	out := make(map[string]any, len(args))
+	for _, raw := range args {
+		key, val, ok := strings.Cut(raw, "=")
+		if !ok || key == "" {
+			return nil, errors.New("invalid --data-json: must be key=<json>, got " + strconv.Quote(raw))
+		}
+		var parsed any
+		if err := json.Unmarshal([]byte(val), &parsed); err != nil {
+			return nil, fmt.Errorf("invalid --data-json %s: %w", strconv.Quote(raw), err)
+		}
+		out[key] = parsed
 	}
 	return out, nil
 }

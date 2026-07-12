@@ -13,9 +13,9 @@ import (
 	"github.com/valian-ca/homebrew-tools/internal/atelierd/ulid"
 )
 
-// NewEmitCmd builds the `atelierd emit <type> <claudeSessionId>` sub-command.
 func NewEmitCmd() *cobra.Command {
 	var dataPairs []string
+	var dataJSONPairs []string
 	c := &cobra.Command{
 		Use:   "emit <type> <claudeSessionId>",
 		Short: "Append an event to the outbox for later shipping",
@@ -24,12 +24,17 @@ and write it atomically to ~/.atelier/outbox/<ulid>.json.
 
 The host, uid, and ts fields are intentionally absent — atelierd run adds them
 at ship time. emit is auth-decoupled: it succeeds even when no Firebase link
-is established yet (per AC 5).
+is established yet.
+
+--data values are kept as verbatim strings; --data-json values are parsed as
+JSON, for payload fields that need nesting or numeric types. When both flags
+set the same key, the --data-json value wins.
 
 Examples:
   atelierd emit hook:user-prompt-submit cs-abc123
   atelierd emit hook:pre-tool-use cs-abc123 --data tool=Edit
-  atelierd emit skill:phase-start cs-abc123 --data phase=blueprint --data ticketId=VAL-164`,
+  atelierd emit skill:phase-start cs-abc123 --data phase=blueprint --data ticketId=VAL-164
+  atelierd emit hook:assistant-turn cs-abc123 --data model=gpt-5.6-sol --data-json usage='{"input_tokens":1200,"output_tokens":90}'`,
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			eventType := args[0]
@@ -48,6 +53,13 @@ Examples:
 			}
 			if payload == nil {
 				payload = map[string]any{}
+			}
+			jsonPayload, err := events.ParseJSONPayload(dataJSONPairs)
+			if err != nil {
+				return err
+			}
+			for key, val := range jsonPayload {
+				payload[key] = val
 			}
 
 			// On hook:session-start with --data jsonlPath, register the
@@ -86,5 +98,6 @@ Examples:
 		},
 	}
 	c.Flags().StringArrayVar(&dataPairs, "data", nil, "key=value entry to add to payload (repeatable)")
+	c.Flags().StringArrayVar(&dataJSONPairs, "data-json", nil, "key=<json> entry to add to payload, value parsed as JSON (repeatable)")
 	return c
 }
