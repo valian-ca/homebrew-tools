@@ -789,3 +789,66 @@ func TestRunSessionWatcher_StaysAliveWhileSubagentStreams(t *testing.T) {
 		t.Fatal("parent did not idle-exit after the subagent went quiet")
 	}
 }
+
+func TestRunSessionEndJanitor_SynthesizesEndForIdleTranscriptLessSessions(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	states := []*transcript.State{
+		// Idle past sessionIdleTimeout, transcript-less → close synthesized.
+		{ClaudeSessionID: "cs-opencode-idle", LastActivityAt: time.Now().UTC().Add(-time.Hour)},
+		// Still active → untouched.
+		{ClaudeSessionID: "cs-opencode-live", LastActivityAt: time.Now().UTC()},
+		// Watcher-backed and idle → not the janitor's business.
+		{ClaudeSessionID: "cs-watched", JSONLPath: "/tmp/cs-watched.jsonl", LastActivityAt: time.Now().UTC().Add(-time.Hour)},
+	}
+	for _, s := range states {
+		if err := transcript.SaveState(s); err != nil {
+			t.Fatalf("save %s: %v", s.Key(), err)
+		}
+	}
+
+	runSessionEndJanitor()
+
+	envelopes := readOutbox(t)
+	if len(envelopes) != 1 {
+		t.Fatalf("outbox holds %d envelopes, want exactly 1 synthesized session-end", len(envelopes))
+	}
+	env := envelopes[0]
+	if env.Type != "hook:session-end" || env.ClaudeSessionID != "cs-opencode-idle" {
+		t.Errorf("envelope = %s for %s, want hook:session-end for cs-opencode-idle", env.Type, env.ClaudeSessionID)
+	}
+	if _, err := transcript.LoadState("cs-opencode-idle"); !os.IsNotExist(err) {
+		t.Errorf("closed session's state should be retired, got err=%v", err)
+	}
+	if _, err := transcript.LoadState("cs-opencode-live"); err != nil {
+		t.Errorf("active transcript-less state must survive: %v", err)
+	}
+	if _, err := transcript.LoadState("cs-watched"); err != nil {
+		t.Errorf("watcher-backed state must survive: %v", err)
+	}
+
+	// Second run: the state is gone, no duplicate close may be synthesized.
+	runSessionEndJanitor()
+	if again := readOutbox(t); len(again) != 1 {
+		t.Errorf("second run synthesized %d extra envelope(s), want none", len(again)-1)
+	}
+}
+
+func TestRunStateGC_KeepsTranscriptLessStates(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	// Idle transcript-less state: os.Stat("") reads as ErrNotExist, but the
+	// session-end janitor owns this lifecycle — GC must not purge it first.
+	if err := transcript.SaveState(&transcript.State{
+		ClaudeSessionID: "cs-opencode-idle",
+		LastActivityAt:  time.Now().UTC().Add(-time.Hour),
+	}); err != nil {
+		t.Fatalf("save state: %v", err)
+	}
+
+	runStateGC()
+
+	if _, err := transcript.LoadState("cs-opencode-idle"); err != nil {
+		t.Errorf("transcript-less state should survive GC: %v", err)
+	}
+}
