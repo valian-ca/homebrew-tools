@@ -13,6 +13,8 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 
+	"github.com/valian-ca/homebrew-tools/internal/atelierd/devicebank"
+	"github.com/valian-ca/homebrew-tools/internal/atelierd/events"
 	atelierlog "github.com/valian-ca/homebrew-tools/internal/atelierd/log"
 	"github.com/valian-ca/homebrew-tools/internal/atelierd/outbox"
 	"github.com/valian-ca/homebrew-tools/internal/atelierd/paths"
@@ -57,6 +59,11 @@ var dormantScanInterval = 30 * time.Second
 // stateGCInterval paces the orphan-state purge after the startup run. Claude
 // Code deletes transcripts after ~30 days, so daily is more than enough.
 var stateGCInterval = 24 * time.Hour
+
+// sessionEndJanitorInterval paces the idle scan of transcript-less sessions.
+// One ListStates walk per tick — a minute keeps the synthesized close within
+// a tick of the sessionIdleTimeout promise without heating the disk.
+var sessionEndJanitorInterval = time.Minute
 
 func isSessionActive(s *transcript.State, now time.Time) bool {
 	return now.Sub(s.LastActivityAt) < sessionIdleTimeout
@@ -121,6 +128,12 @@ func sessionsManagerLoop(ctx context.Context, _ *runState) {
 
 	spawn := func(state *transcript.State) bool {
 		if state.IsSubagent() {
+			return false
+		}
+		// Transcript-less sessions (OpenCode signature) have no JSONL to
+		// watch — fsnotify.Add("") and os.Open("") would just error in a
+		// loop. Their lifecycle belongs to the session-end janitor.
+		if state.JSONLPath == "" {
 			return false
 		}
 		mu.Lock()
@@ -633,6 +646,13 @@ func runStateGC() {
 		if s.IsSubagent() {
 			continue
 		}
+		// Transcript-less states (OpenCode signature) have no JSONL to
+		// orphan-check — os.Stat("") reads as ErrNotExist and would purge
+		// them before the session-end janitor synthesizes their close.
+		if s.JSONLPath == "" {
+			liveParents[s.ClaudeSessionID] = true
+			continue
+		}
 		if !isSessionActive(s, now) {
 			if _, serr := os.Stat(s.JSONLPath); errors.Is(serr, os.ErrNotExist) {
 				remove(s)
@@ -654,6 +674,63 @@ func runStateGC() {
 		}
 	}
 	atelierlog.Info("state-gc: removed orphan states", "scanned", len(states), "deleted", deleted)
+}
+
+// sessionEndJanitorLoop synthesizes hook:session-end for transcript-less
+// sessions (OpenCode signature — registered without a jsonlPath) once they
+// have been idle ≥ sessionIdleTimeout. The OpenCode plugin's exit handler
+// covers the clean quit; this janitor covers kill -9 and handler misfires.
+// Startup run + ticker, same shape as stateGCLoop.
+func sessionEndJanitorLoop(ctx context.Context, _ *runState) {
+	runSessionEndJanitor()
+	tick := time.NewTicker(sessionEndJanitorInterval)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+			runSessionEndJanitor()
+		}
+	}
+}
+
+// runSessionEndJanitor deletes the state BEFORE writing the envelope — the
+// same zero-duplication contract as consume(): a crash in the window loses
+// one synthesized close (the backend's freshness window still reaps the lane
+// eventually) instead of risking a duplicate end after restart.
+func runSessionEndJanitor() {
+	states, err := transcript.ListStates()
+	if err != nil {
+		atelierlog.Warn("session-end-janitor: list states failed", "err", err.Error())
+		return
+	}
+	now := time.Now()
+	for _, s := range states {
+		if s.IsSubagent() || s.JSONLPath != "" || isSessionActive(s, now) {
+			continue
+		}
+		if derr := transcript.DeleteState(s.Key()); derr != nil {
+			atelierlog.Warn("session-end-janitor: delete state failed", "session", s.ClaudeSessionID, "err", derr.Error())
+			continue
+		}
+		env := &outbox.Envelope{
+			ULID:            ulid.New(),
+			Type:            string(events.HookSessionEnd),
+			ClaudeSessionID: s.ClaudeSessionID,
+			Payload:         map[string]any{},
+			CreatedAt:       time.Now().UTC(),
+		}
+		if werr := outbox.Write(env); werr != nil {
+			atelierlog.Warn("session-end-janitor: outbox write failed", "session", s.ClaudeSessionID, "err", werr.Error())
+			continue
+		}
+		// Mirror the CLI emit path: a session close releases its device
+		// leases (VAL-268). Best-effort, like everything lease-related.
+		devicebank.OnEmit(s.ClaudeSessionID, true)
+		atelierlog.Info("session-end-janitor: synthesized hook:session-end",
+			"session", s.ClaudeSessionID, "idle", now.Sub(s.LastActivityAt).String())
+	}
 }
 
 // consume reads every complete line newly available past state.Offset, derives

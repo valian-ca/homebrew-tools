@@ -154,7 +154,7 @@ func runRun(cmd *cobra.Command, _ []string) error {
 	atelierlog.Info("atelierd run started", "uid", state.snapshot().UID, "host", host, "version", Version)
 
 	var wg sync.WaitGroup
-	wg.Add(9)
+	wg.Add(10)
 	go func() { defer wg.Done(); shipperLoop(rootCtx, state) }()
 	go func() { defer wg.Done(); refresherLoop(rootCtx, state) }()
 	go func() { defer wg.Done(); heartbeatLoop(rootCtx, state) }()
@@ -164,6 +164,7 @@ func runRun(cmd *cobra.Command, _ []string) error {
 	go func() { defer wg.Done(); sessionStoreWatcherLoop(rootCtx, state) }()
 	go func() { defer wg.Done(); updaterLoop(rootCtx, state, cancel) }()
 	go func() { defer wg.Done(); stateGCLoop(rootCtx, state) }()
+	go func() { defer wg.Done(); sessionEndJanitorLoop(rootCtx, state) }()
 
 	wg.Wait()
 	atelierlog.Info("atelierd run stopped")
