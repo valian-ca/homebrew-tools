@@ -228,10 +228,21 @@ func readRun(runID string) (*runState, error) {
 }
 
 func readCampaign(runID string) (*Campaign, error) {
+	campaign, err := readCampaignIfPresent(runID)
+	if err != nil {
+		return nil, err
+	}
+	if campaign == nil {
+		return nil, ErrCampaignInvalid
+	}
+	return campaign, nil
+}
+
+func readCampaignIfPresent(runID string) (*Campaign, error) {
 	data, err := readNoFollow(paths.ForgeCampaign(runID), MaxCampaignFileBytes)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, ErrCampaignInvalid
+			return nil, nil
 		}
 		return nil, fmt.Errorf("%w: read campaign: %v", ErrCampaignInvalid, err)
 	}

@@ -65,8 +65,8 @@ func TestForgeCommandExitCodes(t *testing.T) {
 	}
 	runID := startCommandRun(t, 1)
 	_, _, err = executeForge("pass", "next", "--run", runID, "--kind", "wave")
-	if ExitCode(err) != ExitForgeCampaign {
-		t.Fatalf("missing campaign pass exit = %d, error %v", ExitCode(err), err)
+	if ExitCode(err) != ExitForgeInvalidPass {
+		t.Fatalf("pass without open wave exit = %d, error %v", ExitCode(err), err)
 	}
 	_, _, err = executeForge("campaign", "load", "--run", runID)
 	if ExitCode(err) != ExitForgeCampaign {
@@ -136,7 +136,7 @@ func TestForgeCommandExitCodes(t *testing.T) {
 	}
 }
 
-func TestForgePassCommandRequiresCampaignBeforeAllocation(t *testing.T) {
+func TestForgePassCommandWithoutCampaign(t *testing.T) {
 	validCampaign := `{"schemaVersion":1,"axes":[{"title":"A","scenarios":[{"title":"S","steps":["Do"],"expected":"Done"}]}]}`
 	for _, kind := range []string{"wave", "review", "repair"} {
 		t.Run(kind, func(t *testing.T) {
@@ -147,35 +147,81 @@ func TestForgePassCommandRequiresCampaignBeforeAllocation(t *testing.T) {
 					t.Fatalf("wave open: %v", err)
 				}
 			}
-			before, err := os.ReadFile(paths.ForgeRunState(runID))
-			if err != nil {
-				t.Fatalf("read state before: %v", err)
+			stdout, stderr, err := executeForge("pass", "next", "--run", runID, "--kind", kind)
+			captureDir := strings.TrimSpace(stdout)
+			if err != nil || stderr != "" || !filepath.IsAbs(captureDir) || filepath.Base(captureDir) != kind+"-1" {
+				t.Fatalf("pass stdout=%q stderr=%q error=%v", stdout, stderr, err)
 			}
-			_, _, err = executeForge("pass", "next", "--run", runID, "--kind", kind)
-			if ExitCode(err) != ExitForgeCampaign {
-				t.Fatalf("missing campaign exit = %d, error %v", ExitCode(err), err)
+			if info, err := os.Stat(captureDir); err != nil || !info.IsDir() {
+				t.Fatalf("capture dir stat = %v, %v", info, err)
 			}
-			after, err := os.ReadFile(paths.ForgeRunState(runID))
-			if err != nil {
-				t.Fatalf("read state after: %v", err)
-			}
-			if !bytes.Equal(before, after) {
-				t.Fatal("failed pass changed run state")
-			}
-			if _, err := os.Stat(paths.ForgeCaptures(runID)); !errors.Is(err, os.ErrNotExist) {
-				t.Fatalf("failed pass changed captures: %v", err)
-			}
-
 			campaign := commandTestFile(t, "campaign.json", validCampaign)
-			if _, _, err := executeForge("campaign", "save", "--run", runID, "--from", campaign); err != nil {
-				t.Fatalf("campaign save after failed pass: %v", err)
-			}
-			stdout, _, err := executeForge("pass", "next", "--run", runID, "--kind", kind)
-			if err != nil || filepath.Base(strings.TrimSpace(stdout)) != kind+"-1" {
-				t.Fatalf("successful pass stdout=%q error=%v", stdout, err)
+			_, _, err = executeForge("campaign", "save", "--run", runID, "--from", campaign)
+			if ExitCode(err) != ExitForgeStaging {
+				t.Fatalf("campaign save after pass exit = %d, error %v", ExitCode(err), err)
 			}
 		})
 	}
+}
+
+func TestForgeCommandsRejectInvalidCampaignWithoutMutation(t *testing.T) {
+	t.Run("pass next", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		runID := startCommandRun(t, 2)
+		if _, _, err := executeForge("wave", "open", "--run", runID); err != nil {
+			t.Fatalf("wave open: %v", err)
+		}
+		if err := os.WriteFile(paths.ForgeCampaign(runID), []byte(`{"schemaVersion":1,"axes":[]}`), 0o600); err != nil {
+			t.Fatalf("write invalid campaign: %v", err)
+		}
+		before, err := os.ReadFile(paths.ForgeRunState(runID))
+		if err != nil {
+			t.Fatalf("read state before: %v", err)
+		}
+		_, _, err = executeForge("pass", "next", "--run", runID, "--kind", "wave")
+		if ExitCode(err) != ExitForgeCampaign {
+			t.Fatalf("pass next exit = %d, error %v", ExitCode(err), err)
+		}
+		after, err := os.ReadFile(paths.ForgeRunState(runID))
+		if err != nil {
+			t.Fatalf("read state after: %v", err)
+		}
+		if !bytes.Equal(before, after) {
+			t.Fatal("failed pass changed run state")
+		}
+		if _, err := os.Stat(paths.ForgeCaptures(runID)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("failed pass changed captures: %v", err)
+		}
+	})
+
+	t.Run("wave close", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		runID := startCommandRun(t, 2)
+		if _, _, err := executeForge("wave", "open", "--run", runID); err != nil {
+			t.Fatalf("wave open: %v", err)
+		}
+		if _, _, err := executeForge("pass", "next", "--run", runID, "--kind", "wave"); err != nil {
+			t.Fatalf("pass next: %v", err)
+		}
+		if err := os.WriteFile(paths.ForgeCampaign(runID), []byte(`{"schemaVersion":1,"axes":[]}`), 0o600); err != nil {
+			t.Fatalf("write invalid campaign: %v", err)
+		}
+		before, err := os.ReadFile(paths.ForgeRunState(runID))
+		if err != nil {
+			t.Fatalf("read state before: %v", err)
+		}
+		_, _, err = executeForge("wave", "close", "--run", runID, "--findings", "0")
+		if ExitCode(err) != ExitForgeCampaign {
+			t.Fatalf("wave close exit = %d, error %v", ExitCode(err), err)
+		}
+		after, err := os.ReadFile(paths.ForgeRunState(runID))
+		if err != nil {
+			t.Fatalf("read state after: %v", err)
+		}
+		if !bytes.Equal(before, after) {
+			t.Fatal("failed close changed run state")
+		}
+	})
 }
 
 func TestForgeCommandsWithSaturatedOutboxAndNoAuth(t *testing.T) {

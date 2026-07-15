@@ -174,32 +174,34 @@ func CloseWaveContext(ctx context.Context, runID string, findings int) (string, 
 		if currentPass == nil {
 			return fmt.Errorf("%w: wave %d has no pass", ErrInvalidPass, state.Wave)
 		}
-		campaign, err := readCampaign(runID)
+		campaign, err := readCampaignIfPresent(runID)
 		if err != nil {
 			return err
 		}
-		ledger, err := readLedger(runID)
-		if err != nil {
-			return err
-		}
-		if err := validatePersistedData(state, campaign, ledger); err != nil {
-			return err
-		}
-		var recorded *ledgerPass
-		for i := range ledger.Passes {
-			if ledger.Passes[i].PassID == currentPass.ID {
-				recorded = &ledger.Passes[i]
-				break
+		if campaign != nil {
+			ledger, err := readLedger(runID)
+			if err != nil {
+				return err
 			}
-		}
-		if recorded == nil {
-			return fmt.Errorf("%w: wave pass %s has no recorded outcome", ErrInvalidPass, currentPass.ID)
-		}
-		if recorded.Kind != passWave || recorded.Wave != state.Wave {
-			return fmt.Errorf("%w: ledger entry %s does not belong to wave %d", ErrInvalidPass, recorded.PassID, state.Wave)
-		}
-		if findings != recorded.Counts.Finding {
-			return fmt.Errorf("%w: findings %d do not match ledger count %d", ErrInvalidPass, findings, recorded.Counts.Finding)
+			if err := validatePersistedData(state, campaign, ledger); err != nil {
+				return err
+			}
+			var recorded *ledgerPass
+			for i := range ledger.Passes {
+				if ledger.Passes[i].PassID == currentPass.ID {
+					recorded = &ledger.Passes[i]
+					break
+				}
+			}
+			if recorded == nil {
+				return fmt.Errorf("%w: wave pass %s has no recorded outcome", ErrInvalidPass, currentPass.ID)
+			}
+			if recorded.Kind != passWave || recorded.Wave != state.Wave {
+				return fmt.Errorf("%w: ledger entry %s does not belong to wave %d", ErrInvalidPass, recorded.PassID, state.Wave)
+			}
+			if findings != recorded.Counts.Finding {
+				return fmt.Errorf("%w: findings %d do not match ledger count %d", ErrInvalidPass, findings, recorded.Counts.Finding)
+			}
 		}
 		if findings == 0 {
 			decision = "dry"
@@ -237,10 +239,8 @@ func NextPassContext(ctx context.Context, runID, kindValue string) (string, erro
 		if err != nil {
 			return err
 		}
-		// A pass is the point at which the campaign becomes immutable. Validate
-		// it before checking or changing pass state, and before creating any
-		// capture directories, so a failed campaign save can still be retried.
-		if _, err := readCampaign(runID); err != nil {
+		campaign, err := readCampaignIfPresent(runID)
+		if err != nil {
 			return err
 		}
 		if state.OpenPass != "" {
@@ -289,7 +289,9 @@ func NextPassContext(ctx context.Context, runID, kindValue string) (string, erro
 		case passRepair:
 			state.NextRepair = sequence + 1
 		}
-		state.OpenPass = created.ID
+		if campaign != nil {
+			state.OpenPass = created.ID
+		}
 		queueEvent(state, events.ForgePass, map[string]any{
 			"passId": created.ID, "kind": string(created.Kind), "wave": created.Wave,
 		})

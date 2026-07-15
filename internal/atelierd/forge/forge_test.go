@@ -373,56 +373,242 @@ func TestWaveAndPassConcurrency(t *testing.T) {
 	}
 }
 
-func TestNextPassRequiresCampaignBeforeMutation(t *testing.T) {
-	validCampaign := `{"schemaVersion":1,"axes":[{"title":"A","scenarios":[{"title":"S","steps":["Do"],"expected":"Done"}]}]}`
-	for _, campaign := range []struct {
-		name    string
-		content string
-	}{
-		{name: "missing", content: ""},
-		{name: "invalid", content: `{"schemaVersion":1,"axes":[]}`},
-	} {
-		for _, kind := range []passKind{passWave, passReview, passRepair} {
-			t.Run(campaign.name+"/"+string(kind), func(t *testing.T) {
-				t.Setenv("HOME", t.TempDir())
-				runID := startTestRun(t, DefaultCap)
-				if kind == passWave {
-					if _, err := OpenWave(runID); err != nil {
-						t.Fatalf("OpenWave: %v", err)
-					}
-				}
-				if campaign.content != "" {
-					if err := os.WriteFile(paths.ForgeCampaign(runID), []byte(campaign.content), 0o600); err != nil {
-						t.Fatalf("write invalid campaign: %v", err)
-					}
-				}
-				before, err := os.ReadFile(paths.ForgeRunState(runID))
-				if err != nil {
-					t.Fatalf("read state before: %v", err)
-				}
-				if _, err := NextPass(runID, string(kind)); !errors.Is(err, ErrCampaignInvalid) {
-					t.Fatalf("NextPass %s error = %v; want ErrCampaignInvalid", kind, err)
-				}
-				after, err := os.ReadFile(paths.ForgeRunState(runID))
-				if err != nil {
-					t.Fatalf("read state after: %v", err)
-				}
-				if !reflect.DeepEqual(before, after) {
-					t.Fatal("failed pass changed run state")
-				}
-				if _, err := os.Stat(paths.ForgeCaptures(runID)); !errors.Is(err, os.ErrNotExist) {
-					t.Fatalf("failed pass changed captures: %v", err)
-				}
-
-				staging := writeTestFile(t, "campaign.json", validCampaign)
-				if err := SaveCampaign(runID, staging); err != nil {
-					t.Fatalf("SaveCampaign after failed pass: %v", err)
-				}
-				if _, err := NextPass(runID, string(kind)); err != nil {
-					t.Fatalf("NextPass %s after save: %v", kind, err)
-				}
-			})
+func TestCampaignlessWaveAndPassConcurrency(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	runID := startTestRun(t, 1)
+	if _, err := OpenWave(runID); err != nil {
+		t.Fatalf("OpenWave: %v", err)
+	}
+	const workers = 12
+	var wg sync.WaitGroup
+	passResults := make(chan error, workers)
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := NextPass(runID, "wave")
+			passResults <- err
+		}()
+	}
+	wg.Wait()
+	close(passResults)
+	passSuccess := 0
+	for err := range passResults {
+		if err == nil {
+			passSuccess++
+		} else if !errors.Is(err, ErrInvalidPass) {
+			t.Fatalf("concurrent NextPass: %v", err)
 		}
+	}
+	if passSuccess != 1 {
+		t.Fatalf("successful concurrent passes = %d, want 1", passSuccess)
+	}
+	entries, err := os.ReadDir(paths.ForgeCaptures(runID))
+	if err != nil {
+		t.Fatalf("read captures: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "wave-1" {
+		t.Fatalf("capture entries = %v, want wave-1", entries)
+	}
+
+	closeResults := make(chan struct {
+		decision string
+		err      error
+	}, workers)
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			decision, err := CloseWave(runID, 1)
+			closeResults <- struct {
+				decision string
+				err      error
+			}{decision, err}
+		}()
+	}
+	wg.Wait()
+	close(closeResults)
+	closeSuccess := 0
+	for result := range closeResults {
+		if result.err == nil {
+			closeSuccess++
+			if result.decision != "cap" {
+				t.Fatalf("CloseWave decision = %q, want cap", result.decision)
+			}
+		} else if !errors.Is(result.err, ErrInvalidPass) {
+			t.Fatalf("concurrent CloseWave: %v", result.err)
+		}
+	}
+	if closeSuccess != 1 {
+		t.Fatalf("successful concurrent closes = %d, want 1", closeSuccess)
+	}
+}
+
+func TestNextPassWithoutCampaign(t *testing.T) {
+	for _, kind := range []passKind{passWave, passReview, passRepair} {
+		t.Run(string(kind), func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			runID := startTestRun(t, DefaultCap)
+			if kind == passWave {
+				if _, err := OpenWave(runID); err != nil {
+					t.Fatalf("OpenWave: %v", err)
+				}
+			}
+			captureDir, err := NextPass(runID, string(kind))
+			if err != nil {
+				t.Fatalf("NextPass %s: %v", kind, err)
+			}
+			if !filepath.IsAbs(captureDir) {
+				t.Fatalf("capture dir = %q, want absolute path", captureDir)
+			}
+			if info, err := os.Stat(captureDir); err != nil || !info.IsDir() {
+				t.Fatalf("capture dir stat = %v, %v", info, err)
+			}
+			state, err := readRun(runID)
+			if err != nil {
+				t.Fatalf("readRun: %v", err)
+			}
+			if state.OpenPass != "" {
+				t.Fatalf("OpenPass = %q, want empty without campaign", state.OpenPass)
+			}
+		})
+	}
+}
+
+func TestNextPassRejectsInvalidCampaignBeforeMutation(t *testing.T) {
+	validCampaign := `{"schemaVersion":1,"axes":[{"title":"A","scenarios":[{"title":"S","steps":["Do"],"expected":"Done"}]}]}`
+	for _, kind := range []passKind{passWave, passReview, passRepair} {
+		t.Run(string(kind), func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			runID := startTestRun(t, DefaultCap)
+			if kind == passWave {
+				if _, err := OpenWave(runID); err != nil {
+					t.Fatalf("OpenWave: %v", err)
+				}
+			}
+			if err := os.WriteFile(paths.ForgeCampaign(runID), []byte(`{"schemaVersion":1,"axes":[]}`), 0o600); err != nil {
+				t.Fatalf("write invalid campaign: %v", err)
+			}
+			before, err := os.ReadFile(paths.ForgeRunState(runID))
+			if err != nil {
+				t.Fatalf("read state before: %v", err)
+			}
+			if _, err := NextPass(runID, string(kind)); !errors.Is(err, ErrCampaignInvalid) {
+				t.Fatalf("NextPass %s error = %v; want ErrCampaignInvalid", kind, err)
+			}
+			after, err := os.ReadFile(paths.ForgeRunState(runID))
+			if err != nil {
+				t.Fatalf("read state after: %v", err)
+			}
+			if !reflect.DeepEqual(before, after) {
+				t.Fatal("failed pass changed run state")
+			}
+			if _, err := os.Stat(paths.ForgeCaptures(runID)); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("failed pass changed captures: %v", err)
+			}
+
+			staging := writeTestFile(t, "campaign.json", validCampaign)
+			if err := SaveCampaign(runID, staging); err != nil {
+				t.Fatalf("SaveCampaign after failed pass: %v", err)
+			}
+			if _, err := NextPass(runID, string(kind)); err != nil {
+				t.Fatalf("NextPass %s after save: %v", kind, err)
+			}
+		})
+	}
+}
+
+func TestCampaignlessPassSequenceUsesUniqueCaptureDirs(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	runID := startTestRun(t, DefaultCap)
+	if _, err := OpenWave(runID); err != nil {
+		t.Fatalf("OpenWave: %v", err)
+	}
+	waveDir, err := NextPass(runID, "wave")
+	if err != nil {
+		t.Fatalf("NextPass wave: %v", err)
+	}
+	if decision, err := CloseWave(runID, 1); err != nil || decision != "continue" {
+		t.Fatalf("CloseWave = %q, %v; want continue", decision, err)
+	}
+	reviewDir, err := NextPass(runID, "review")
+	if err != nil {
+		t.Fatalf("NextPass review: %v", err)
+	}
+	repairDir, err := NextPass(runID, "repair")
+	if err != nil {
+		t.Fatalf("NextPass repair: %v", err)
+	}
+	want := map[string]string{
+		waveDir:   "wave-1",
+		reviewDir: "review-1",
+		repairDir: "repair-1",
+	}
+	if len(want) != 3 {
+		t.Fatalf("unique capture dirs = %d, want 3", len(want))
+	}
+	for captureDir, base := range want {
+		if !filepath.IsAbs(captureDir) || filepath.Base(captureDir) != base {
+			t.Fatalf("capture dir = %q, want absolute %s path", captureDir, base)
+		}
+		if info, err := os.Stat(captureDir); err != nil || !info.IsDir() {
+			t.Fatalf("capture dir %s stat = %v, %v", captureDir, info, err)
+		}
+	}
+}
+
+func TestCampaignlessCloseWaveDecisions(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		cap      int
+		findings int
+		decision string
+	}{
+		{name: "continue", cap: 2, findings: 1, decision: "continue"},
+		{name: "dry", cap: 2, findings: 0, decision: "dry"},
+		{name: "cap", cap: 1, findings: 1, decision: "cap"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			runID := startTestRun(t, test.cap)
+			if _, err := OpenWave(runID); err != nil {
+				t.Fatalf("OpenWave: %v", err)
+			}
+			if _, err := NextPass(runID, "wave"); err != nil {
+				t.Fatalf("NextPass: %v", err)
+			}
+			if decision, err := CloseWave(runID, test.findings); err != nil || decision != test.decision {
+				t.Fatalf("CloseWave = %q, %v; want %s", decision, err, test.decision)
+			}
+		})
+	}
+}
+
+func TestCloseWaveRejectsInvalidCampaignBeforeMutation(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	runID := startTestRun(t, DefaultCap)
+	if _, err := OpenWave(runID); err != nil {
+		t.Fatalf("OpenWave: %v", err)
+	}
+	if _, err := NextPass(runID, "wave"); err != nil {
+		t.Fatalf("NextPass: %v", err)
+	}
+	if err := os.WriteFile(paths.ForgeCampaign(runID), []byte(`{"schemaVersion":1,"axes":[]}`), 0o600); err != nil {
+		t.Fatalf("write invalid campaign: %v", err)
+	}
+	before, err := os.ReadFile(paths.ForgeRunState(runID))
+	if err != nil {
+		t.Fatalf("read state before: %v", err)
+	}
+	if _, err := CloseWave(runID, 0); !errors.Is(err, ErrCampaignInvalid) {
+		t.Fatalf("CloseWave error = %v; want ErrCampaignInvalid", err)
+	}
+	after, err := os.ReadFile(paths.ForgeRunState(runID))
+	if err != nil {
+		t.Fatalf("read state after: %v", err)
+	}
+	if !reflect.DeepEqual(before, after) {
+		t.Fatal("failed close changed run state")
 	}
 }
 
@@ -787,6 +973,17 @@ func TestCampaignFreezesAfterPassAllocation(t *testing.T) {
 		if err := SaveCampaign(runID, replacement); !errors.Is(err, ErrInvalidStaging) {
 			t.Fatalf("%s error = %v", test.name, err)
 		}
+	}
+
+	campaignlessRunID := startTestRun(t, DefaultCap)
+	if _, err := OpenWave(campaignlessRunID); err != nil {
+		t.Fatalf("OpenWave without campaign: %v", err)
+	}
+	if _, err := NextPass(campaignlessRunID, "wave"); err != nil {
+		t.Fatalf("NextPass without campaign: %v", err)
+	}
+	if err := SaveCampaign(campaignlessRunID, initial); !errors.Is(err, ErrInvalidStaging) {
+		t.Fatalf("SaveCampaign after campaign-less pass error = %v", err)
 	}
 }
 
