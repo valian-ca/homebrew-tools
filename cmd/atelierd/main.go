@@ -25,6 +25,8 @@ func main() {
 		SilenceErrors: true,
 		SilenceUsage:  true,
 	}
+	root.SetOut(os.Stdout)
+	root.SetErr(os.Stderr)
 	root.AddCommand(
 		cmds.NewULIDCmd(),
 		cmds.NewEmitCmd(),
