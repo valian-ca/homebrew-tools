@@ -158,6 +158,23 @@ func CloseWaveContext(ctx context.Context, runID string, findings int) (string, 
 		if err != nil {
 			return err
 		}
+		campaign, err := readCampaignIfPresent(runID)
+		if err != nil {
+			return err
+		}
+		ledger, err := readLedger(runID)
+		if err != nil {
+			return err
+		}
+		if err := validateCampaignAndLedger(state, campaign, ledger); err != nil {
+			return err
+		}
+		if campaign != nil && !state.CampaignRequired {
+			state.CampaignRequired = true
+			if err := writeJSON(paths.ForgeRunState(runID), state); err != nil {
+				return err
+			}
+		}
 		if !state.WaveOpen || len(state.Waves) == 0 {
 			return fmt.Errorf("%w: no wave is open", ErrInvalidPass)
 		}
@@ -174,18 +191,7 @@ func CloseWaveContext(ctx context.Context, runID string, findings int) (string, 
 		if currentPass == nil {
 			return fmt.Errorf("%w: wave %d has no pass", ErrInvalidPass, state.Wave)
 		}
-		campaign, err := readCampaignIfPresent(runID)
-		if err != nil {
-			return err
-		}
 		if campaign != nil {
-			ledger, err := readLedger(runID)
-			if err != nil {
-				return err
-			}
-			if err := validatePersistedData(state, campaign, ledger); err != nil {
-				return err
-			}
 			var recorded *ledgerPass
 			for i := range ledger.Passes {
 				if ledger.Passes[i].PassID == currentPass.ID {
@@ -242,6 +248,19 @@ func NextPassContext(ctx context.Context, runID, kindValue string) (string, erro
 		campaign, err := readCampaignIfPresent(runID)
 		if err != nil {
 			return err
+		}
+		ledger, err := readLedger(runID)
+		if err != nil {
+			return err
+		}
+		if err := validateCampaignAndLedger(state, campaign, ledger); err != nil {
+			return err
+		}
+		if campaign != nil && !state.CampaignRequired {
+			state.CampaignRequired = true
+			if err := writeJSON(paths.ForgeRunState(runID), state); err != nil {
+				return err
+			}
 		}
 		if state.OpenPass != "" {
 			return fmt.Errorf("%w: pass %s is still open", ErrInvalidPass, state.OpenPass)
@@ -343,6 +362,7 @@ func SaveCampaignContext(ctx context.Context, runID, stagingPath string) error {
 		if err := writeJSON(paths.ForgeCampaign(runID), &campaign); err != nil {
 			return err
 		}
+		state.CampaignRequired = true
 		axes := len(campaign.Axes)
 		scenarios := 0
 		for _, axis := range campaign.Axes {

@@ -612,6 +612,170 @@ func TestCloseWaveRejectsInvalidCampaignBeforeMutation(t *testing.T) {
 	}
 }
 
+func TestCampaignDeletionDoesNotDowngradeRun(t *testing.T) {
+	validCampaign := `{"schemaVersion":1,"axes":[{"title":"A","scenarios":[{"title":"S","steps":["Do"],"expected":"Done"}]}]}`
+	outcome := `{"schemaVersion":1,"outcomes":[{"axis":"A","scenario":"S","status":"finding"}]}`
+	for _, test := range []struct {
+		name  string
+		setup func(t *testing.T, runID string)
+		op    func(runID string) error
+	}{
+		{
+			name: "after save",
+			setup: func(t *testing.T, runID string) {
+				if err := SaveCampaign(runID, writeTestFile(t, "campaign.json", validCampaign)); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := OpenWave(runID); err != nil {
+					t.Fatal(err)
+				}
+			},
+			op: func(runID string) error { _, err := NextPass(runID, "wave"); return err },
+		},
+		{
+			name: "after pass",
+			setup: func(t *testing.T, runID string) {
+				if err := SaveCampaign(runID, writeTestFile(t, "campaign.json", validCampaign)); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := OpenWave(runID); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := NextPass(runID, "wave"); err != nil {
+					t.Fatal(err)
+				}
+			},
+			op: func(runID string) error { _, err := CloseWave(runID, 1); return err },
+		},
+		{
+			name: "after outcome",
+			setup: func(t *testing.T, runID string) {
+				if err := SaveCampaign(runID, writeTestFile(t, "campaign.json", validCampaign)); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := OpenWave(runID); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := NextPass(runID, "wave"); err != nil {
+					t.Fatal(err)
+				}
+				if err := RecordOutcome(runID, "wave-1", writeTestFile(t, "outcome.json", outcome)); err != nil {
+					t.Fatal(err)
+				}
+			},
+			op: func(runID string) error { _, err := CloseWave(runID, 1); return err },
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			runID := startTestRun(t, 2)
+			test.setup(t, runID)
+			if err := os.Remove(paths.ForgeCampaign(runID)); err != nil {
+				t.Fatal(err)
+			}
+			before, err := os.ReadFile(paths.ForgeRunState(runID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := test.op(runID); !errors.Is(err, ErrCampaignInvalid) {
+				t.Fatalf("operation error = %v; want ErrCampaignInvalid", err)
+			}
+			after, err := os.ReadFile(paths.ForgeRunState(runID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(before, after) {
+				t.Fatal("missing campaign changed run state")
+			}
+		})
+	}
+}
+
+func TestCampaignlessPassOperationsReadLedger(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	runID := startTestRun(t, 2)
+	if err := os.WriteFile(paths.ForgeLedger(runID), []byte(`{"schemaVersion":1,"passes":`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NextPass(runID, "review"); err == nil {
+		t.Fatal("malformed ledger was ignored")
+	}
+	if err := os.WriteFile(paths.ForgeLedger(runID), []byte(`{"schemaVersion":1,"passes":[{"passId":"review-1","kind":"review","outcomes":[{"axis":"A","scenario":"S","status":"pass"}],"counts":{"pass":1}}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(paths.ForgeRunState(runID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NextPass(runID, "review"); !errors.Is(err, ErrCampaignInvalid) {
+		t.Fatalf("populated ledger error = %v; want ErrCampaignInvalid", err)
+	}
+	after, err := os.ReadFile(paths.ForgeRunState(runID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(before, after) {
+		t.Fatal("populated ledger changed run state")
+	}
+	closeRun := startTestRun(t, 1)
+	if _, err := OpenWave(closeRun); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NextPass(closeRun, "wave"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(paths.ForgeLedger(closeRun), []byte(`{"schemaVersion":1,"passes":`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CloseWave(closeRun, 0); err == nil {
+		t.Fatal("CloseWave ignored malformed ledger")
+	}
+	if err := os.WriteFile(paths.ForgeLedger(closeRun), []byte(`{"schemaVersion":1,"passes":[{"passId":"wave-1","kind":"wave","wave":1,"outcomes":[{"axis":"A","scenario":"S","status":"pass"}],"counts":{"pass":1}}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CloseWave(closeRun, 0); !errors.Is(err, ErrCampaignInvalid) {
+		t.Fatalf("CloseWave populated ledger error = %v; want ErrCampaignInvalid", err)
+	}
+}
+
+func TestCloseWaveCampaignErrorPrecedesPassStructure(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	runID := startTestRun(t, 1)
+	if err := os.WriteFile(paths.ForgeCampaign(runID), []byte(`{"schemaVersion":1,"axes":[]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CloseWave(runID, 0); !errors.Is(err, ErrCampaignInvalid) {
+		t.Fatalf("CloseWave error = %v; want ErrCampaignInvalid", err)
+	}
+}
+
+func TestExistingRunWithCampaignBecomesStrictWhenObserved(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	runID := startTestRun(t, 1)
+	if err := os.WriteFile(paths.ForgeCampaign(runID), []byte(`{"schemaVersion":1,"axes":[{"title":"A","scenarios":[{"title":"S","steps":["Do"],"expected":"Done"}]}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenWave(runID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NextPass(runID, "wave"); err != nil {
+		t.Fatal(err)
+	}
+	state, err := readRun(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !state.CampaignRequired {
+		t.Fatal("observed campaign did not persist strict mode")
+	}
+	if err := os.Remove(paths.ForgeCampaign(runID)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CloseWave(runID, 0); !errors.Is(err, ErrCampaignInvalid) {
+		t.Fatalf("deleted campaign error = %v; want ErrCampaignInvalid", err)
+	}
+}
+
 func TestOpenWaveRejectsAfterDryWave(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	runID := startTestRun(t, 2)
@@ -1222,8 +1386,6 @@ func TestTestplanOutputKeepsOpenedParentAcrossPathSwap(t *testing.T) {
 func TestPendingEventsSurviveOutboxFailureAndFlushInOrder(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	// A file at the directory path makes every outbox write fail, while forge
-	// state remains writable and commands must still report their result.
 	if err := os.MkdirAll(filepath.Dir(paths.Outbox()), 0o700); err != nil {
 		t.Fatal(err)
 	}

@@ -24,9 +24,6 @@ import (
 
 const retention = 14 * 24 * time.Hour
 
-// These bounds keep concurrent forge commands responsive while allowing the
-// normal, short state transitions to serialize. Tests in this package may
-// temporarily override them.
 const (
 	runLockDeadline      = 250 * time.Millisecond
 	runLockRetryInterval = 10 * time.Millisecond
@@ -280,10 +277,6 @@ func readLedger(runID string) (*ledger, error) {
 	return &value, nil
 }
 
-// validatePersistedData checks the relationships that cannot be validated by
-// decoding either persisted file in isolation.  These errors deliberately do
-// not wrap a forge command sentinel: persisted corruption is not bad staging
-// supplied by the caller and must reach the generic exit path.
 func validatePersistedData(state *runState, campaign *Campaign, value *ledger) error {
 	allocated := make(map[string]pass, len(state.Passes))
 	for _, allocatedPass := range state.Passes {
@@ -310,6 +303,16 @@ func validatePersistedData(state *runState, campaign *Campaign, value *ledger) e
 		}
 	}
 	return nil
+}
+
+func validateCampaignAndLedger(state *runState, campaign *Campaign, value *ledger) error {
+	if campaign == nil {
+		if state.CampaignRequired || len(value.Passes) > 0 {
+			return fmt.Errorf("%w: campaign is required for persisted run data", ErrCampaignInvalid)
+		}
+		return nil
+	}
+	return validatePersistedData(state, campaign, value)
 }
 
 func writeJSON(path string, value any) error {
@@ -376,10 +379,6 @@ func queueEvent(state *runState, eventType events.Type, payload map[string]any) 
 	state.PendingEvents = append(state.PendingEvents, *envelope)
 }
 
-// flushPending writes the already-persisted envelopes in order. Envelope ULIDs
-// are generated when the state transition is committed, so retrying a write
-// addresses the same outbox file and is idempotent even if the process dies
-// after the outbox write but before removing the pending entry.
 func flushPending(runID string) error {
 	state, err := readRun(runID)
 	if err != nil {
