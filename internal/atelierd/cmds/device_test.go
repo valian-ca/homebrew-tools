@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/valian-ca/homebrew-tools/internal/atelierd/devicebank"
+	"github.com/valian-ca/homebrew-tools/internal/atelierd/forge"
 )
 
 func TestExitCode(t *testing.T) {
@@ -17,6 +18,12 @@ func TestExitCode(t *testing.T) {
 		{devicebank.ErrExhausted, ExitBankExhausted},
 		{devicebank.ErrNotInitialized, ExitBankNotInitialized},
 		{fmt.Errorf("acquire: %w", devicebank.ErrExhausted), ExitBankExhausted},
+		{forge.ErrUnknownRun, ExitForgeUnknownRun},
+		{forge.ErrInvalidPass, ExitForgeInvalidPass},
+		{forge.ErrCampaignInvalid, ExitForgeCampaign},
+		{forge.ErrWaveCap, ExitForgeWaveCap},
+		{forge.ErrInvalidStaging, ExitForgeStaging},
+		{fmt.Errorf("wrapped: %w", forge.ErrInvalidStaging), ExitForgeStaging},
 		{errors.New("anything else"), 1},
 	}
 	for _, tt := range tests {

@@ -1,14 +1,3 @@
-// Package events holds the atelier event taxonomy and the payload parsers.
-//
-// SOURCE OF TRUTH for the type list is
-//
-//	common/schema/src/atelier/event-zod.ts
-//
-// in the valian-dashboards repo (the EventZod discriminated union). When that
-// file changes, this list MUST be updated — the sync is manual + visual diff
-// at PR time per VAL-164 stress-test decision. If drift becomes a real-world
-// problem, retrofit a CI script that fetches the Zod file and diffs against
-// these consts.
 package events
 
 import (
@@ -27,29 +16,42 @@ import (
 // fail Zod validation). The Zod-side `success` field accepts both legacy
 // boolean and new string-form via a permanent union.
 
-// Type is one of the 14 atelier event types. Validated by IsValid before
-// any write to the outbox.
 type Type string
 
+// Keep this taxonomy in sync with valian-dashboards/common/schema/src/atelier/event-zod.ts.
 const (
-	HookSessionStart      Type = "hook:session-start"
-	HookUserPromptSubmit  Type = "hook:user-prompt-submit"
-	HookPreToolUse        Type = "hook:pre-tool-use"
-	HookPostToolUse       Type = "hook:post-tool-use"
-	HookStop              Type = "hook:stop"
-	HookSessionEnd        Type = "hook:session-end"
-	HookAssistantTurn     Type = "hook:assistant-turn"
-	SkillPhaseStart       Type = "skill:phase-start"
-	SkillPhaseEnd         Type = "skill:phase-end"
-	SkillTicketCreated    Type = "skill:ticket-created"
-	SkillActivity         Type = "skill:activity"
-	SkillShipComplete     Type = "skill:ship-complete"
-	TranscriptAITitle     Type = "transcript:ai-title"
-	TranscriptCustomTitle Type = "transcript:custom-title"
+	ForgeCampaignSaved     Type = "forge:campaign-saved"
+	ForgePass              Type = "forge:pass"
+	ForgeReportLinked      Type = "forge:report-linked"
+	ForgeRunStart          Type = "forge:run-start"
+	ForgeTestplanPublished Type = "forge:testplan-published"
+	ForgeWaveClose         Type = "forge:wave-close"
+	ForgeWaveOpen          Type = "forge:wave-open"
+	HookSessionStart       Type = "hook:session-start"
+	HookUserPromptSubmit   Type = "hook:user-prompt-submit"
+	HookPreToolUse         Type = "hook:pre-tool-use"
+	HookPostToolUse        Type = "hook:post-tool-use"
+	HookStop               Type = "hook:stop"
+	HookSessionEnd         Type = "hook:session-end"
+	HookAssistantTurn      Type = "hook:assistant-turn"
+	SkillPhaseStart        Type = "skill:phase-start"
+	SkillPhaseEnd          Type = "skill:phase-end"
+	SkillTicketCreated     Type = "skill:ticket-created"
+	SkillActivity          Type = "skill:activity"
+	SkillShipComplete      Type = "skill:ship-complete"
+	TranscriptAITitle      Type = "transcript:ai-title"
+	TranscriptCustomTitle  Type = "transcript:custom-title"
 )
 
 func All() []Type {
 	return []Type{
+		ForgeCampaignSaved,
+		ForgePass,
+		ForgeReportLinked,
+		ForgeRunStart,
+		ForgeTestplanPublished,
+		ForgeWaveClose,
+		ForgeWaveOpen,
 		HookAssistantTurn,
 		HookPostToolUse,
 		HookPreToolUse,
