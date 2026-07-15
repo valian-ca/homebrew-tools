@@ -158,6 +158,23 @@ func CloseWaveContext(ctx context.Context, runID string, findings int) (string, 
 		if err != nil {
 			return err
 		}
+		campaign, err := readCampaignIfPresent(runID)
+		if err != nil {
+			return err
+		}
+		ledger, err := readLedger(runID)
+		if err != nil {
+			return err
+		}
+		if err := validateCampaignAndLedger(state, campaign, ledger); err != nil {
+			return err
+		}
+		if campaign != nil && !state.CampaignRequired {
+			state.CampaignRequired = true
+			if err := writeJSON(paths.ForgeRunState(runID), state); err != nil {
+				return err
+			}
+		}
 		if !state.WaveOpen || len(state.Waves) == 0 {
 			return fmt.Errorf("%w: no wave is open", ErrInvalidPass)
 		}
@@ -174,32 +191,23 @@ func CloseWaveContext(ctx context.Context, runID string, findings int) (string, 
 		if currentPass == nil {
 			return fmt.Errorf("%w: wave %d has no pass", ErrInvalidPass, state.Wave)
 		}
-		campaign, err := readCampaign(runID)
-		if err != nil {
-			return err
-		}
-		ledger, err := readLedger(runID)
-		if err != nil {
-			return err
-		}
-		if err := validatePersistedData(state, campaign, ledger); err != nil {
-			return err
-		}
-		var recorded *ledgerPass
-		for i := range ledger.Passes {
-			if ledger.Passes[i].PassID == currentPass.ID {
-				recorded = &ledger.Passes[i]
-				break
+		if campaign != nil {
+			var recorded *ledgerPass
+			for i := range ledger.Passes {
+				if ledger.Passes[i].PassID == currentPass.ID {
+					recorded = &ledger.Passes[i]
+					break
+				}
 			}
-		}
-		if recorded == nil {
-			return fmt.Errorf("%w: wave pass %s has no recorded outcome", ErrInvalidPass, currentPass.ID)
-		}
-		if recorded.Kind != passWave || recorded.Wave != state.Wave {
-			return fmt.Errorf("%w: ledger entry %s does not belong to wave %d", ErrInvalidPass, recorded.PassID, state.Wave)
-		}
-		if findings != recorded.Counts.Finding {
-			return fmt.Errorf("%w: findings %d do not match ledger count %d", ErrInvalidPass, findings, recorded.Counts.Finding)
+			if recorded == nil {
+				return fmt.Errorf("%w: wave pass %s has no recorded outcome", ErrInvalidPass, currentPass.ID)
+			}
+			if recorded.Kind != passWave || recorded.Wave != state.Wave {
+				return fmt.Errorf("%w: ledger entry %s does not belong to wave %d", ErrInvalidPass, recorded.PassID, state.Wave)
+			}
+			if findings != recorded.Counts.Finding {
+				return fmt.Errorf("%w: findings %d do not match ledger count %d", ErrInvalidPass, findings, recorded.Counts.Finding)
+			}
 		}
 		if findings == 0 {
 			decision = "dry"
@@ -237,11 +245,22 @@ func NextPassContext(ctx context.Context, runID, kindValue string) (string, erro
 		if err != nil {
 			return err
 		}
-		// A pass is the point at which the campaign becomes immutable. Validate
-		// it before checking or changing pass state, and before creating any
-		// capture directories, so a failed campaign save can still be retried.
-		if _, err := readCampaign(runID); err != nil {
+		campaign, err := readCampaignIfPresent(runID)
+		if err != nil {
 			return err
+		}
+		ledger, err := readLedger(runID)
+		if err != nil {
+			return err
+		}
+		if err := validateCampaignAndLedger(state, campaign, ledger); err != nil {
+			return err
+		}
+		if campaign != nil && !state.CampaignRequired {
+			state.CampaignRequired = true
+			if err := writeJSON(paths.ForgeRunState(runID), state); err != nil {
+				return err
+			}
 		}
 		if state.OpenPass != "" {
 			return fmt.Errorf("%w: pass %s is still open", ErrInvalidPass, state.OpenPass)
@@ -289,7 +308,9 @@ func NextPassContext(ctx context.Context, runID, kindValue string) (string, erro
 		case passRepair:
 			state.NextRepair = sequence + 1
 		}
-		state.OpenPass = created.ID
+		if campaign != nil {
+			state.OpenPass = created.ID
+		}
 		queueEvent(state, events.ForgePass, map[string]any{
 			"passId": created.ID, "kind": string(created.Kind), "wave": created.Wave,
 		})
@@ -341,6 +362,7 @@ func SaveCampaignContext(ctx context.Context, runID, stagingPath string) error {
 		if err := writeJSON(paths.ForgeCampaign(runID), &campaign); err != nil {
 			return err
 		}
+		state.CampaignRequired = true
 		axes := len(campaign.Axes)
 		scenarios := 0
 		for _, axis := range campaign.Axes {

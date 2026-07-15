@@ -32,9 +32,8 @@ const (
 	MaxTextBytes         = 4096
 	MaxIDBytes           = 128
 	MaxWaves             = 64
-	// The persisted total is the sum of the independently bounded streams.
-	MaxPasses        = MaxWaves + 2*MaxAuxiliaryPasses
-	MaxPendingEvents = 256
+	MaxPasses            = MaxWaves + 2*MaxAuxiliaryPasses
+	MaxPendingEvents     = 256
 )
 
 var (
@@ -72,21 +71,22 @@ type pass struct {
 }
 
 type runState struct {
-	SchemaVersion int               `json:"schemaVersion"`
-	RunID         string            `json:"runId"`
-	Ticket        string            `json:"ticket"`
-	Session       string            `json:"session"`
-	Cap           int               `json:"cap"`
-	Wave          int               `json:"wave"`
-	WaveOpen      bool              `json:"waveOpen"`
-	OpenPass      string            `json:"openPass"`
-	Waves         []wave            `json:"waves"`
-	Passes        []pass            `json:"passes"`
-	NextReview    int               `json:"nextReview"`
-	NextRepair    int               `json:"nextRepair"`
-	Refs          refs              `json:"refs"`
-	CreatedAt     time.Time         `json:"createdAt"`
-	PendingEvents []outbox.Envelope `json:"pendingEvents,omitempty"`
+	SchemaVersion    int               `json:"schemaVersion"`
+	RunID            string            `json:"runId"`
+	Ticket           string            `json:"ticket"`
+	Session          string            `json:"session"`
+	Cap              int               `json:"cap"`
+	Wave             int               `json:"wave"`
+	WaveOpen         bool              `json:"waveOpen"`
+	OpenPass         string            `json:"openPass"`
+	CampaignRequired bool              `json:"campaignRequired,omitempty"`
+	Waves            []wave            `json:"waves"`
+	Passes           []pass            `json:"passes"`
+	NextReview       int               `json:"nextReview"`
+	NextRepair       int               `json:"nextRepair"`
+	Refs             refs              `json:"refs"`
+	CreatedAt        time.Time         `json:"createdAt"`
+	PendingEvents    []outbox.Envelope `json:"pendingEvents,omitempty"`
 }
 
 type RunStatus struct {
