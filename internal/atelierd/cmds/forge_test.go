@@ -258,8 +258,8 @@ func TestForgeCommandsWithSaturatedOutboxAndNoAuth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("outbox.Count: %v", err)
 	}
-	if count != backlog+8 {
-		t.Fatalf("outbox count = %d, want %d", count, backlog+8)
+	if count != backlog+10 {
+		t.Fatalf("outbox count = %d, want %d", count, backlog+10)
 	}
 }
 

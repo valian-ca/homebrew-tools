@@ -13,9 +13,11 @@ type Type string
 // Keep this taxonomy in sync with valian-dashboards/common/schema/src/atelier/event-zod.ts.
 const (
 	ForgeCampaignSaved     Type = "forge:campaign-saved"
+	ForgeOutcomeRecorded   Type = "forge:outcome-recorded"
 	ForgePass              Type = "forge:pass"
 	ForgeReportLinked      Type = "forge:report-linked"
 	ForgeRunStart          Type = "forge:run-start"
+	ForgeTestplanLinked    Type = "forge:testplan-linked"
 	ForgeTestplanPublished Type = "forge:testplan-published"
 	ForgeWaveClose         Type = "forge:wave-close"
 	ForgeWaveOpen          Type = "forge:wave-open"
@@ -38,9 +40,11 @@ const (
 func All() []Type {
 	return []Type{
 		ForgeCampaignSaved,
+		ForgeOutcomeRecorded,
 		ForgePass,
 		ForgeReportLinked,
 		ForgeRunStart,
+		ForgeTestplanLinked,
 		ForgeTestplanPublished,
 		ForgeWaveClose,
 		ForgeWaveOpen,

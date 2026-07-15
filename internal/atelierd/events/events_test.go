@@ -18,9 +18,11 @@ func TestIsValid(t *testing.T) {
 		{"hook:session-end", true},
 		{"hook:assistant-turn", true},
 		{"forge:campaign-saved", true},
+		{"forge:outcome-recorded", true},
 		{"forge:pass", true},
 		{"forge:report-linked", true},
 		{"forge:run-start", true},
+		{"forge:testplan-linked", true},
 		{"forge:testplan-published", true},
 		{"forge:wave-close", true},
 		{"forge:wave-open", true},
@@ -43,9 +45,9 @@ func TestIsValid(t *testing.T) {
 	}
 }
 
-func TestAllReturnsTwentyOneTypes(t *testing.T) {
-	if got := len(All()); got != 21 {
-		t.Errorf("All() returned %d types, want 21", got)
+func TestAllReturnsTwentyThreeTypes(t *testing.T) {
+	if got := len(All()); got != 23 {
+		t.Errorf("All() returned %d types, want 23", got)
 	}
 }
 

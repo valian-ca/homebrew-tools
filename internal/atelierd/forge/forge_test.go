@@ -939,6 +939,9 @@ func TestEventPayloadsAndPersistedSession(t *testing.T) {
 	if err := SetRef(runID, "report", "comment-42"); err != nil {
 		t.Fatalf("SetRef: %v", err)
 	}
+	if err := SetRef(runID, "testplan", "document-42"); err != nil {
+		t.Fatalf("SetRef testplan: %v", err)
+	}
 	if _, _, err := RenderTestplan(runID, "en", ""); err != nil {
 		t.Fatalf("RenderTestplan: %v", err)
 	}
@@ -955,8 +958,10 @@ func TestEventPayloadsAndPersistedSession(t *testing.T) {
 		"forge:campaign-saved",
 		"forge:wave-open",
 		"forge:pass",
+		"forge:outcome-recorded",
 		"forge:wave-close",
 		"forge:report-linked",
+		"forge:testplan-linked",
 		"forge:testplan-published",
 		"forge:testplan-published",
 	}
@@ -965,8 +970,10 @@ func TestEventPayloadsAndPersistedSession(t *testing.T) {
 		{"runId": runID, "axes": float64(1), "scenarios": float64(1)},
 		{"runId": runID, "wave": float64(1)},
 		{"runId": runID, "passId": "wave-1", "kind": "wave", "wave": float64(1)},
+		{"runId": runID, "passId": "wave-1", "kind": "wave", "wave": float64(1), "pass": float64(1), "finding": float64(0), "notExercised": float64(0)},
 		{"runId": runID, "wave": float64(1), "findings": float64(0), "decision": "dry"},
 		{"runId": runID, "report": "comment-42"},
+		{"runId": runID, "testplan": "document-42"},
 		{"runId": runID, "language": "en", "path": ""},
 		{"runId": runID, "language": "en", "path": "testplan.md"},
 	}

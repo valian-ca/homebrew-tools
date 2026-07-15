@@ -404,6 +404,9 @@ func RecordOutcomeContext(ctx context.Context, runID, passID, stagingPath string
 		if target == nil {
 			return fmt.Errorf("%w: unknown pass %q", ErrInvalidPass, passID)
 		}
+		if state.OpenPass != passID {
+			return fmt.Errorf("%w: pass %q is not open", ErrInvalidPass, passID)
+		}
 		ledger, err := readLedger(runID)
 		if err != nil {
 			return err
@@ -414,9 +417,6 @@ func RecordOutcomeContext(ctx context.Context, runID, passID, stagingPath string
 		}
 		for _, existing := range ledger.Passes {
 			if existing.PassID == passID {
-				if state.OpenPass != passID {
-					return fmt.Errorf("%w: pass %q already recorded", ErrInvalidPass, passID)
-				}
 				total, err := validateOutcomes(&batch, campaign)
 				if err != nil {
 					return fmt.Errorf("%w: stale pass outcome: %v", ErrInvalidPass, err)
@@ -426,6 +426,7 @@ func RecordOutcomeContext(ctx context.Context, runID, passID, stagingPath string
 					return fmt.Errorf("%w: stale pass outcome does not match persisted pass %q", ErrInvalidPass, passID)
 				}
 				state.OpenPass = ""
+				queueOutcomeRecorded(state, target, total)
 				return writeJSON(paths.ForgeRunState(runID), state)
 			}
 		}
@@ -439,15 +440,21 @@ func RecordOutcomeContext(ctx context.Context, runID, passID, stagingPath string
 		if err := writeJSON(paths.ForgeLedger(runID), ledger); err != nil {
 			return err
 		}
-		if state.OpenPass == passID {
-			state.OpenPass = ""
-			if err := writeJSON(paths.ForgeRunState(runID), state); err != nil {
-				return err
-			}
+		state.OpenPass = ""
+		queueOutcomeRecorded(state, target, total)
+		if err := writeJSON(paths.ForgeRunState(runID), state); err != nil {
+			return err
 		}
 		return nil
 	})
 	return err
+}
+
+func queueOutcomeRecorded(state *runState, target *pass, total counts) {
+	queueEvent(state, events.ForgeOutcomeRecorded, map[string]any{
+		"passId": target.ID, "kind": string(target.Kind), "wave": target.Wave,
+		"pass": total.Pass, "finding": total.Finding, "notExercised": total.NotExercised,
+	})
 }
 
 func SetRef(runID, key, value string) error {
@@ -476,8 +483,11 @@ func SetRefContext(ctx context.Context, runID, key, value string) error {
 		} else {
 			state.Refs.Testplan = value
 		}
-		if key == "report" {
+		switch key {
+		case "report":
 			queueEvent(state, events.ForgeReportLinked, map[string]any{"report": value})
+		case "testplan":
+			queueEvent(state, events.ForgeTestplanLinked, map[string]any{"testplan": value})
 		}
 		return writeJSON(paths.ForgeRunState(runID), state)
 	})
