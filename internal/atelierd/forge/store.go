@@ -32,19 +32,32 @@ const (
 var runLockWait = runLockDeadline
 
 func ensureDir(path string) error {
+	if err := inspectDirectory(path, true); err != nil {
+		return err
+	}
+	return os.Chmod(path, paths.DirMode)
+}
+
+func validateExistingDir(path string) error {
+	return inspectDirectory(path, false)
+}
+
+func inspectDirectory(path string, create bool) error {
 	path, err := filepath.Abs(path)
 	if err != nil {
 		return err
 	}
 	parts := strings.Split(filepath.Clean(path), string(filepath.Separator))
 	current := string(filepath.Separator)
+	protected := false
+	// HOME ancestors may be symlinked on macOS; every component from .atelier down must be real.
 	for _, part := range parts {
 		if part == "" {
 			continue
 		}
 		current = filepath.Join(current, part)
 		info, statErr := os.Lstat(current)
-		if errors.Is(statErr, os.ErrNotExist) {
+		if errors.Is(statErr, os.ErrNotExist) && create {
 			if err := os.Mkdir(current, paths.DirMode); err != nil && !errors.Is(err, os.ErrExist) {
 				return err
 			}
@@ -53,15 +66,15 @@ func ensureDir(path string) error {
 		if statErr != nil {
 			return statErr
 		}
-		// HOME (and its ancestors) may legitimately contain symlinks on macOS
-		// (/var and /tmp do).  The forge boundary itself must not: once we
-		// reach ~/.atelier, every component is checked without following links.
-		if (info.Mode()&os.ModeSymlink != 0 && part == ".atelier") ||
+		if part == ".atelier" {
+			protected = true
+		}
+		if (info.Mode()&os.ModeSymlink != 0 && protected) ||
 			(info.Mode()&os.ModeSymlink == 0 && !info.IsDir()) {
 			return fmt.Errorf("forge path component %q is not a real directory", current)
 		}
 	}
-	return os.Chmod(path, paths.DirMode)
+	return nil
 }
 
 func openNoFollow(path string, flags int, mode uint32) (*os.File, error) {
@@ -133,8 +146,44 @@ func withRunLock(runID string, fn func() error) error {
 	return withRunLockContext(context.Background(), runID, fn)
 }
 
+func withForgeLockContext(ctx context.Context, fn func() error) error {
+	if err := ensureDir(paths.Forge()); err != nil {
+		return err
+	}
+	lock, err := openNoFollow(paths.ForgeLock(), unix.O_RDWR|unix.O_CREAT, uint32(paths.FileMode.Perm()))
+	if err != nil {
+		return fmt.Errorf("open forge namespace lock: %w", err)
+	}
+	defer lock.Close()
+	flockLock := flock.New(lock.Name())
+	defer flockLock.Close()
+	lockCtx, cancel := context.WithTimeout(ctx, runLockWait)
+	defer cancel()
+	ok, err := flockLock.TryLockContext(lockCtx, runLockRetryInterval)
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return ErrRunBusy
+		}
+		return fmt.Errorf("acquire forge namespace lock: %w", err)
+	}
+	if !ok {
+		return ErrRunBusy
+	}
+	defer func() { _ = flockLock.Unlock() }()
+	if err := unix.Fchmod(int(lock.Fd()), uint32(paths.FileMode.Perm())); err != nil {
+		return err
+	}
+	return fn()
+}
+
 func withRunLockContext(ctx context.Context, runID string, fn func() error) error {
 	if err := validateRunID(runID); err != nil {
+		return err
+	}
+	if err := validateExistingDir(paths.Forge()); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("%w: %s", ErrUnknownRun, runID)
+		}
 		return err
 	}
 	info, err := os.Lstat(paths.ForgeRun(runID))

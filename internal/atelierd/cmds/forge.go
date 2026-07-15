@@ -13,9 +13,11 @@ func NewForgeCmd() *cobra.Command {
 		Use:   "forge",
 		Short: "Manage autonomous forge run state",
 		Example: `  atelierd forge run start VAL-306 --session session-abc123 --cap 4
+  atelierd forge run find --ticket VAL-306
   atelierd forge campaign save --run 01J00000000000000000000000 --from /tmp/campaign.json
   atelierd forge wave open --run 01J00000000000000000000000
   atelierd forge pass next --run 01J00000000000000000000000 --kind wave
+  atelierd forge pass show --run 01J00000000000000000000000 --kind wave --wave 1
   atelierd forge outcome record --run 01J00000000000000000000000 --pass wave-1 --from /tmp/outcome.json
   atelierd forge wave close --run 01J00000000000000000000000 --findings 0
   atelierd forge summary --run 01J00000000000000000000000
@@ -75,7 +77,23 @@ func newForgeRunCmd() *cobra.Command {
 	}
 	status.Flags().StringVar(&runID, "run", "", "forge run ULID (required)")
 	_ = status.MarkFlagRequired("run")
-	group.AddCommand(start, status)
+	var findTicket, findSession string
+	find := &cobra.Command{
+		Use:   "find [--ticket <id>] [--session <id>]",
+		Short: "Find one run matching an exact ticket and/or original session",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			value, err := forge.FindRunContext(cmd.Context(), findTicket, findSession)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), value)
+			return nil
+		},
+	}
+	find.Flags().StringVar(&findTicket, "ticket", "", "exact ticket identifier")
+	find.Flags().StringVar(&findSession, "session", "", "exact original session ID")
+	group.AddCommand(start, status, find)
 	return group
 }
 
@@ -140,7 +158,27 @@ func newForgePassCmd() *cobra.Command {
 	next.Flags().StringVar(&kind, "kind", "", "pass kind: wave, review, or repair (required)")
 	_ = next.MarkFlagRequired("run")
 	_ = next.MarkFlagRequired("kind")
-	group.AddCommand(next)
+	var showRun, showPass, showKind string
+	var showWave int
+	show := &cobra.Command{
+		Use:   "show --run <id> (--pass <pass-id> | --kind wave|review|repair [--wave N])",
+		Short: "Print one compact JSON line for an allocated pass",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			value, err := forge.ShowPassJSONContext(cmd.Context(), showRun, showPass, showKind, showWave)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), string(value))
+			return nil
+		},
+	}
+	show.Flags().StringVar(&showRun, "run", "", "forge run ULID (required)")
+	show.Flags().StringVar(&showPass, "pass", "", "exact allocated pass ID")
+	show.Flags().StringVar(&showKind, "kind", "", "pass kind; wave defaults to the current wave, review/repair to the latest")
+	show.Flags().IntVar(&showWave, "wave", 0, "exact wave number when kind is wave")
+	_ = show.MarkFlagRequired("run")
+	group.AddCommand(next, show)
 	return group
 }
 

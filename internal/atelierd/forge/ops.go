@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/valian-ca/homebrew-tools/internal/atelierd/events"
@@ -37,37 +39,41 @@ func StartContext(ctx context.Context, ticket, session string, cap int) (string,
 	if cap <= 0 {
 		return "", errors.New("cap must be greater than zero")
 	}
-	now := time.Now().UTC()
-	if err := pruneContext(ctx, now); err != nil {
-		if errors.Is(err, ErrRunBusy) {
-			return "", ErrRunBusy
+	var runID string
+	err = withForgeLockContext(ctx, func() error {
+		now := time.Now().UTC()
+		if err := pruneContext(ctx, now); err != nil {
+			if errors.Is(err, ErrRunBusy) {
+				return ErrRunBusy
+			}
+			return fmt.Errorf("prune forge runs: %w", err)
 		}
-		return "", fmt.Errorf("prune forge runs: %w", err)
-	}
-	runID := ulid.New()
-	if err := createDir(paths.ForgeRun(runID)); err != nil {
-		return "", err
-	}
-	state := &runState{
-		SchemaVersion: SchemaVersion,
-		RunID:         runID,
-		Ticket:        ticket,
-		Session:       session,
-		Cap:           cap,
-		Waves:         []wave{},
-		Passes:        []pass{},
-		NextReview:    1,
-		NextRepair:    1,
-		CreatedAt:     now,
-	}
-	if err := withRunLockContext(ctx, runID, func() error {
-		queueEvent(state, events.ForgeRunStart, map[string]any{"ticket": ticket, "cap": cap})
-		return writeJSON(paths.ForgeRunState(runID), state)
-	}); err != nil {
-		_ = os.RemoveAll(paths.ForgeRun(runID))
-		return "", err
-	}
-	return runID, nil
+		runID = ulid.New()
+		if err := createDir(paths.ForgeRun(runID)); err != nil {
+			return err
+		}
+		state := &runState{
+			SchemaVersion: SchemaVersion,
+			RunID:         runID,
+			Ticket:        ticket,
+			Session:       session,
+			Cap:           cap,
+			Waves:         []wave{},
+			Passes:        []pass{},
+			NextReview:    1,
+			NextRepair:    1,
+			CreatedAt:     now,
+		}
+		if err := withRunLockContext(ctx, runID, func() error {
+			queueEvent(state, events.ForgeRunStart, map[string]any{"ticket": ticket, "cap": cap})
+			return writeJSON(paths.ForgeRunState(runID), state)
+		}); err != nil {
+			_ = os.RemoveAll(paths.ForgeRun(runID))
+			return err
+		}
+		return nil
+	})
+	return runID, err
 }
 
 func Status(runID string) (RunStatus, error) {
@@ -104,6 +110,72 @@ func StatusJSONContext(ctx context.Context, runID string) ([]byte, error) {
 		return nil, err
 	}
 	return json.Marshal(status)
+}
+
+func FindRun(ticket, session string) (string, error) {
+	return FindRunContext(context.Background(), ticket, session)
+}
+
+func FindRunContext(ctx context.Context, ticket, session string) (string, error) {
+	var err error
+	if ticket != "" {
+		ticket, err = cleanTicket(ticket)
+		if err != nil {
+			return "", err
+		}
+		if len(ticket) > MaxTextBytes {
+			return "", fmt.Errorf("ticket exceeds %d bytes", MaxTextBytes)
+		}
+	}
+	if len(session) > MaxIDBytes {
+		return "", fmt.Errorf("session exceeds %d bytes", MaxIDBytes)
+	}
+	if ticket == "" && session == "" {
+		return "", errors.New("ticket or session must be provided")
+	}
+
+	matches := make([]string, 0, 1)
+	err = withForgeLockContext(ctx, func() error {
+		entries, err := os.ReadDir(paths.Forge())
+		if err != nil {
+			return err
+		}
+		for _, entry := range entries {
+			runID := entry.Name()
+			if !entry.IsDir() || validateRunID(runID) != nil {
+				continue
+			}
+			matched := false
+			err := withRunLockContext(ctx, runID, func() error {
+				state, err := readRun(runID)
+				if err != nil {
+					return err
+				}
+				matched = (ticket == "" || state.Ticket == ticket) && (session == "" || state.Session == session)
+				return nil
+			})
+			if errors.Is(err, ErrUnknownRun) {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			if matched {
+				matches = append(matches, runID)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	if len(matches) == 0 {
+		return "", ErrUnknownRun
+	}
+	if len(matches) > 1 {
+		return "", fmt.Errorf("%w: %s", ErrAmbiguousRun, strings.Join(matches, ", "))
+	}
+	return matches[0], nil
 }
 
 func OpenWave(runID string) (int, error) {
@@ -328,6 +400,137 @@ func NextPassContext(ctx context.Context, runID, kindValue string) (string, erro
 		return "", err
 	}
 	return path, nil
+}
+
+func ShowPass(runID, passID, kindValue string, waveNumber int) (PassStatus, error) {
+	return ShowPassContext(context.Background(), runID, passID, kindValue, waveNumber)
+}
+
+func ShowPassContext(ctx context.Context, runID, passID, kindValue string, waveNumber int) (PassStatus, error) {
+	var result PassStatus
+	if passID == "" && kindValue == "" {
+		return result, fmt.Errorf("%w: pass or kind must be provided", ErrInvalidPass)
+	}
+	if passID != "" && (kindValue != "" || waveNumber != 0) {
+		return result, fmt.Errorf("%w: pass cannot be combined with kind or wave", ErrInvalidPass)
+	}
+	if waveNumber < 0 {
+		return result, fmt.Errorf("%w: wave must be non-negative", ErrInvalidPass)
+	}
+	var kind passKind
+	var err error
+	if kindValue != "" {
+		kind, err = parsePassKind(kindValue)
+		if err != nil {
+			return result, err
+		}
+		if waveNumber > 0 && kind != passWave {
+			return result, fmt.Errorf("%w: wave selector requires kind wave", ErrInvalidPass)
+		}
+	}
+
+	err = withRunLockContext(ctx, runID, func() error {
+		state, err := readRun(runID)
+		if err != nil {
+			return err
+		}
+		campaign, err := readCampaignIfPresent(runID)
+		if err != nil {
+			return err
+		}
+		ledger, err := readLedger(runID)
+		if err != nil {
+			return err
+		}
+		if err := validateCampaignAndLedger(state, campaign, ledger); err != nil {
+			return err
+		}
+		strict := state.CampaignRequired || campaign != nil
+		selectedWave := waveNumber
+		if kind == passWave && selectedWave == 0 {
+			selectedWave = state.Wave
+		}
+		var selected *pass
+		for i := len(state.Passes) - 1; i >= 0; i-- {
+			candidate := &state.Passes[i]
+			if passID != "" {
+				if candidate.ID == passID {
+					selected = candidate
+					break
+				}
+				continue
+			}
+			if candidate.Kind == kind && (kind != passWave || candidate.Wave == selectedWave) {
+				selected = candidate
+				break
+			}
+		}
+		if selected == nil {
+			return fmt.Errorf("%w: no allocated pass matches", ErrInvalidPass)
+		}
+		if err := validateAllocatedPass(*selected); err != nil {
+			return err
+		}
+		captureDir, err := filepath.Abs(paths.ForgePassCaptures(runID, selected.ID))
+		if err != nil {
+			return err
+		}
+		if err := validateExistingDir(captureDir); err != nil {
+			return fmt.Errorf("read capture directory: %w", err)
+		}
+		complete := !strict
+		if strict {
+			for _, recorded := range ledger.Passes {
+				if recorded.PassID == selected.ID {
+					complete = true
+					break
+				}
+			}
+		}
+		result = PassStatus{
+			RunID:            runID,
+			PassID:           selected.ID,
+			Kind:             string(selected.Kind),
+			Wave:             selected.Wave,
+			CaptureDir:       captureDir,
+			CampaignRequired: strict,
+			Complete:         complete,
+		}
+		return nil
+	})
+	return result, err
+}
+
+func ShowPassJSONContext(ctx context.Context, runID, passID, kindValue string, waveNumber int) ([]byte, error) {
+	status, err := ShowPassContext(ctx, runID, passID, kindValue, waveNumber)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(status)
+}
+
+func validateAllocatedPass(value pass) error {
+	kind := value.Kind
+	switch kind {
+	case passWave, passReview, passRepair:
+	default:
+		return fmt.Errorf("invalid persisted pass kind %q", value.Kind)
+	}
+	prefix := string(kind) + "-"
+	if !strings.HasPrefix(value.ID, prefix) || filepath.Base(value.ID) != value.ID {
+		return fmt.Errorf("invalid persisted pass id %q", value.ID)
+	}
+	sequence, err := strconv.Atoi(strings.TrimPrefix(value.ID, prefix))
+	if err != nil || sequence <= 0 {
+		return fmt.Errorf("invalid persisted pass id %q", value.ID)
+	}
+	if kind == passWave && value.Wave != sequence {
+		return fmt.Errorf("invalid persisted wave pass %q", value.ID)
+	}
+	if kind != passWave && value.Wave != 0 {
+		return fmt.Errorf("invalid persisted auxiliary pass %q", value.ID)
+	}
+	return nil
 }
 
 func SaveCampaign(runID, stagingPath string) error {

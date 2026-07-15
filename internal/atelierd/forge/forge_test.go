@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gofrs/flock"
+
 	"github.com/valian-ca/homebrew-tools/internal/atelierd/outbox"
 	"github.com/valian-ca/homebrew-tools/internal/atelierd/paths"
 )
@@ -37,6 +39,9 @@ func TestStartRejectsSymlinkedForgeRoot(t *testing.T) {
 	}
 	if _, err := Start("VAL-306", "session-306", DefaultCap); err == nil {
 		t.Fatal("Start unexpectedly followed symlinked forge root")
+	}
+	if _, err := FindRun("VAL-306", ""); err == nil {
+		t.Fatal("FindRun unexpectedly followed symlinked forge root")
 	}
 	after, err := os.Stat(outside)
 	if err != nil {
@@ -87,6 +92,28 @@ func TestRunLockRejectsSymlinkedRunDir(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(outside, "escaped")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("withRunLock wrote through run symlink: %v", err)
+	}
+}
+
+func TestRunLockRejectsSymlinkedForgeDirBeforeMutation(t *testing.T) {
+	home := t.TempDir()
+	outside := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.Mkdir(filepath.Join(home, ".atelier"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, paths.Forge()); err != nil {
+		t.Fatal(err)
+	}
+	runID := "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+	if err := os.Mkdir(filepath.Join(outside, runID), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ShowPass(runID, "wave-1", "", 0); err == nil {
+		t.Fatal("ShowPass unexpectedly followed symlinked forge directory")
+	}
+	if _, err := os.Stat(filepath.Join(outside, runID, "run.lock")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("ShowPass mutated symlink target: %v", err)
 	}
 }
 
@@ -151,6 +178,215 @@ func TestRunIsolationStateAndModes(t *testing.T) {
 	}
 	if status.Wave != 0 || status.OpenPass != "" || status.Refs.Report != "" || status.Refs.Testplan != "" {
 		t.Fatalf("fresh status = %+v", status)
+	}
+}
+
+func TestFindRunByExactTicketAndSession(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	first, err := Start("VAL-307", "session-a", DefaultCap)
+	if err != nil {
+		t.Fatalf("Start first: %v", err)
+	}
+	second, err := Start("VAL-308", "session-b", DefaultCap)
+	if err != nil {
+		t.Fatalf("Start second: %v", err)
+	}
+
+	for _, test := range []struct {
+		name    string
+		ticket  string
+		session string
+		want    string
+	}{
+		{name: "ticket", ticket: " VAL-307 ", want: first},
+		{name: "session", session: "session-b", want: second},
+		{name: "both", ticket: "VAL-308", session: "session-b", want: second},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := FindRun(test.ticket, test.session)
+			if err != nil || got != test.want {
+				t.Fatalf("FindRun = %q, %v; want %q", got, err, test.want)
+			}
+		})
+	}
+	if _, err := FindRun("VAL-999", ""); !errors.Is(err, ErrUnknownRun) {
+		t.Fatalf("unknown ticket error = %v", err)
+	}
+	if _, err := FindRun("", ""); err == nil {
+		t.Fatal("empty filters unexpectedly succeeded")
+	}
+	third, err := Start("VAL-307", "session-c", DefaultCap)
+	if err != nil {
+		t.Fatalf("Start third: %v", err)
+	}
+	if _, err := FindRun("VAL-307", ""); !errors.Is(err, ErrAmbiguousRun) || !strings.Contains(err.Error(), first) || !strings.Contains(err.Error(), third) {
+		t.Fatalf("ambiguous ticket error = %v", err)
+	}
+	if got, err := FindRun("VAL-307", "session-a"); err != nil || got != first {
+		t.Fatalf("disambiguated FindRun = %q, %v; want %q", got, err, first)
+	}
+}
+
+func TestForgeNamespaceLockBoundsStartAndFind(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	runID := startTestRun(t, DefaultCap)
+	held := flock.New(paths.ForgeLock())
+	locked, err := held.TryLock()
+	if err != nil || !locked {
+		t.Fatalf("hold forge lock: locked=%v err=%v", locked, err)
+	}
+	defer func() { _ = held.Unlock() }()
+
+	started := time.Now()
+	if _, err := Start("VAL-308", "session-b", DefaultCap); !errors.Is(err, ErrRunBusy) {
+		t.Fatalf("Start error = %v, want ErrRunBusy", err)
+	}
+	if elapsed := time.Since(started); elapsed >= 2*time.Second {
+		t.Fatalf("blocked Start took %s", elapsed)
+	}
+	started = time.Now()
+	if _, err := FindRun("VAL-306", ""); !errors.Is(err, ErrRunBusy) {
+		t.Fatalf("FindRun error = %v, want ErrRunBusy for %s", err, runID)
+	}
+	if elapsed := time.Since(started); elapsed >= 2*time.Second {
+		t.Fatalf("blocked FindRun took %s", elapsed)
+	}
+}
+
+func TestShowPassCampaignlessSelectors(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	runID := startTestRun(t, 2)
+	if _, err := OpenWave(runID); err != nil {
+		t.Fatalf("OpenWave 1: %v", err)
+	}
+	waveOneDir, err := NextPass(runID, "wave")
+	if err != nil {
+		t.Fatalf("NextPass wave 1: %v", err)
+	}
+	status, err := ShowPass(runID, "", "wave", 0)
+	if err != nil {
+		t.Fatalf("ShowPass latest wave: %v", err)
+	}
+	if status.PassID != "wave-1" || status.CaptureDir != waveOneDir || !status.Complete || status.CampaignRequired {
+		t.Fatalf("campaignless wave status = %+v", status)
+	}
+	if exact, err := ShowPass(runID, "wave-1", "", 0); err != nil || exact != status {
+		t.Fatalf("ShowPass exact = %+v, %v; want %+v", exact, err, status)
+	}
+	if decision, err := CloseWave(runID, 1); err != nil || decision != "continue" {
+		t.Fatalf("CloseWave 1 = %q, %v", decision, err)
+	}
+	if _, err := OpenWave(runID); err != nil {
+		t.Fatalf("OpenWave 2: %v", err)
+	}
+	if _, err := ShowPass(runID, "", "wave", 0); !errors.Is(err, ErrInvalidPass) {
+		t.Fatalf("current wave without pass error = %v", err)
+	}
+	waveTwoDir, err := NextPass(runID, "wave")
+	if err != nil {
+		t.Fatalf("NextPass wave 2: %v", err)
+	}
+	if latest, err := ShowPass(runID, "", "wave", 0); err != nil || latest.PassID != "wave-2" || latest.CaptureDir != waveTwoDir {
+		t.Fatalf("latest wave = %+v, %v", latest, err)
+	}
+	if first, err := ShowPass(runID, "", "wave", 1); err != nil || first.PassID != "wave-1" || first.CaptureDir != waveOneDir {
+		t.Fatalf("wave 1 selector = %+v, %v", first, err)
+	}
+	if _, err := NextPass(runID, "review"); err != nil {
+		t.Fatalf("NextPass review 1: %v", err)
+	}
+	reviewTwoDir, err := NextPass(runID, "review")
+	if err != nil {
+		t.Fatalf("NextPass review 2: %v", err)
+	}
+	if latest, err := ShowPass(runID, "", "review", 0); err != nil || latest.PassID != "review-2" || latest.CaptureDir != reviewTwoDir {
+		t.Fatalf("latest review = %+v, %v", latest, err)
+	}
+	for _, request := range []struct {
+		pass string
+		kind string
+		wave int
+	}{
+		{pass: "missing"},
+		{pass: "wave-1", kind: "wave"},
+		{kind: "review", wave: 1},
+		{},
+	} {
+		if _, err := ShowPass(runID, request.pass, request.kind, request.wave); !errors.Is(err, ErrInvalidPass) {
+			t.Fatalf("invalid selector %+v error = %v", request, err)
+		}
+	}
+}
+
+func TestShowPassStrictCompletionAndCaptureIntegrity(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	runID := startTestRun(t, DefaultCap)
+	campaign := writeTestFile(t, "campaign.json", `{"schemaVersion":1,"axes":[{"title":"A","scenarios":[{"title":"S","steps":["Do"],"expected":"Done"}]}]}`)
+	if err := SaveCampaign(runID, campaign); err != nil {
+		t.Fatalf("SaveCampaign: %v", err)
+	}
+	if _, err := OpenWave(runID); err != nil {
+		t.Fatalf("OpenWave: %v", err)
+	}
+	captureDir, err := NextPass(runID, "wave")
+	if err != nil {
+		t.Fatalf("NextPass: %v", err)
+	}
+	state, err := readRun(runID)
+	if err != nil {
+		t.Fatalf("read legacy state: %v", err)
+	}
+	state.CampaignRequired = false
+	if err := writeJSON(paths.ForgeRunState(runID), state); err != nil {
+		t.Fatalf("write legacy state: %v", err)
+	}
+	open, err := ShowPass(runID, "wave-1", "", 0)
+	if err != nil {
+		t.Fatalf("ShowPass open: %v", err)
+	}
+	if !open.CampaignRequired || open.Complete {
+		t.Fatalf("strict open pass status = %+v", open)
+	}
+	outcome := writeTestFile(t, "outcome.json", `{"schemaVersion":1,"outcomes":[{"axis":"A","scenario":"S","status":"pass"}]}`)
+	if err := RecordOutcome(runID, "wave-1", outcome); err != nil {
+		t.Fatalf("RecordOutcome: %v", err)
+	}
+	state, err = readRun(runID)
+	if err != nil {
+		t.Fatalf("read crash-window state: %v", err)
+	}
+	state.OpenPass = "wave-1"
+	if err := writeJSON(paths.ForgeRunState(runID), state); err != nil {
+		t.Fatalf("write crash-window state: %v", err)
+	}
+	complete, err := ShowPass(runID, "wave-1", "", 0)
+	if err != nil || !complete.Complete {
+		t.Fatalf("completed strict pass = %+v, %v", complete, err)
+	}
+	if err := writeJSON(paths.ForgeLedger(runID), &ledger{SchemaVersion: SchemaVersion, Passes: []ledgerPass{}}); err != nil {
+		t.Fatalf("clear ledger: %v", err)
+	}
+	state.OpenPass = ""
+	if err := writeJSON(paths.ForgeRunState(runID), state); err != nil {
+		t.Fatalf("write cleared state: %v", err)
+	}
+	incomplete, err := ShowPass(runID, "wave-1", "", 0)
+	if err != nil || incomplete.Complete {
+		t.Fatalf("strict pass without ledger outcome = %+v, %v", incomplete, err)
+	}
+
+	outside := t.TempDir()
+	if err := os.Mkdir(filepath.Join(outside, "wave-1"), 0o700); err != nil {
+		t.Fatalf("mkdir outside pass: %v", err)
+	}
+	if err := os.RemoveAll(filepath.Dir(captureDir)); err != nil {
+		t.Fatalf("remove captures dir: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Dir(captureDir)); err != nil {
+		t.Fatalf("symlink captures dir: %v", err)
+	}
+	if _, err := ShowPass(runID, "wave-1", "", 0); err == nil || errors.Is(err, ErrInvalidPass) {
+		t.Fatalf("symlinked capture dir error = %v", err)
 	}
 }
 

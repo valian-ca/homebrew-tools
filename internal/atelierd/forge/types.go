@@ -11,7 +11,7 @@ import (
 
 const (
 	SchemaVersion   = 1
-	ContractVersion = 1
+	ContractVersion = 2
 	DefaultCap      = 4
 	// Normal waves remain controlled by the run's --cap value. Each auxiliary
 	// stream has its own v1 bound so review/repair cannot grow without limit.
@@ -38,6 +38,7 @@ const (
 
 var (
 	ErrUnknownRun      = errors.New("forge: unknown run")
+	ErrAmbiguousRun    = errors.New("forge: ambiguous run")
 	ErrInvalidPass     = errors.New("forge: invalid pass request")
 	ErrCampaignInvalid = errors.New("forge: campaign absent or invalid")
 	ErrWaveCap         = errors.New("forge: wave cap reached")
@@ -100,6 +101,16 @@ type RunStatus struct {
 		Report   string `json:"report"`
 		Testplan string `json:"testplan"`
 	} `json:"refs"`
+}
+
+type PassStatus struct {
+	RunID            string `json:"runId"`
+	PassID           string `json:"passId"`
+	Kind             string `json:"kind"`
+	Wave             int    `json:"wave,omitempty"`
+	CaptureDir       string `json:"captureDir"`
+	CampaignRequired bool   `json:"campaignRequired"`
+	Complete         bool   `json:"complete"`
 }
 
 type Scenario struct {

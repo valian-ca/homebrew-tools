@@ -21,6 +21,7 @@ const (
 	ExitForgeCampaign      = 22
 	ExitForgeWaveCap       = 23
 	ExitForgeStaging       = 24
+	ExitForgeAmbiguousRun  = 25
 )
 
 func ExitCode(err error) int {
@@ -41,6 +42,8 @@ func ExitCode(err error) int {
 		return ExitForgeWaveCap
 	case errors.Is(err, forge.ErrInvalidStaging):
 		return ExitForgeStaging
+	case errors.Is(err, forge.ErrAmbiguousRun):
+		return ExitForgeAmbiguousRun
 	}
 	return 1
 }
