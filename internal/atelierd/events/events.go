@@ -8,14 +8,6 @@ import (
 	"strings"
 )
 
-// VAL-195: ParsePayload writes every `--data key=value` to the outbox as a
-// verbatim string. Type coercion (boolean, numeric) is the responsibility of
-// consuming Zod schemas in valian-dashboards. The previous implementation
-// coerced int/float/bool from the raw string, which made any future string
-// field unsafe (e.g. `--data title="2025"` would silently become an int and
-// fail Zod validation). The Zod-side `success` field accepts both legacy
-// boolean and new string-form via a permanent union.
-
 type Type string
 
 // Keep this taxonomy in sync with valian-dashboards/common/schema/src/atelier/event-zod.ts.
@@ -78,9 +70,6 @@ func IsValid(s string) bool {
 	return false
 }
 
-// ParsePayload converts a list of "key=value" args into a payload map.
-// Values are stored verbatim as strings — see the VAL-195 docblock above
-// for rationale.
 func ParsePayload(args []string) (map[string]any, error) {
 	out := make(map[string]any, len(args))
 	for _, raw := range args {
@@ -93,9 +82,8 @@ func ParsePayload(args []string) (map[string]any, error) {
 	return out, nil
 }
 
-// ParseJSONPayload is the typed counterpart to ParsePayload: --data stays verbatim-string
-// by design (see the VAL-195 docblock above), so nested or numeric payload
-// fields need this explicit opt-in JSON channel.
+// ParseJSONPayload is the explicit opt-in channel for typed JSON fields;
+// ParsePayload keeps --data values as verbatim strings.
 func ParseJSONPayload(args []string) (map[string]any, error) {
 	out := make(map[string]any, len(args))
 	for _, raw := range args {

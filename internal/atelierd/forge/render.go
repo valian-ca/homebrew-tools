@@ -1,11 +1,18 @@
 package forge
 
 import (
+	"bytes"
+	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/valian-ca/homebrew-tools/internal/atelierd/events"
 	"github.com/valian-ca/homebrew-tools/internal/atelierd/paths"
@@ -58,9 +65,14 @@ func latestOutcomes(value *ledger) map[string]latestOutcome {
 }
 
 func Summary(runID string) (string, error) {
+	return SummaryContext(context.Background(), runID)
+}
+
+func SummaryContext(ctx context.Context, runID string) (string, error) {
 	var result string
-	err := withRunLock(runID, func() error {
-		if _, err := readRun(runID); err != nil {
+	err := withRunLockContext(ctx, runID, func() error {
+		state, err := readRun(runID)
+		if err != nil {
 			return err
 		}
 		campaign, err := readCampaign(runID)
@@ -69,6 +81,9 @@ func Summary(runID string) (string, error) {
 		}
 		ledger, err := readLedger(runID)
 		if err != nil {
+			return err
+		}
+		if err := validatePersistedData(state, campaign, ledger); err != nil {
 			return err
 		}
 		var builder strings.Builder
@@ -123,16 +138,24 @@ func Summary(runID string) (string, error) {
 }
 
 func RenderTestplan(runID, language, outputPath string) (string, string, error) {
+	return RenderTestplanContext(context.Background(), runID, language, outputPath)
+}
+
+func RenderTestplanContext(ctx context.Context, runID, language, outputPath string) (string, string, error) {
 	label, ok := testplanLabels[language]
 	if !ok {
 		return "", "", fmt.Errorf("unsupported testplan language %q", language)
 	}
-	if err := validateTestplanOutputPath(outputPath); err != nil {
+	outputDir, err := openTestplanOutputDir(outputPath, nil)
+	if err != nil {
 		return "", "", err
+	}
+	if outputDir != nil {
+		defer outputDir.Close()
 	}
 	var content string
 	var state *runState
-	err := withRunLock(runID, func() error {
+	err = withRunLockContext(ctx, runID, func() error {
 		var err error
 		state, err = readRun(runID)
 		if err != nil {
@@ -144,6 +167,9 @@ func RenderTestplan(runID, language, outputPath string) (string, string, error) 
 		}
 		ledger, err := readLedger(runID)
 		if err != nil {
+			return err
+		}
+		if err := validatePersistedData(state, campaign, ledger); err != nil {
 			return err
 		}
 		latest := latestOutcomes(ledger)
@@ -172,25 +198,126 @@ func RenderTestplan(runID, language, outputPath string) (string, string, error) 
 		}
 		content = builder.String()
 		if outputPath != "" {
-			return writeBytes(outputPath, []byte(content))
+			if err := writeTestplanOutput(outputDir, filepath.Base(outputPath), []byte(content)); err != nil {
+				return err
+			}
 		}
-		return nil
+		eventPath := ""
+		if outputPath != "" {
+			eventPath = filepath.Base(outputPath)
+		}
+		queueEvent(state, events.ForgeTestplanPublished, map[string]any{
+			"language": language, "path": eventPath,
+		})
+		return writeJSON(paths.ForgeRunState(runID), state)
 	})
 	if err != nil {
 		return "", "", err
 	}
-	eventPath := outputPath
-	if eventPath != "" {
-		if absolute, err := filepath.Abs(eventPath); err == nil {
-			eventPath = absolute
-		}
-	}
-	if err := emit(state, events.ForgeTestplanPublished, map[string]any{
-		"language": language, "path": eventPath,
-	}); err != nil {
-		return "", "", err
-	}
 	return content, outputPath, nil
+}
+
+// testplanOutputOpenHook is deliberately passed down the call stack rather
+// than stored in a package variable. Tests can therefore exercise a rename
+// race without introducing a race between parallel tests.
+type testplanOutputOpenHook func()
+
+func openTestplanOutputDir(outputPath string, afterOpen testplanOutputOpenHook) (*os.File, error) {
+	if outputPath == "" {
+		return nil, nil
+	}
+	if err := validateTestplanOutputPath(outputPath); err != nil {
+		return nil, err
+	}
+	absolute, err := filepath.Abs(outputPath)
+	if err != nil {
+		return nil, fmt.Errorf("resolve testplan output: %w", err)
+	}
+	parent := filepath.Dir(absolute)
+	forgeRoot, err := filepath.EvalSymlinks(paths.Forge())
+	if err != nil {
+		return nil, fmt.Errorf("resolve forge root: %w", err)
+	}
+	dir, err := openNoFollow(parent, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, fmt.Errorf("open testplan output directory: %w", err)
+	}
+	closeOnError := true
+	defer func() {
+		if closeOnError {
+			_ = dir.Close()
+		}
+	}()
+	// /dev/fd/<fd> names the directory represented by the descriptor, not
+	// whatever the user path happens to name after this point.
+	actual, err := filepath.EvalSymlinks(fmt.Sprintf("/dev/fd/%d", dir.Fd()))
+	if err != nil {
+		return nil, fmt.Errorf("resolve opened testplan output directory: %w", err)
+	}
+	if pathWithin(actual, forgeRoot) {
+		return nil, fmt.Errorf("testplan output must not be inside %s", paths.Forge())
+	}
+	if afterOpen != nil {
+		afterOpen()
+	}
+	closeOnError = false
+	return dir, nil
+}
+
+func writeTestplanOutput(dir *os.File, name string, data []byte) error {
+	if dir == nil {
+		return nil
+	}
+	if err := rejectSymlink(filepath.Join(filepath.Dir(dir.Name()), name)); err != nil {
+		return err
+	}
+	var random [12]byte
+	var tmpName string
+	var tmp *os.File
+	for attempt := 0; attempt < 10; attempt++ {
+		if _, err := rand.Read(random[:]); err != nil {
+			return err
+		}
+		tmpName = "." + name + "." + hex.EncodeToString(random[:]) + ".tmp"
+		fd, err := unix.Openat(int(dir.Fd()), tmpName, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
+		if errors.Is(err, unix.EEXIST) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		tmp = os.NewFile(uintptr(fd), tmpName)
+		break
+	}
+	if tmp == nil {
+		return errors.New("could not create temporary testplan output")
+	}
+	removeTemp := true
+	defer func() {
+		if removeTemp {
+			_ = unix.Unlinkat(int(dir.Fd()), tmpName, 0)
+		}
+	}()
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := io.Copy(tmp, bytes.NewReader(data)); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := unix.Renameat(int(dir.Fd()), tmpName, int(dir.Fd()), name); err != nil {
+		return err
+	}
+	removeTemp = false
+	return unix.Fsync(int(dir.Fd()))
 }
 
 func validateTestplanOutputPath(outputPath string) error {

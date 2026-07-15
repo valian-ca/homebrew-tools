@@ -24,6 +24,72 @@ func startTestRun(t *testing.T, cap int) string {
 	return runID
 }
 
+func TestStartRejectsSymlinkedForgeRoot(t *testing.T) {
+	home := t.TempDir()
+	outside := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.Symlink(outside, filepath.Join(home, ".atelier")); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(outside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Start("VAL-306", "session-306", DefaultCap); err == nil {
+		t.Fatal("Start unexpectedly followed symlinked forge root")
+	}
+	after, err := os.Stat(outside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !before.ModTime().Equal(after.ModTime()) || before.Mode().Perm() != after.Mode().Perm() {
+		t.Fatalf("symlink target changed: before=%v after=%v", before, after)
+	}
+	entries, err := os.ReadDir(outside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("Start wrote through forge-root symlink: %v", entries)
+	}
+}
+
+func TestRunLockRejectsSymlinkedRunDir(t *testing.T) {
+	home := t.TempDir()
+	outside := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := ensureDir(paths.Forge()); err != nil {
+		t.Fatal(err)
+	}
+	runID := "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+	if err := os.Symlink(outside, paths.ForgeRun(runID)); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(outside, "marker")
+	if err := os.WriteFile(marker, []byte("safe"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(outside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := withRunLock(runID, func() error {
+		return os.WriteFile(filepath.Join(paths.ForgeRun(runID), "escaped"), []byte("bad"), 0o600)
+	}); err == nil {
+		t.Fatal("withRunLock unexpectedly followed symlinked run directory")
+	}
+	after, err := os.Stat(outside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !before.ModTime().Equal(after.ModTime()) || before.Mode().Perm() != after.Mode().Perm() {
+		t.Fatalf("symlink target changed: before=%v after=%v", before, after)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "escaped")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("withRunLock wrote through run symlink: %v", err)
+	}
+}
+
 func writeTestFile(t *testing.T, name, content string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), name)
@@ -85,6 +151,135 @@ func TestRunIsolationStateAndModes(t *testing.T) {
 	}
 	if status.Wave != 0 || status.OpenPass != "" || status.Refs.Report != "" || status.Refs.Testplan != "" {
 		t.Fatalf("fresh status = %+v", status)
+	}
+}
+
+func validScenario(number int) Scenario {
+	return Scenario{Title: fmt.Sprintf("scenario-%d", number), Steps: []string{"step"}, Expected: "done"}
+}
+
+func TestV1CampaignAndOutcomeBoundaries(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		make func() Campaign
+		want string
+	}{
+		{"axes", func() Campaign {
+			c := Campaign{Axes: make([]Axis, MaxAxes)}
+			for i := range c.Axes {
+				c.Axes[i] = Axis{Title: fmt.Sprintf("axis-%d", i), Scenarios: []Scenario{validScenario(i)}}
+			}
+			return c
+		}, ""},
+		{"scenarios per axis", func() Campaign {
+			c := Campaign{Axes: []Axis{{Title: "axis", Scenarios: make([]Scenario, MaxScenariosPerAxis)}}}
+			for i := range c.Axes[0].Scenarios {
+				c.Axes[0].Scenarios[i] = validScenario(i)
+			}
+			return c
+		}, ""},
+		{"scenarios total", func() Campaign {
+			c := Campaign{Axes: make([]Axis, 8)}
+			for i := range c.Axes {
+				c.Axes[i] = Axis{Title: fmt.Sprintf("axis-%d", i), Scenarios: make([]Scenario, MaxScenarios/8)}
+				for j := range c.Axes[i].Scenarios {
+					c.Axes[i].Scenarios[j] = validScenario(i*100 + j)
+				}
+			}
+			return c
+		}, ""},
+		{"steps", func() Campaign {
+			steps := make([]string, MaxSteps)
+			for i := range steps {
+				steps[i] = "step"
+			}
+			return Campaign{Axes: []Axis{{Title: "axis", Scenarios: []Scenario{{Title: "scenario", Steps: steps, Expected: "done"}}}}}
+		}, ""},
+		{"text", func() Campaign {
+			return Campaign{Axes: []Axis{{Title: strings.Repeat("a", MaxTextBytes), Scenarios: []Scenario{{Title: "scenario", Steps: []string{"step"}, Expected: "done"}}}}}
+		}, ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			campaign := test.make()
+			if err := validateCampaign(&campaign); err != nil {
+				t.Fatalf("boundary rejected: %v", err)
+			}
+		})
+	}
+
+	tooMany := Campaign{Axes: []Axis{{Title: "axis", Scenarios: make([]Scenario, MaxScenariosPerAxis+1)}}}
+	for i := range tooMany.Axes[0].Scenarios {
+		tooMany.Axes[0].Scenarios[i] = validScenario(i)
+	}
+	if err := validateCampaign(&tooMany); err == nil {
+		t.Fatal("per-axis over-limit campaign accepted")
+	}
+}
+
+func TestV1OversizedStagingAndCampaign(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	runID := startTestRun(t, DefaultCap)
+	staging := filepath.Join(t.TempDir(), "oversized.json")
+	file, err := os.Create(staging)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Truncate(MaxStagingFileBytes + 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveCampaign(runID, staging); !errors.Is(err, ErrInvalidStaging) {
+		t.Fatalf("oversized staging error = %v", err)
+	}
+
+	if err := os.WriteFile(paths.ForgeCampaign(runID), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	file, err = os.OpenFile(paths.ForgeCampaign(runID), os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Truncate(MaxCampaignFileBytes + 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadCampaign(runID); !errors.Is(err, ErrCampaignInvalid) {
+		t.Fatalf("oversized persisted campaign error = %v", err)
+	}
+	if err := os.WriteFile(paths.ForgeCampaign(runID), []byte(`{"schemaVersion":1,"axes":[{"title":"A","scenarios":[{"title":"S","steps":["Do"],"expected":"Done"}]}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name string
+		path string
+		load func() error
+	}{
+		{"ledger", paths.ForgeLedger(runID), func() error { _, err := Summary(runID); return err }},
+		{"run", paths.ForgeRunState(runID), func() error { _, err := Status(runID); return err }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			file, err := os.OpenFile(test.path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+			if err != nil {
+				t.Fatal(err)
+			}
+			limit := int64(MaxRunFileBytes)
+			if test.name == "ledger" {
+				limit = MaxLedgerFileBytes
+			}
+			if err := file.Truncate(limit + 1); err != nil {
+				t.Fatal(err)
+			}
+			if err := file.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if err := test.load(); err == nil || errors.Is(err, ErrCampaignInvalid) || errors.Is(err, ErrInvalidStaging) {
+				t.Fatalf("oversized persisted %s error = %v; want generic", test.name, err)
+			}
+		})
 	}
 }
 
@@ -178,6 +373,84 @@ func TestWaveAndPassConcurrency(t *testing.T) {
 	}
 }
 
+func TestNextPassRequiresCampaignBeforeMutation(t *testing.T) {
+	validCampaign := `{"schemaVersion":1,"axes":[{"title":"A","scenarios":[{"title":"S","steps":["Do"],"expected":"Done"}]}]}`
+	for _, campaign := range []struct {
+		name    string
+		content string
+	}{
+		{name: "missing", content: ""},
+		{name: "invalid", content: `{"schemaVersion":1,"axes":[]}`},
+	} {
+		for _, kind := range []passKind{passWave, passReview, passRepair} {
+			t.Run(campaign.name+"/"+string(kind), func(t *testing.T) {
+				t.Setenv("HOME", t.TempDir())
+				runID := startTestRun(t, DefaultCap)
+				if kind == passWave {
+					if _, err := OpenWave(runID); err != nil {
+						t.Fatalf("OpenWave: %v", err)
+					}
+				}
+				if campaign.content != "" {
+					if err := os.WriteFile(paths.ForgeCampaign(runID), []byte(campaign.content), 0o600); err != nil {
+						t.Fatalf("write invalid campaign: %v", err)
+					}
+				}
+				before, err := os.ReadFile(paths.ForgeRunState(runID))
+				if err != nil {
+					t.Fatalf("read state before: %v", err)
+				}
+				if _, err := NextPass(runID, string(kind)); !errors.Is(err, ErrCampaignInvalid) {
+					t.Fatalf("NextPass %s error = %v; want ErrCampaignInvalid", kind, err)
+				}
+				after, err := os.ReadFile(paths.ForgeRunState(runID))
+				if err != nil {
+					t.Fatalf("read state after: %v", err)
+				}
+				if !reflect.DeepEqual(before, after) {
+					t.Fatal("failed pass changed run state")
+				}
+				if _, err := os.Stat(paths.ForgeCaptures(runID)); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("failed pass changed captures: %v", err)
+				}
+
+				staging := writeTestFile(t, "campaign.json", validCampaign)
+				if err := SaveCampaign(runID, staging); err != nil {
+					t.Fatalf("SaveCampaign after failed pass: %v", err)
+				}
+				if _, err := NextPass(runID, string(kind)); err != nil {
+					t.Fatalf("NextPass %s after save: %v", kind, err)
+				}
+			})
+		}
+	}
+}
+
+func TestOpenWaveRejectsAfterDryWave(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	runID := startTestRun(t, 2)
+	campaign := writeTestFile(t, "campaign.json", `{"schemaVersion":1,"axes":[{"title":"A","scenarios":[{"title":"S","steps":["Do"],"expected":"Done"}]}]}`)
+	outcome := writeTestFile(t, "outcome.json", `{"schemaVersion":1,"outcomes":[{"axis":"A","scenario":"S","status":"pass"}]}`)
+	if err := SaveCampaign(runID, campaign); err != nil {
+		t.Fatalf("SaveCampaign: %v", err)
+	}
+	if _, err := OpenWave(runID); err != nil {
+		t.Fatalf("OpenWave: %v", err)
+	}
+	if _, err := NextPass(runID, "wave"); err != nil {
+		t.Fatalf("NextPass: %v", err)
+	}
+	if err := RecordOutcome(runID, "wave-1", outcome); err != nil {
+		t.Fatalf("RecordOutcome: %v", err)
+	}
+	if decision, err := CloseWave(runID, 0); err != nil || decision != "dry" {
+		t.Fatalf("CloseWave = %q, %v; want dry", decision, err)
+	}
+	if _, err := OpenWave(runID); !errors.Is(err, ErrInvalidPass) {
+		t.Fatalf("OpenWave after dry wave error = %v; want ErrInvalidPass", err)
+	}
+}
+
 func TestPassSequencesAndOutcomeCounts(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	runID := startTestRun(t, 2)
@@ -224,6 +497,9 @@ func TestPassSequencesAndOutcomeCounts(t *testing.T) {
 			t.Fatalf("pass %d = %s, want %s", i, pass.ID, want[i])
 		}
 	}
+	if state.NextReview != 3 || state.NextRepair != 3 {
+		t.Fatalf("next counters = review %d, repair %d; want 3, 3", state.NextReview, state.NextRepair)
+	}
 	ledger, err := readLedger(runID)
 	if err != nil {
 		t.Fatalf("readLedger: %v", err)
@@ -250,6 +526,40 @@ func TestPassSequencesAndOutcomeCounts(t *testing.T) {
 		if info.Mode().Perm() != 0o600 {
 			t.Fatalf("file %s mode = %o, want 600", file, info.Mode().Perm())
 		}
+	}
+}
+
+func TestAuxiliaryPassCaps(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	runID := startTestRun(t, 1)
+	campaign := writeTestFile(t, "campaign.json", `{"schemaVersion":1,"axes":[{"title":"A","scenarios":[{"title":"S","steps":["Do"],"expected":"Done"}]}]}`)
+	outcome := writeTestFile(t, "outcome.json", `{"schemaVersion":1,"outcomes":[{"axis":"A","scenario":"S","status":"pass"}]}`)
+	if err := SaveCampaign(runID, campaign); err != nil {
+		t.Fatal(err)
+	}
+	for _, kind := range []string{"review", "repair"} {
+		for sequence := 1; sequence <= MaxAuxiliaryPasses; sequence++ {
+			path, err := NextPass(runID, kind)
+			if err != nil {
+				t.Fatalf("NextPass %s-%d: %v", kind, sequence, err)
+			}
+			if filepath.Base(path) != fmt.Sprintf("%s-%d", kind, sequence) {
+				t.Fatalf("pass path = %s, want %s-%d", path, kind, sequence)
+			}
+			if err := RecordOutcome(runID, filepath.Base(path), outcome); err != nil {
+				t.Fatalf("RecordOutcome %s: %v", kind, err)
+			}
+		}
+		if _, err := NextPass(runID, kind); !errors.Is(err, ErrInvalidPass) {
+			t.Fatalf("NextPass over %s cap = %v; want ErrInvalidPass", kind, err)
+		}
+	}
+	state, err := readRun(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Passes) != 2*MaxAuxiliaryPasses || len(state.Passes) > MaxPasses {
+		t.Fatalf("persisted passes = %d; want %d and <= %d", len(state.Passes), 2*MaxAuxiliaryPasses, MaxPasses)
 	}
 }
 
@@ -379,6 +689,79 @@ func TestRecordOutcomeRecoversStaleOpenPass(t *testing.T) {
 	}
 }
 
+func TestRecordOutcomeRejectsMismatchedStaleOpenPass(t *testing.T) {
+	tests := []struct {
+		name    string
+		outcome string
+	}{
+		{
+			name:    "status",
+			outcome: `{"schemaVersion":1,"outcomes":[{"axis":"A","scenario":"S1","status":"finding"},{"axis":"A","scenario":"S2","status":"pass"}]}`,
+		},
+		{
+			name:    "reason",
+			outcome: `{"schemaVersion":1,"outcomes":[{"axis":"A","scenario":"S1","status":"pass","reason":"changed"},{"axis":"A","scenario":"S2","status":"pass"}]}`,
+		},
+		{
+			name:    "scenario",
+			outcome: `{"schemaVersion":1,"outcomes":[{"axis":"A","scenario":"S3","status":"pass"},{"axis":"A","scenario":"S2","status":"pass"}]}`,
+		},
+		{
+			name:    "ordering",
+			outcome: `{"schemaVersion":1,"outcomes":[{"axis":"A","scenario":"S2","status":"pass"},{"axis":"A","scenario":"S1","status":"pass"}]}`,
+		},
+		{
+			name:    "invalid data",
+			outcome: `{"schemaVersion":1,"outcomes":[{"axis":"A","scenario":"S1","status":"invalid"},{"axis":"A","scenario":"S2","status":"pass"}]}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			runID := startTestRun(t, DefaultCap)
+			campaign := writeTestFile(t, "campaign.json", `{"schemaVersion":1,"axes":[{"title":"A","scenarios":[{"title":"S1","steps":["Do"],"expected":"Done"},{"title":"S2","steps":["Do"],"expected":"Done"},{"title":"S3","steps":["Do"],"expected":"Done"}]}]}`)
+			if err := SaveCampaign(runID, campaign); err != nil {
+				t.Fatalf("SaveCampaign: %v", err)
+			}
+			if _, err := OpenWave(runID); err != nil {
+				t.Fatalf("OpenWave: %v", err)
+			}
+			if _, err := NextPass(runID, "wave"); err != nil {
+				t.Fatalf("NextPass: %v", err)
+			}
+			if err := withRunLock(runID, func() error {
+				return writeJSON(paths.ForgeLedger(runID), &ledger{
+					SchemaVersion: SchemaVersion,
+					Passes: []ledgerPass{{
+						PassID: "wave-1",
+						Kind:   passWave,
+						Wave:   1,
+						Outcomes: []Outcome{
+							{Axis: "A", Scenario: "S1", Status: "pass"},
+							{Axis: "A", Scenario: "S2", Status: "pass"},
+						},
+						Counts: counts{Pass: 2},
+					}},
+				})
+			}); err != nil {
+				t.Fatalf("seed ledger: %v", err)
+			}
+
+			if err := RecordOutcome(runID, "wave-1", writeTestFile(t, "outcome.json", tt.outcome)); !errors.Is(err, ErrInvalidPass) {
+				t.Fatalf("RecordOutcome error = %v, want ErrInvalidPass", err)
+			}
+			state, err := readRun(runID)
+			if err != nil {
+				t.Fatalf("readRun: %v", err)
+			}
+			if state.OpenPass != "wave-1" {
+				t.Fatalf("OpenPass = %q, want wave-1", state.OpenPass)
+			}
+		})
+	}
+}
+
 func TestCampaignFreezesAfterPassAllocation(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	runID := startTestRun(t, DefaultCap)
@@ -412,6 +795,20 @@ func TestGoldenSummaryAndFrenchTestplan(t *testing.T) {
 	runID := startTestRun(t, DefaultCap)
 	copyFixture(t, "campaign.json", paths.ForgeCampaign(runID))
 	copyFixture(t, "ledger.json", paths.ForgeLedger(runID))
+	if err := withRunLock(runID, func() error {
+		state, err := readRun(runID)
+		if err != nil {
+			return err
+		}
+		state.Passes = []pass{
+			{ID: "wave-1", Kind: passWave, Wave: 1},
+			{ID: "repair-1", Kind: passRepair},
+			{ID: "review-1", Kind: passReview},
+		}
+		return writeJSON(paths.ForgeRunState(runID), state)
+	}); err != nil {
+		t.Fatalf("seed allocated passes: %v", err)
+	}
 	summary, err := Summary(runID)
 	if err != nil {
 		t.Fatalf("Summary: %v", err)
@@ -545,6 +942,10 @@ func TestEventPayloadsAndPersistedSession(t *testing.T) {
 	if _, _, err := RenderTestplan(runID, "en", ""); err != nil {
 		t.Fatalf("RenderTestplan: %v", err)
 	}
+	outputPath := filepath.Join(t.TempDir(), "testplan.md")
+	if _, _, err := RenderTestplan(runID, "en", outputPath); err != nil {
+		t.Fatalf("RenderTestplan with output: %v", err)
+	}
 	files, err := outbox.List()
 	if err != nil {
 		t.Fatalf("outbox.List: %v", err)
@@ -557,6 +958,7 @@ func TestEventPayloadsAndPersistedSession(t *testing.T) {
 		"forge:wave-close",
 		"forge:report-linked",
 		"forge:testplan-published",
+		"forge:testplan-published",
 	}
 	wantPayloads := []map[string]any{
 		{"runId": runID, "ticket": "VAL-306", "cap": float64(1)},
@@ -566,6 +968,7 @@ func TestEventPayloadsAndPersistedSession(t *testing.T) {
 		{"runId": runID, "wave": float64(1), "findings": float64(0), "decision": "dry"},
 		{"runId": runID, "report": "comment-42"},
 		{"runId": runID, "language": "en", "path": ""},
+		{"runId": runID, "language": "en", "path": "testplan.md"},
 	}
 	if len(files) != len(wantTypes) {
 		t.Fatalf("events = %d, want %d", len(files), len(wantTypes))
@@ -578,6 +981,99 @@ func TestEventPayloadsAndPersistedSession(t *testing.T) {
 		if envelope.Type != wantTypes[i] || envelope.ClaudeSessionID != "session-306" || !reflect.DeepEqual(envelope.Payload, wantPayloads[i]) {
 			t.Fatalf("event %d = %+v", i, envelope)
 		}
+	}
+}
+
+func TestTestplanOutputKeepsOpenedParentAcrossPathSwap(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if _, err := Start("VAL-306", "session-306", 1); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	parent := t.TempDir()
+	backup := parent + "-opened"
+	output := filepath.Join(parent, "testplan.md")
+	dir, err := openTestplanOutputDir(output, func() {
+		if err := os.Rename(parent, backup); err != nil {
+			t.Fatalf("move output parent: %v", err)
+		}
+		if err := os.Symlink(paths.Forge(), parent); err != nil {
+			t.Fatalf("replace output parent: %v", err)
+		}
+	})
+	if err != nil {
+		t.Fatalf("openTestplanOutputDir: %v", err)
+	}
+	defer dir.Close()
+	if err := writeTestplanOutput(dir, "testplan.md", []byte("safe\n")); err != nil {
+		t.Fatalf("writeTestplanOutput: %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(backup, "testplan.md")); err != nil || string(got) != "safe\n" {
+		t.Fatalf("opened directory output = %q, %v", got, err)
+	}
+	if _, err := os.Stat(filepath.Join(paths.Forge(), "testplan.md")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("forge was replaced through swapped parent: %v", err)
+	}
+}
+
+func TestPendingEventsSurviveOutboxFailureAndFlushInOrder(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	// A file at the directory path makes every outbox write fail, while forge
+	// state remains writable and commands must still report their result.
+	if err := os.MkdirAll(filepath.Dir(paths.Outbox()), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(paths.Outbox(), []byte("blocked"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	runID, err := Start("VAL-306", "session-306", 1)
+	if err != nil || runID == "" {
+		t.Fatalf("Start = %q, %v; want recoverable run ID", runID, err)
+	}
+	if wave, err := OpenWave(runID); err != nil || wave != 1 {
+		t.Fatalf("OpenWave = %d, %v; want successful state transition", wave, err)
+	}
+	state, err := readRun(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.PendingEvents) != 2 {
+		t.Fatalf("pending events = %d, want 2", len(state.PendingEvents))
+	}
+
+	if err := os.Remove(paths.Outbox()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Status(runID); err != nil {
+		t.Fatalf("Status flush: %v", err)
+	}
+	files, err := outbox.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 2 {
+		t.Fatalf("flushed events = %d, want 2", len(files))
+	}
+	wantTypes := []string{"forge:run-start", "forge:wave-open"}
+	for i, file := range files {
+		event, err := outbox.Read(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if event.Type != wantTypes[i] || event.Payload["runId"] != runID {
+			t.Fatalf("event %d = %+v, want %s for %s", i, event, wantTypes[i], runID)
+		}
+	}
+	if _, err := Status(runID); err != nil {
+		t.Fatalf("second Status: %v", err)
+	}
+	filesAgain, err := outbox.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(filesAgain) != len(files) {
+		t.Fatalf("events after idempotent retry = %d, want %d", len(filesAgain), len(files))
 	}
 }
 
@@ -611,6 +1107,71 @@ func TestLedgerRejectsForgedCounts(t *testing.T) {
 	}
 	if _, err := Summary(runID); err == nil || !strings.Contains(err.Error(), "computed") {
 		t.Fatalf("forged ledger error = %v", err)
+	}
+}
+
+func TestConsumersRejectCrossFileLedgerForgery(t *testing.T) {
+	consumerNames := []string{"CloseWave", "Summary", "RenderTestplan"}
+	for _, scenario := range []struct {
+		name   string
+		mutate func(*ledger)
+	}{
+		{
+			name: "unknown scenario",
+			mutate: func(value *ledger) {
+				value.Passes[0].Outcomes[0].Scenario = "forged"
+			},
+		},
+		{
+			name: "unallocated pass ID",
+			mutate: func(value *ledger) {
+				value.Passes[0].PassID = "wave-999"
+			},
+		},
+	} {
+		for _, consumer := range consumerNames {
+			t.Run(scenario.name+"/"+consumer, func(t *testing.T) {
+				t.Setenv("HOME", t.TempDir())
+				runID := startTestRun(t, DefaultCap)
+				campaign := writeTestFile(t, "campaign.json", `{"schemaVersion":1,"axes":[{"title":"A","scenarios":[{"title":"S","steps":["Do"],"expected":"Done"}]}]}`)
+				if err := SaveCampaign(runID, campaign); err != nil {
+					t.Fatalf("SaveCampaign: %v", err)
+				}
+				if _, err := OpenWave(runID); err != nil {
+					t.Fatalf("OpenWave: %v", err)
+				}
+				if _, err := NextPass(runID, "wave"); err != nil {
+					t.Fatalf("NextPass: %v", err)
+				}
+				outcome := writeTestFile(t, "outcome.json", `{"schemaVersion":1,"outcomes":[{"axis":"A","scenario":"S","status":"pass"}]}`)
+				if err := RecordOutcome(runID, "wave-1", outcome); err != nil {
+					t.Fatalf("RecordOutcome: %v", err)
+				}
+				if err := withRunLock(runID, func() error {
+					value, err := readLedger(runID)
+					if err != nil {
+						return err
+					}
+					scenario.mutate(value)
+					return writeJSON(paths.ForgeLedger(runID), value)
+				}); err != nil {
+					t.Fatalf("forge ledger: %v", err)
+				}
+
+				var err error
+				switch consumer {
+				case "CloseWave":
+					_, err = CloseWave(runID, 0)
+				case "Summary":
+					_, err = Summary(runID)
+				case "RenderTestplan":
+					_, _, err = RenderTestplan(runID, "en", "")
+				}
+				if err == nil || errors.Is(err, ErrInvalidPass) || errors.Is(err, ErrInvalidStaging) || errors.Is(err, ErrCampaignInvalid) {
+					t.Fatalf("%s error = %v; want generic persisted-data error", consumer, err)
+				}
+			})
+		}
 	}
 }
 

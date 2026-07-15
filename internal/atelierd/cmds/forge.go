@@ -9,7 +9,22 @@ import (
 )
 
 func NewForgeCmd() *cobra.Command {
-	command := &cobra.Command{Use: "forge", Short: "Manage autonomous forge run state"}
+	command := &cobra.Command{
+		Use:   "forge",
+		Short: "Manage autonomous forge run state",
+		Example: `  atelierd forge run start VAL-306 --session session-abc123 --cap 4
+  atelierd forge campaign save --run 01J00000000000000000000000 --from /tmp/campaign.json
+  atelierd forge wave open --run 01J00000000000000000000000
+  atelierd forge pass next --run 01J00000000000000000000000 --kind wave
+  atelierd forge outcome record --run 01J00000000000000000000000 --pass wave-1 --from /tmp/outcome.json
+  atelierd forge wave close --run 01J00000000000000000000000 --findings 0
+  atelierd forge summary --run 01J00000000000000000000000
+
+  atelierd forge pass next --run 01J00000000000000000000000 --kind review
+  atelierd forge outcome record --run 01J00000000000000000000000 --pass review-1 --from /tmp/review-outcome.json
+  atelierd forge ref set https://linear.app/valian/issue/VAL-306#comment-1 --run 01J00000000000000000000000 --key report
+  atelierd forge testplan render --run 01J00000000000000000000000 --lang en --out /tmp/testplan.md`,
+	}
 	command.AddCommand(
 		newForgeRunCmd(),
 		newForgeWaveCmd(),
@@ -33,7 +48,7 @@ func newForgeRunCmd() *cobra.Command {
 		Short: "Start a fresh isolated run and print its ULID",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			runID, err := forge.Start(args[0], session, cap)
+			runID, err := forge.StartContext(cmd.Context(), args[0], session, cap)
 			if err != nil {
 				return err
 			}
@@ -50,7 +65,7 @@ func newForgeRunCmd() *cobra.Command {
 		Short: "Print one compact JSON line with wave, open pass, and refs",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			value, err := forge.StatusJSON(runID)
+			value, err := forge.StatusJSONContext(cmd.Context(), runID)
 			if err != nil {
 				return err
 			}
@@ -72,7 +87,7 @@ func newForgeWaveCmd() *cobra.Command {
 		Short: "Open the next wave and print its number",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			wave, err := forge.OpenWave(openRun)
+			wave, err := forge.OpenWaveContext(cmd.Context(), openRun)
 			if err != nil {
 				return err
 			}
@@ -89,7 +104,7 @@ func newForgeWaveCmd() *cobra.Command {
 		Short: "Close the open wave and print continue, dry, or cap",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			decision, err := forge.CloseWave(closeRun, findings)
+			decision, err := forge.CloseWaveContext(cmd.Context(), closeRun, findings)
 			if err != nil {
 				return err
 			}
@@ -113,7 +128,7 @@ func newForgePassCmd() *cobra.Command {
 		Short: "Allocate a pass and print its absolute captures directory",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			path, err := forge.NextPass(runID, kind)
+			path, err := forge.NextPassContext(cmd.Context(), runID, kind)
 			if err != nil {
 				return err
 			}
@@ -138,8 +153,8 @@ func newForgeCampaignCmd() *cobra.Command {
 		Long: `Validate and atomically store this JSON shape:
 {"schemaVersion":1,"axes":[{"title":"Axis","scenarios":[{"title":"Scenario","steps":["Step"],"expected":"Result"}]}]}`,
 		Args: cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
-			return forge.SaveCampaign(saveRun, staging)
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return forge.SaveCampaignContext(cmd.Context(), saveRun, staging)
 		},
 	}
 	save.Flags().StringVar(&saveRun, "run", "", "forge run ULID (required)")
@@ -152,7 +167,7 @@ func newForgeCampaignCmd() *cobra.Command {
 		Short: "Print the stored campaign as multi-line JSON",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			value, err := forge.LoadCampaign(loadRun)
+			value, err := forge.LoadCampaignContext(cmd.Context(), loadRun)
 			if err != nil {
 				return err
 			}
@@ -177,8 +192,8 @@ func newForgeOutcomeCmd() *cobra.Command {
 
 The command computes and persists pass, finding, and not_exercised counts; staging files never supply counts.`,
 		Args: cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
-			return forge.RecordOutcome(runID, passID, staging)
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return forge.RecordOutcomeContext(cmd.Context(), runID, passID, staging)
 		},
 	}
 	record.Flags().StringVar(&runID, "run", "", "forge run ULID (required)")
@@ -198,7 +213,7 @@ func newForgeSummaryCmd() *cobra.Command {
 		Short: "Print deterministic paste-ready Markdown counts",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			value, err := forge.Summary(runID)
+			value, err := forge.SummaryContext(cmd.Context(), runID)
 			if err != nil {
 				return err
 			}
@@ -218,8 +233,8 @@ func newForgeRefCmd() *cobra.Command {
 		Use:   "set <value> --run <id> --key report|testplan",
 		Short: "Store a Linear report comment or test plan document reference",
 		Args:  cobra.ExactArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
-			return forge.SetRef(setRun, setKey, args[0])
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return forge.SetRefContext(cmd.Context(), setRun, setKey, args[0])
 		},
 	}
 	set.Flags().StringVar(&setRun, "run", "", "forge run ULID (required)")
@@ -232,7 +247,7 @@ func newForgeRefCmd() *cobra.Command {
 		Short: "Print a stored Linear reference as one value",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			value, err := forge.GetRef(getRun, getKey)
+			value, err := forge.GetRefContext(cmd.Context(), getRun, getKey)
 			if err != nil {
 				return err
 			}
@@ -265,7 +280,7 @@ stdout contains only the path exactly as passed.`,
 				fmt.Fprintf(cmd.ErrOrStderr(), "warning: unsupported language %q; falling back to en\n", selected)
 				selected = "en"
 			}
-			content, writtenPath, err := forge.RenderTestplan(runID, selected, output)
+			content, writtenPath, err := forge.RenderTestplanContext(cmd.Context(), runID, selected, output)
 			if err != nil {
 				return err
 			}

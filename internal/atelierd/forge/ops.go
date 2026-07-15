@@ -1,11 +1,13 @@
 package forge
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"time"
 
 	"github.com/valian-ca/homebrew-tools/internal/atelierd/events"
@@ -14,23 +16,36 @@ import (
 )
 
 func Start(ticket, session string, cap int) (string, error) {
+	return StartContext(context.Background(), ticket, session, cap)
+}
+
+func StartContext(ctx context.Context, ticket, session string, cap int) (string, error) {
 	var err error
 	ticket, err = cleanTicket(ticket)
 	if err != nil {
 		return "", err
 	}
+	if len(ticket) > MaxTextBytes {
+		return "", fmt.Errorf("ticket exceeds %d bytes", MaxTextBytes)
+	}
 	if session == "" {
 		return "", errors.New("session must be non-empty")
+	}
+	if len(session) > MaxIDBytes {
+		return "", fmt.Errorf("session exceeds %d bytes", MaxIDBytes)
 	}
 	if cap <= 0 {
 		return "", errors.New("cap must be greater than zero")
 	}
 	now := time.Now().UTC()
-	if err := prune(now); err != nil {
+	if err := pruneContext(ctx, now); err != nil {
+		if errors.Is(err, ErrRunBusy) {
+			return "", ErrRunBusy
+		}
 		return "", fmt.Errorf("prune forge runs: %w", err)
 	}
 	runID := ulid.New()
-	if err := os.Mkdir(paths.ForgeRun(runID), paths.DirMode); err != nil {
+	if err := createDir(paths.ForgeRun(runID)); err != nil {
 		return "", err
 	}
 	state := &runState{
@@ -41,23 +56,27 @@ func Start(ticket, session string, cap int) (string, error) {
 		Cap:           cap,
 		Waves:         []wave{},
 		Passes:        []pass{},
+		NextReview:    1,
+		NextRepair:    1,
 		CreatedAt:     now,
 	}
-	if err := withRunLock(runID, func() error {
+	if err := withRunLockContext(ctx, runID, func() error {
+		queueEvent(state, events.ForgeRunStart, map[string]any{"ticket": ticket, "cap": cap})
 		return writeJSON(paths.ForgeRunState(runID), state)
 	}); err != nil {
 		_ = os.RemoveAll(paths.ForgeRun(runID))
-		return "", err
-	}
-	if err := emit(state, events.ForgeRunStart, map[string]any{"ticket": ticket, "cap": cap}); err != nil {
 		return "", err
 	}
 	return runID, nil
 }
 
 func Status(runID string) (RunStatus, error) {
+	return StatusContext(context.Background(), runID)
+}
+
+func StatusContext(ctx context.Context, runID string) (RunStatus, error) {
 	var result RunStatus
-	err := withRunLock(runID, func() error {
+	err := withRunLockContext(ctx, runID, func() error {
 		state, err := readRun(runID)
 		if err != nil {
 			return err
@@ -76,7 +95,11 @@ func Status(runID string) (RunStatus, error) {
 }
 
 func StatusJSON(runID string) ([]byte, error) {
-	status, err := Status(runID)
+	return StatusJSONContext(context.Background(), runID)
+}
+
+func StatusJSONContext(ctx context.Context, runID string) ([]byte, error) {
+	status, err := StatusContext(ctx, runID)
 	if err != nil {
 		return nil, err
 	}
@@ -84,8 +107,12 @@ func StatusJSON(runID string) ([]byte, error) {
 }
 
 func OpenWave(runID string) (int, error) {
+	return OpenWaveContext(context.Background(), runID)
+}
+
+func OpenWaveContext(ctx context.Context, runID string) (int, error) {
 	var state *runState
-	err := withRunLock(runID, func() error {
+	err := withRunLockContext(ctx, runID, func() error {
 		var err error
 		state, err = readRun(runID)
 		if err != nil {
@@ -94,30 +121,38 @@ func OpenWave(runID string) (int, error) {
 		if state.WaveOpen {
 			return fmt.Errorf("%w: wave %d is already open", ErrInvalidPass, state.Wave)
 		}
+		if len(state.Waves) > 0 {
+			last := state.Waves[len(state.Waves)-1]
+			if !last.Open && last.Findings != nil && *last.Findings == 0 {
+				return fmt.Errorf("%w: most recent wave was dry", ErrInvalidPass)
+			}
+		}
 		if state.Wave >= state.Cap {
 			return fmt.Errorf("%w: cap %d", ErrWaveCap, state.Cap)
 		}
 		state.Wave++
 		state.WaveOpen = true
 		state.Waves = append(state.Waves, wave{Number: state.Wave, Open: true})
+		queueEvent(state, events.ForgeWaveOpen, map[string]any{"wave": state.Wave})
 		return writeJSON(paths.ForgeRunState(runID), state)
 	})
 	if err != nil {
-		return 0, err
-	}
-	if err := emit(state, events.ForgeWaveOpen, map[string]any{"wave": state.Wave}); err != nil {
 		return 0, err
 	}
 	return state.Wave, nil
 }
 
 func CloseWave(runID string, findings int) (string, error) {
+	return CloseWaveContext(context.Background(), runID, findings)
+}
+
+func CloseWaveContext(ctx context.Context, runID string, findings int) (string, error) {
 	if findings < 0 {
 		return "", fmt.Errorf("%w: findings must be non-negative", ErrInvalidPass)
 	}
 	var state *runState
 	decision := "continue"
-	err := withRunLock(runID, func() error {
+	err := withRunLockContext(ctx, runID, func() error {
 		var err error
 		state, err = readRun(runID)
 		if err != nil {
@@ -139,8 +174,15 @@ func CloseWave(runID string, findings int) (string, error) {
 		if currentPass == nil {
 			return fmt.Errorf("%w: wave %d has no pass", ErrInvalidPass, state.Wave)
 		}
+		campaign, err := readCampaign(runID)
+		if err != nil {
+			return err
+		}
 		ledger, err := readLedger(runID)
 		if err != nil {
+			return err
+		}
+		if err := validatePersistedData(state, campaign, ledger); err != nil {
 			return err
 		}
 		var recorded *ledgerPass
@@ -167,37 +209,46 @@ func CloseWave(runID string, findings int) (string, error) {
 		state.WaveOpen = false
 		state.Waves[len(state.Waves)-1].Open = false
 		state.Waves[len(state.Waves)-1].Findings = &findings
+		queueEvent(state, events.ForgeWaveClose, map[string]any{
+			"wave": state.Wave, "findings": findings, "decision": decision,
+		})
 		return writeJSON(paths.ForgeRunState(runID), state)
 	})
 	if err != nil {
-		return "", err
-	}
-	if err := emit(state, events.ForgeWaveClose, map[string]any{
-		"wave": state.Wave, "findings": findings, "decision": decision,
-	}); err != nil {
 		return "", err
 	}
 	return decision, nil
 }
 
 func NextPass(runID, kindValue string) (string, error) {
+	return NextPassContext(context.Background(), runID, kindValue)
+}
+
+func NextPassContext(ctx context.Context, runID, kindValue string) (string, error) {
 	kind, err := parsePassKind(kindValue)
 	if err != nil {
 		return "", err
 	}
 	var state *runState
 	var created pass
-	err = withRunLock(runID, func() error {
+	err = withRunLockContext(ctx, runID, func() error {
 		var err error
 		state, err = readRun(runID)
 		if err != nil {
 			return err
 		}
+		// A pass is the point at which the campaign becomes immutable. Validate
+		// it before checking or changing pass state, and before creating any
+		// capture directories, so a failed campaign save can still be retried.
+		if _, err := readCampaign(runID); err != nil {
+			return err
+		}
 		if state.OpenPass != "" {
 			return fmt.Errorf("%w: pass %s is still open", ErrInvalidPass, state.OpenPass)
 		}
-		sequence := 1
-		if kind == passWave {
+		var sequence int
+		switch kind {
+		case passWave:
 			if !state.WaveOpen {
 				return fmt.Errorf("%w: wave pass requires an open wave", ErrInvalidPass)
 			}
@@ -207,12 +258,18 @@ func NextPass(runID, kindValue string) (string, error) {
 					return fmt.Errorf("%w: wave %d already has a pass", ErrInvalidPass, state.Wave)
 				}
 			}
-		} else {
-			for _, existing := range state.Passes {
-				if existing.Kind == kind {
-					sequence++
-				}
+		case passReview:
+			sequence = state.NextReview
+		case passRepair:
+			sequence = state.NextRepair
+		}
+		if kind != passWave {
+			if sequence > MaxAuxiliaryPasses {
+				return fmt.Errorf("%w: %s pass cap %d reached", ErrInvalidPass, kind, MaxAuxiliaryPasses)
 			}
+		}
+		if len(state.Passes) >= MaxPasses {
+			return fmt.Errorf("%w: total pass cap %d reached", ErrInvalidPass, MaxPasses)
 		}
 		created = pass{ID: fmt.Sprintf("%s-%d", kind, sequence), Kind: kind}
 		if kind == passWave {
@@ -222,11 +279,20 @@ func NextPass(runID, kindValue string) (string, error) {
 		if err := ensureDir(paths.ForgeCaptures(runID)); err != nil {
 			return err
 		}
-		if err := os.Mkdir(captureDir, paths.DirMode); err != nil {
+		if err := createDir(captureDir); err != nil {
 			return err
 		}
 		state.Passes = append(state.Passes, created)
+		switch kind {
+		case passReview:
+			state.NextReview = sequence + 1
+		case passRepair:
+			state.NextRepair = sequence + 1
+		}
 		state.OpenPass = created.ID
+		queueEvent(state, events.ForgePass, map[string]any{
+			"passId": created.ID, "kind": string(created.Kind), "wave": created.Wave,
+		})
 		if err := writeJSON(paths.ForgeRunState(runID), state); err != nil {
 			_ = os.Remove(captureDir)
 			return err
@@ -234,11 +300,6 @@ func NextPass(runID, kindValue string) (string, error) {
 		return nil
 	})
 	if err != nil {
-		return "", err
-	}
-	if err := emit(state, events.ForgePass, map[string]any{
-		"passId": created.ID, "kind": string(created.Kind), "wave": created.Wave,
-	}); err != nil {
 		return "", err
 	}
 	path, err := filepath.Abs(paths.ForgePassCaptures(runID, created.ID))
@@ -249,6 +310,10 @@ func NextPass(runID, kindValue string) (string, error) {
 }
 
 func SaveCampaign(runID, stagingPath string) error {
+	return SaveCampaignContext(context.Background(), runID, stagingPath)
+}
+
+func SaveCampaignContext(ctx context.Context, runID, stagingPath string) error {
 	var campaign Campaign
 	if err := readStaging(stagingPath, &campaign); err != nil {
 		return err
@@ -260,7 +325,7 @@ func SaveCampaign(runID, stagingPath string) error {
 		return fmt.Errorf("%w: %v", ErrInvalidStaging, err)
 	}
 	var state *runState
-	err := withRunLock(runID, func() error {
+	err := withRunLockContext(ctx, runID, func() error {
 		var err error
 		state, err = readRun(runID)
 		if err != nil {
@@ -273,22 +338,30 @@ func SaveCampaign(runID, stagingPath string) error {
 		if len(state.Passes) > 0 || len(ledger.Passes) > 0 {
 			return fmt.Errorf("%w: campaign is frozen after pass allocation", ErrInvalidStaging)
 		}
-		return writeJSON(paths.ForgeCampaign(runID), &campaign)
+		if err := writeJSON(paths.ForgeCampaign(runID), &campaign); err != nil {
+			return err
+		}
+		axes := len(campaign.Axes)
+		scenarios := 0
+		for _, axis := range campaign.Axes {
+			scenarios += len(axis.Scenarios)
+		}
+		queueEvent(state, events.ForgeCampaignSaved, map[string]any{"axes": axes, "scenarios": scenarios})
+		return writeJSON(paths.ForgeRunState(runID), state)
 	})
 	if err != nil {
 		return err
 	}
-	axes := len(campaign.Axes)
-	scenarios := 0
-	for _, axis := range campaign.Axes {
-		scenarios += len(axis.Scenarios)
-	}
-	return emit(state, events.ForgeCampaignSaved, map[string]any{"axes": axes, "scenarios": scenarios})
+	return nil
 }
 
 func LoadCampaign(runID string) ([]byte, error) {
+	return LoadCampaignContext(context.Background(), runID)
+}
+
+func LoadCampaignContext(ctx context.Context, runID string) ([]byte, error) {
 	var result []byte
-	err := withRunLock(runID, func() error {
+	err := withRunLockContext(ctx, runID, func() error {
 		if _, err := readRun(runID); err != nil {
 			return err
 		}
@@ -296,13 +369,17 @@ func LoadCampaign(runID string) ([]byte, error) {
 			return err
 		}
 		var err error
-		result, err = os.ReadFile(paths.ForgeCampaign(runID))
+		result, err = readNoFollow(paths.ForgeCampaign(runID), MaxCampaignFileBytes)
 		return err
 	})
 	return result, err
 }
 
 func RecordOutcome(runID, passID, stagingPath string) error {
+	return RecordOutcomeContext(context.Background(), runID, passID, stagingPath)
+}
+
+func RecordOutcomeContext(ctx context.Context, runID, passID, stagingPath string) error {
 	var batch OutcomeBatch
 	if err := readStaging(stagingPath, &batch); err != nil {
 		return err
@@ -311,7 +388,7 @@ func RecordOutcome(runID, passID, stagingPath string) error {
 		return fmt.Errorf("%w: outcome schemaVersion must be %d", ErrInvalidStaging, SchemaVersion)
 	}
 	var state *runState
-	err := withRunLock(runID, func() error {
+	err := withRunLockContext(ctx, runID, func() error {
 		var err error
 		state, err = readRun(runID)
 		if err != nil {
@@ -331,18 +408,26 @@ func RecordOutcome(runID, passID, stagingPath string) error {
 		if err != nil {
 			return err
 		}
-		for _, existing := range ledger.Passes {
-			if existing.PassID == passID {
-				if state.OpenPass == passID {
-					state.OpenPass = ""
-					return writeJSON(paths.ForgeRunState(runID), state)
-				}
-				return fmt.Errorf("%w: pass %q already recorded", ErrInvalidPass, passID)
-			}
-		}
 		campaign, err := readCampaign(runID)
 		if err != nil {
 			return err
+		}
+		for _, existing := range ledger.Passes {
+			if existing.PassID == passID {
+				if state.OpenPass != passID {
+					return fmt.Errorf("%w: pass %q already recorded", ErrInvalidPass, passID)
+				}
+				total, err := validateOutcomes(&batch, campaign)
+				if err != nil {
+					return fmt.Errorf("%w: stale pass outcome: %v", ErrInvalidPass, err)
+				}
+				if existing.Kind != target.Kind || existing.Wave != target.Wave ||
+					!reflect.DeepEqual(existing.Outcomes, batch.Outcomes) || existing.Counts != total {
+					return fmt.Errorf("%w: stale pass outcome does not match persisted pass %q", ErrInvalidPass, passID)
+				}
+				state.OpenPass = ""
+				return writeJSON(paths.ForgeRunState(runID), state)
+			}
 		}
 		total, err := validateOutcomes(&batch, campaign)
 		if err != nil {
@@ -366,14 +451,21 @@ func RecordOutcome(runID, passID, stagingPath string) error {
 }
 
 func SetRef(runID, key, value string) error {
+	return SetRefContext(context.Background(), runID, key, value)
+}
+
+func SetRefContext(ctx context.Context, runID, key, value string) error {
 	if key != "report" && key != "testplan" {
 		return fmt.Errorf("key must be report or testplan, got %q", key)
 	}
 	if value == "" {
 		return errors.New("reference value must be non-empty")
 	}
+	if len(value) > MaxTextBytes {
+		return fmt.Errorf("reference value exceeds %d bytes", MaxTextBytes)
+	}
 	var state *runState
-	err := withRunLock(runID, func() error {
+	err := withRunLockContext(ctx, runID, func() error {
 		var err error
 		state, err = readRun(runID)
 		if err != nil {
@@ -384,23 +476,27 @@ func SetRef(runID, key, value string) error {
 		} else {
 			state.Refs.Testplan = value
 		}
+		if key == "report" {
+			queueEvent(state, events.ForgeReportLinked, map[string]any{"report": value})
+		}
 		return writeJSON(paths.ForgeRunState(runID), state)
 	})
 	if err != nil {
 		return err
 	}
-	if key == "report" {
-		return emit(state, events.ForgeReportLinked, map[string]any{"report": value})
-	}
 	return nil
 }
 
 func GetRef(runID, key string) (string, error) {
+	return GetRefContext(context.Background(), runID, key)
+}
+
+func GetRefContext(ctx context.Context, runID, key string) (string, error) {
 	if key != "report" && key != "testplan" {
 		return "", fmt.Errorf("key must be report or testplan, got %q", key)
 	}
 	var value string
-	err := withRunLock(runID, func() error {
+	err := withRunLockContext(ctx, runID, func() error {
 		state, err := readRun(runID)
 		if err != nil {
 			return err

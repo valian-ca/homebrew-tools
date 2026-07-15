@@ -8,7 +8,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/gofrs/flock"
 	"github.com/valian-ca/homebrew-tools/internal/atelierd/forge"
 	"github.com/valian-ca/homebrew-tools/internal/atelierd/outbox"
 	"github.com/valian-ca/homebrew-tools/internal/atelierd/paths"
@@ -63,8 +65,8 @@ func TestForgeCommandExitCodes(t *testing.T) {
 	}
 	runID := startCommandRun(t, 1)
 	_, _, err = executeForge("pass", "next", "--run", runID, "--kind", "wave")
-	if ExitCode(err) != ExitForgeInvalidPass {
-		t.Fatalf("invalid pass exit = %d, error %v", ExitCode(err), err)
+	if ExitCode(err) != ExitForgeCampaign {
+		t.Fatalf("missing campaign pass exit = %d, error %v", ExitCode(err), err)
 	}
 	_, _, err = executeForge("campaign", "load", "--run", runID)
 	if ExitCode(err) != ExitForgeCampaign {
@@ -105,10 +107,74 @@ func TestForgeCommandExitCodes(t *testing.T) {
 	if ExitCode(err) != ExitForgeWaveCap {
 		t.Fatalf("wave cap exit = %d, error %v", ExitCode(err), err)
 	}
+	dryRun := startCommandRun(t, 2)
+	dryCampaign := commandTestFile(t, "dry-campaign.json", `{"schemaVersion":1,"axes":[{"title":"A","scenarios":[{"title":"S","steps":["Do"],"expected":"Done"}]}]}`)
+	dryOutcome := commandTestFile(t, "dry-outcome.json", `{"schemaVersion":1,"outcomes":[{"axis":"A","scenario":"S","status":"pass"}]}`)
+	if _, _, err := executeForge("campaign", "save", "--run", dryRun, "--from", dryCampaign); err != nil {
+		t.Fatalf("dry campaign save: %v", err)
+	}
+	if _, _, err := executeForge("wave", "open", "--run", dryRun); err != nil {
+		t.Fatalf("dry wave open: %v", err)
+	}
+	if _, _, err := executeForge("pass", "next", "--run", dryRun, "--kind", "wave"); err != nil {
+		t.Fatalf("dry pass next: %v", err)
+	}
+	if _, _, err := executeForge("outcome", "record", "--run", dryRun, "--pass", "wave-1", "--from", dryOutcome); err != nil {
+		t.Fatalf("dry outcome record: %v", err)
+	}
+	if _, _, err := executeForge("wave", "close", "--run", dryRun, "--findings", "0"); err != nil {
+		t.Fatalf("dry wave close: %v", err)
+	}
+	_, _, err = executeForge("wave", "open", "--run", dryRun)
+	if ExitCode(err) != ExitForgeInvalidPass {
+		t.Fatalf("dry terminal wave open exit = %d, error %v", ExitCode(err), err)
+	}
 	invalid := commandTestFile(t, "invalid.json", `{"schemaVersion":1,"axes":[]}`)
 	_, _, err = executeForge("campaign", "save", "--run", runID, "--from", invalid)
 	if ExitCode(err) != ExitForgeStaging {
 		t.Fatalf("staging exit = %d, error %v", ExitCode(err), err)
+	}
+}
+
+func TestForgePassCommandRequiresCampaignBeforeAllocation(t *testing.T) {
+	validCampaign := `{"schemaVersion":1,"axes":[{"title":"A","scenarios":[{"title":"S","steps":["Do"],"expected":"Done"}]}]}`
+	for _, kind := range []string{"wave", "review", "repair"} {
+		t.Run(kind, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			runID := startCommandRun(t, 2)
+			if kind == "wave" {
+				if _, _, err := executeForge("wave", "open", "--run", runID); err != nil {
+					t.Fatalf("wave open: %v", err)
+				}
+			}
+			before, err := os.ReadFile(paths.ForgeRunState(runID))
+			if err != nil {
+				t.Fatalf("read state before: %v", err)
+			}
+			_, _, err = executeForge("pass", "next", "--run", runID, "--kind", kind)
+			if ExitCode(err) != ExitForgeCampaign {
+				t.Fatalf("missing campaign exit = %d, error %v", ExitCode(err), err)
+			}
+			after, err := os.ReadFile(paths.ForgeRunState(runID))
+			if err != nil {
+				t.Fatalf("read state after: %v", err)
+			}
+			if !bytes.Equal(before, after) {
+				t.Fatal("failed pass changed run state")
+			}
+			if _, err := os.Stat(paths.ForgeCaptures(runID)); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("failed pass changed captures: %v", err)
+			}
+
+			campaign := commandTestFile(t, "campaign.json", validCampaign)
+			if _, _, err := executeForge("campaign", "save", "--run", runID, "--from", campaign); err != nil {
+				t.Fatalf("campaign save after failed pass: %v", err)
+			}
+			stdout, _, err := executeForge("pass", "next", "--run", runID, "--kind", kind)
+			if err != nil || filepath.Base(strings.TrimSpace(stdout)) != kind+"-1" {
+				t.Fatalf("successful pass stdout=%q error=%v", stdout, err)
+			}
+		})
 	}
 }
 
@@ -228,6 +294,30 @@ func TestForgeRenderProtectedOutputUsesGenericExit(t *testing.T) {
 				t.Fatalf("exit = %d, error %v", ExitCode(err), err)
 			}
 		})
+	}
+}
+
+func TestForgeCommandReturnsRunBusyWithinBound(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	runID := startCommandRun(t, forge.DefaultCap)
+	held := flock.New(paths.ForgeRunLock(runID))
+	locked, err := held.TryLock()
+	if err != nil || !locked {
+		t.Fatalf("hold run lock: locked=%v err=%v", locked, err)
+	}
+	defer func() { _ = held.Unlock() }()
+
+	started := time.Now()
+	_, _, err = executeForge("run", "status", "--run", runID)
+	elapsed := time.Since(started)
+	if !errors.Is(err, forge.ErrRunBusy) {
+		t.Fatalf("status error = %v, want ErrRunBusy", err)
+	}
+	if ExitCode(err) != 1 {
+		t.Fatalf("busy exit = %d, want 1", ExitCode(err))
+	}
+	if elapsed >= 2*time.Second {
+		t.Fatalf("busy command took %s, want bounded wait", elapsed)
 	}
 }
 
