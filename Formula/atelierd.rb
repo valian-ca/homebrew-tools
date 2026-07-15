@@ -1,8 +1,8 @@
 class Atelierd < Formula
   desc "Atelier dashboard daemon - local bridge to the cloud event stream"
   homepage "https://github.com/valian-ca/homebrew-tools"
-  url "https://github.com/valian-ca/homebrew-tools/archive/refs/tags/atelierd-0.14.0.tar.gz"
-  sha256 "030014117d69429e9410fd006841524b1d6f85c9528f0fe326284c83404fe3d2"
+  url "https://github.com/valian-ca/homebrew-tools/archive/refs/tags/atelierd-0.15.0.tar.gz"
+  sha256 "df50318713ca8082159f730d3aa90d095d7fb84cb3e177bcb2926d9672c1238f"
   license "MIT"
 
   depends_on "go" => :build
@@ -23,7 +23,7 @@ class Atelierd < Formula
   test do
     assert_match "atelierd", shell_output("#{bin}/atelierd --help")
     assert_match version.to_s, shell_output("#{bin}/atelierd --version")
-    assert_equal "1", shell_output("#{bin}/atelierd forge contract").strip
+    assert_equal "2", shell_output("#{bin}/atelierd forge contract").strip
     output = shell_output("#{bin}/atelierd ulid").strip
     assert_match(/^[0-9A-HJKMNP-TV-Z]{26}$/, output)
   end
