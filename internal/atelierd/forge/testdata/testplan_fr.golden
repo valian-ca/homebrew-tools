@@ -1,0 +1,30 @@
+# Plan de tests — VAL-306
+
+## Navigation
+
+### Ouvrir le détail
+- Étapes :
+  1. Ouvrir la liste
+  2. Sélectionner le premier élément
+- Résultat attendu : Le détail sélectionné est visible
+- Dernier résultat : Problème
+- Passe : review-1
+- Motif : Contraste insuffisant
+
+### Retourner à la liste
+- Étapes :
+  1. Utiliser le bouton retour
+- Résultat attendu : La position de défilement est conservée
+- Dernier résultat : Réussi
+- Passe : repair-1
+
+## Résilience
+
+### Réessayer hors ligne
+- Étapes :
+  1. Couper le réseau
+  2. Appuyer sur Réessayer
+- Résultat attendu : Une erreur actionnable reste affichée
+- Dernier résultat : Non exercé
+- Passe : wave-1
+- Motif : Simulateur réseau indisponible

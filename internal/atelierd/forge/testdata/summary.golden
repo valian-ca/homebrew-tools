@@ -1,0 +1,7 @@
+## Forge counts
+- Latest normal wave: wave-1 — pass: 1, finding: 1, not_exercised: 1
+- Campaign rollup: pass: 1, finding: 1, not_exercised: 1, unrecorded: 0
+- Pass findings:
+  - wave-1: 1
+  - repair-1: 0
+  - review-1: 1

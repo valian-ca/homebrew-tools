@@ -10,16 +10,19 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/valian-ca/homebrew-tools/internal/atelierd/devicebank"
+	"github.com/valian-ca/homebrew-tools/internal/atelierd/forge"
 )
 
-// Distinct exit codes for scriptable lease failures (VAL-268).
 const (
 	ExitBankExhausted      = 10
 	ExitBankNotInitialized = 11
+	ExitForgeUnknownRun    = 20
+	ExitForgeInvalidPass   = 21
+	ExitForgeCampaign      = 22
+	ExitForgeWaveCap       = 23
+	ExitForgeStaging       = 24
 )
 
-// ExitCode maps an error returned by a device sub-command to the process
-// exit code main() should use.
 func ExitCode(err error) int {
 	switch {
 	case err == nil:
@@ -28,12 +31,20 @@ func ExitCode(err error) int {
 		return ExitBankExhausted
 	case errors.Is(err, devicebank.ErrNotInitialized):
 		return ExitBankNotInitialized
+	case errors.Is(err, forge.ErrUnknownRun):
+		return ExitForgeUnknownRun
+	case errors.Is(err, forge.ErrInvalidPass):
+		return ExitForgeInvalidPass
+	case errors.Is(err, forge.ErrCampaignInvalid):
+		return ExitForgeCampaign
+	case errors.Is(err, forge.ErrWaveCap):
+		return ExitForgeWaveCap
+	case errors.Is(err, forge.ErrInvalidStaging):
+		return ExitForgeStaging
 	}
 	return 1
 }
 
-// NewDeviceCmd builds the `atelierd device` command group: the machine-local
-// source of truth for mobile-device attribution (bank, leases, recycling).
 func NewDeviceCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "device",
@@ -144,8 +155,6 @@ func newDeviceStatusCmd() *cobra.Command {
 		Short: "List every bank device with its state and lease",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			// Reap first so the listing reflects expired leases instead of
-			// showing devices as held by long-dead sessions.
 			if devicebank.Exists() {
 				if err := devicebank.Reap(cmd.Context()); err != nil {
 					return err

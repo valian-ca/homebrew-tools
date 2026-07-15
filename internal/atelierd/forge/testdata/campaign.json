@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "axes": [
+    {
+      "title": "Navigation",
+      "scenarios": [
+        {
+          "title": "Ouvrir le détail",
+          "steps": [
+            "Ouvrir la liste",
+            "Sélectionner le premier élément"
+          ],
+          "expected": "Le détail sélectionné est visible"
+        },
+        {
+          "title": "Retourner à la liste",
+          "steps": [
+            "Utiliser le bouton retour"
+          ],
+          "expected": "La position de défilement est conservée"
+        }
+      ]
+    },
+    {
+      "title": "Résilience",
+      "scenarios": [
+        {
+          "title": "Réessayer hors ligne",
+          "steps": [
+            "Couper le réseau",
+            "Appuyer sur Réessayer"
+          ],
+          "expected": "Une erreur actionnable reste affichée"
+        }
+      ]
+    }
+  ]
+}

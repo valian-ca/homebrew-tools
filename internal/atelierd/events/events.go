@@ -1,14 +1,3 @@
-// Package events holds the atelier event taxonomy and the payload parsers.
-//
-// SOURCE OF TRUTH for the type list is
-//
-//	common/schema/src/atelier/event-zod.ts
-//
-// in the valian-dashboards repo (the EventZod discriminated union). When that
-// file changes, this list MUST be updated — the sync is manual + visual diff
-// at PR time per VAL-164 stress-test decision. If drift becomes a real-world
-// problem, retrofit a CI script that fetches the Zod file and diffs against
-// these consts.
 package events
 
 import (
@@ -19,37 +8,46 @@ import (
 	"strings"
 )
 
-// VAL-195: ParsePayload writes every `--data key=value` to the outbox as a
-// verbatim string. Type coercion (boolean, numeric) is the responsibility of
-// consuming Zod schemas in valian-dashboards. The previous implementation
-// coerced int/float/bool from the raw string, which made any future string
-// field unsafe (e.g. `--data title="2025"` would silently become an int and
-// fail Zod validation). The Zod-side `success` field accepts both legacy
-// boolean and new string-form via a permanent union.
-
-// Type is one of the 14 atelier event types. Validated by IsValid before
-// any write to the outbox.
 type Type string
 
+// Keep this taxonomy in sync with valian-dashboards/common/schema/src/atelier/event-zod.ts.
 const (
-	HookSessionStart      Type = "hook:session-start"
-	HookUserPromptSubmit  Type = "hook:user-prompt-submit"
-	HookPreToolUse        Type = "hook:pre-tool-use"
-	HookPostToolUse       Type = "hook:post-tool-use"
-	HookStop              Type = "hook:stop"
-	HookSessionEnd        Type = "hook:session-end"
-	HookAssistantTurn     Type = "hook:assistant-turn"
-	SkillPhaseStart       Type = "skill:phase-start"
-	SkillPhaseEnd         Type = "skill:phase-end"
-	SkillTicketCreated    Type = "skill:ticket-created"
-	SkillActivity         Type = "skill:activity"
-	SkillShipComplete     Type = "skill:ship-complete"
-	TranscriptAITitle     Type = "transcript:ai-title"
-	TranscriptCustomTitle Type = "transcript:custom-title"
+	ForgeCampaignSaved     Type = "forge:campaign-saved"
+	ForgeOutcomeRecorded   Type = "forge:outcome-recorded"
+	ForgePass              Type = "forge:pass"
+	ForgeReportLinked      Type = "forge:report-linked"
+	ForgeRunStart          Type = "forge:run-start"
+	ForgeTestplanLinked    Type = "forge:testplan-linked"
+	ForgeTestplanPublished Type = "forge:testplan-published"
+	ForgeWaveClose         Type = "forge:wave-close"
+	ForgeWaveOpen          Type = "forge:wave-open"
+	HookSessionStart       Type = "hook:session-start"
+	HookUserPromptSubmit   Type = "hook:user-prompt-submit"
+	HookPreToolUse         Type = "hook:pre-tool-use"
+	HookPostToolUse        Type = "hook:post-tool-use"
+	HookStop               Type = "hook:stop"
+	HookSessionEnd         Type = "hook:session-end"
+	HookAssistantTurn      Type = "hook:assistant-turn"
+	SkillPhaseStart        Type = "skill:phase-start"
+	SkillPhaseEnd          Type = "skill:phase-end"
+	SkillTicketCreated     Type = "skill:ticket-created"
+	SkillActivity          Type = "skill:activity"
+	SkillShipComplete      Type = "skill:ship-complete"
+	TranscriptAITitle      Type = "transcript:ai-title"
+	TranscriptCustomTitle  Type = "transcript:custom-title"
 )
 
 func All() []Type {
 	return []Type{
+		ForgeCampaignSaved,
+		ForgeOutcomeRecorded,
+		ForgePass,
+		ForgeReportLinked,
+		ForgeRunStart,
+		ForgeTestplanLinked,
+		ForgeTestplanPublished,
+		ForgeWaveClose,
+		ForgeWaveOpen,
 		HookAssistantTurn,
 		HookPostToolUse,
 		HookPreToolUse,
@@ -76,9 +74,6 @@ func IsValid(s string) bool {
 	return false
 }
 
-// ParsePayload converts a list of "key=value" args into a payload map.
-// Values are stored verbatim as strings — see the VAL-195 docblock above
-// for rationale.
 func ParsePayload(args []string) (map[string]any, error) {
 	out := make(map[string]any, len(args))
 	for _, raw := range args {
@@ -91,9 +86,8 @@ func ParsePayload(args []string) (map[string]any, error) {
 	return out, nil
 }
 
-// ParseJSONPayload is the typed counterpart to ParsePayload: --data stays verbatim-string
-// by design (see the VAL-195 docblock above), so nested or numeric payload
-// fields need this explicit opt-in JSON channel.
+// ParseJSONPayload is the explicit opt-in channel for typed JSON fields;
+// ParsePayload keeps --data values as verbatim strings.
 func ParseJSONPayload(args []string) (map[string]any, error) {
 	out := make(map[string]any, len(args))
 	for _, raw := range args {
