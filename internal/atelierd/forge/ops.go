@@ -145,22 +145,14 @@ func FindRunContext(ctx context.Context, ticket, session string) (string, error)
 			if !entry.IsDir() || validateRunID(runID) != nil {
 				continue
 			}
-			matched := false
-			err := withRunLockContext(ctx, runID, func() error {
-				state, err := readRun(runID)
-				if err != nil {
-					return err
-				}
-				matched = (ticket == "" || state.Ticket == ticket) && (session == "" || state.Session == session)
-				return nil
-			})
+			state, err := readRun(runID)
 			if errors.Is(err, ErrUnknownRun) {
 				continue
 			}
 			if err != nil {
 				return err
 			}
-			if matched {
+			if (ticket == "" || state.Ticket == ticket) && (session == "" || state.Session == session) {
 				matches = append(matches, runID)
 			}
 		}

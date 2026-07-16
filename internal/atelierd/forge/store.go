@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gofrs/flock"
 	oklogulid "github.com/oklog/ulid/v2"
 	"golang.org/x/sys/unix"
 
@@ -30,6 +29,13 @@ const (
 )
 
 var runLockWait = runLockDeadline
+
+func lockWaitError(ctx context.Context) error {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return ErrRunBusy
+	}
+	return ctx.Err()
+}
 
 func ensureDir(path string) error {
 	if err := inspectDirectory(path, true); err != nil {
@@ -146,6 +152,32 @@ func withRunLock(runID string, fn func() error) error {
 	return withRunLockContext(context.Background(), runID, fn)
 }
 
+func lockFileContext(ctx context.Context, file *os.File) error {
+	lockCtx, cancel := context.WithTimeout(ctx, runLockWait)
+	defer cancel()
+	ticker := time.NewTicker(runLockRetryInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-lockCtx.Done():
+			return lockWaitError(lockCtx)
+		default:
+		}
+		err := unix.Flock(int(file.Fd()), unix.LOCK_EX|unix.LOCK_NB)
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, unix.EWOULDBLOCK) && !errors.Is(err, unix.EAGAIN) && !errors.Is(err, unix.EINTR) {
+			return err
+		}
+		select {
+		case <-lockCtx.Done():
+			return lockWaitError(lockCtx)
+		case <-ticker.C:
+		}
+	}
+}
+
 func withForgeLockContext(ctx context.Context, fn func() error) error {
 	if err := ensureDir(paths.Forge()); err != nil {
 		return err
@@ -155,21 +187,13 @@ func withForgeLockContext(ctx context.Context, fn func() error) error {
 		return fmt.Errorf("open forge namespace lock: %w", err)
 	}
 	defer lock.Close()
-	flockLock := flock.New(lock.Name())
-	defer flockLock.Close()
-	lockCtx, cancel := context.WithTimeout(ctx, runLockWait)
-	defer cancel()
-	ok, err := flockLock.TryLockContext(lockCtx, runLockRetryInterval)
-	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
-			return ErrRunBusy
+	if err := lockFileContext(ctx, lock); err != nil {
+		if errors.Is(err, ErrRunBusy) {
+			return err
 		}
 		return fmt.Errorf("acquire forge namespace lock: %w", err)
 	}
-	if !ok {
-		return ErrRunBusy
-	}
-	defer func() { _ = flockLock.Unlock() }()
+	defer func() { _ = unix.Flock(int(lock.Fd()), unix.LOCK_UN) }()
 	if err := unix.Fchmod(int(lock.Fd()), uint32(paths.FileMode.Perm())); err != nil {
 		return err
 	}
@@ -201,21 +225,13 @@ func withRunLockContext(ctx context.Context, runID string, fn func() error) erro
 		return fmt.Errorf("open forge run lock: %w", err)
 	}
 	defer lock.Close()
-	flockLock := flock.New(lock.Name())
-	defer flockLock.Close()
-	lockCtx, cancel := context.WithTimeout(ctx, runLockWait)
-	defer cancel()
-	ok, err := flockLock.TryLockContext(lockCtx, runLockRetryInterval)
-	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
-			return ErrRunBusy
+	if err := lockFileContext(ctx, lock); err != nil {
+		if errors.Is(err, ErrRunBusy) {
+			return err
 		}
 		return fmt.Errorf("acquire forge run lock: %w", err)
 	}
-	if !ok {
-		return ErrRunBusy
-	}
-	defer func() { _ = flockLock.Unlock() }()
+	defer func() { _ = unix.Flock(int(lock.Fd()), unix.LOCK_UN) }()
 	if err := unix.Fchmod(int(lock.Fd()), uint32(paths.FileMode.Perm())); err != nil {
 		return err
 	}

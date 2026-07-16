@@ -1,6 +1,7 @@
 package forge
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gofrs/flock"
+	"golang.org/x/sys/unix"
 
 	"github.com/valian-ca/homebrew-tools/internal/atelierd/outbox"
 	"github.com/valian-ca/homebrew-tools/internal/atelierd/paths"
@@ -250,6 +252,73 @@ func TestForgeNamespaceLockBoundsStartAndFind(t *testing.T) {
 	}
 	if elapsed := time.Since(started); elapsed >= 2*time.Second {
 		t.Fatalf("blocked FindRun took %s", elapsed)
+	}
+}
+
+func TestFindRunIgnoresRunLocks(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	unrelated, err := Start("VAL-306", "session-a", DefaultCap)
+	if err != nil {
+		t.Fatalf("Start unrelated: %v", err)
+	}
+	target, err := Start("VAL-307", "session-b", DefaultCap)
+	if err != nil {
+		t.Fatalf("Start target: %v", err)
+	}
+	for _, runID := range []string{unrelated, target} {
+		held := flock.New(paths.ForgeRunLock(runID))
+		locked, err := held.TryLock()
+		if err != nil || !locked {
+			t.Fatalf("hold run lock %s: locked=%v err=%v", runID, locked, err)
+		}
+		got, findErr := FindRun("VAL-307", "session-b")
+		if unlockErr := held.Unlock(); unlockErr != nil {
+			t.Fatalf("unlock run %s: %v", runID, unlockErr)
+		}
+		if findErr != nil || got != target {
+			t.Fatalf("FindRun with %s locked = %q, %v; want %q", runID, got, findErr, target)
+		}
+	}
+}
+
+func TestLockFileContextUsesValidatedDescriptor(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "forge.lock")
+	validated, err := openNoFollow(path, unix.O_RDWR|unix.O_CREAT, 0o600)
+	if err != nil {
+		t.Fatalf("open validated lock: %v", err)
+	}
+	defer validated.Close()
+	if err := os.Rename(path, path+".validated"); err != nil {
+		t.Fatalf("rename validated lock: %v", err)
+	}
+	replacement := flock.New(path)
+	locked, err := replacement.TryLock()
+	if err != nil || !locked {
+		t.Fatalf("hold replacement lock: locked=%v err=%v", locked, err)
+	}
+	defer func() { _ = replacement.Unlock() }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := lockFileContext(ctx, validated); err != nil {
+		t.Fatalf("lock validated descriptor after path replacement: %v", err)
+	}
+	if err := unix.Flock(int(validated.Fd()), unix.LOCK_UN); err != nil {
+		t.Fatalf("unlock validated descriptor: %v", err)
+	}
+}
+
+func TestLockFileContextPreservesCancellation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "forge.lock")
+	file, err := openNoFollow(path, unix.O_RDWR|unix.O_CREAT, 0o600)
+	if err != nil {
+		t.Fatalf("open lock: %v", err)
+	}
+	defer file.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := lockFileContext(ctx, file); !errors.Is(err, context.Canceled) {
+		t.Fatalf("lock canceled context error = %v, want context.Canceled", err)
 	}
 }
 
