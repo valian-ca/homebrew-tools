@@ -56,6 +56,8 @@ func DevicesLock() string { return filepath.Join(MustRoot(), "devices.lock") }
 
 func Forge() string { return filepath.Join(MustRoot(), "forge") }
 
+func ForgeLock() string { return filepath.Join(Forge(), "forge.lock") }
+
 func ForgeRun(runID string) string { return filepath.Join(Forge(), runID) }
 
 func ForgeRunState(runID string) string { return filepath.Join(ForgeRun(runID), "run.json") }

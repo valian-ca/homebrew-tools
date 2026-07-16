@@ -23,6 +23,7 @@ func TestExitCode(t *testing.T) {
 		{forge.ErrCampaignInvalid, ExitForgeCampaign},
 		{forge.ErrWaveCap, ExitForgeWaveCap},
 		{forge.ErrInvalidStaging, ExitForgeStaging},
+		{forge.ErrAmbiguousRun, ExitForgeAmbiguousRun},
 		{fmt.Errorf("wrapped: %w", forge.ErrInvalidStaging), ExitForgeStaging},
 		{errors.New("anything else"), 1},
 	}

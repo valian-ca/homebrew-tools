@@ -2,6 +2,7 @@ package cmds
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -51,8 +52,67 @@ func TestForgeContractCommand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("contract: %v", err)
 	}
-	if stdout != "1\n" || stderr != "" {
+	if stdout != "2\n" || stderr != "" {
 		t.Fatalf("contract stdout=%q stderr=%q", stdout, stderr)
+	}
+}
+
+func TestForgeRunFindAndPassShowCommands(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	runID := startCommandRun(t, 2)
+	for _, args := range [][]string{
+		{"run", "find", "--ticket", "VAL-306"},
+		{"run", "find", "--session", "session-command"},
+		{"run", "find", "--ticket", "VAL-306", "--session", "session-command"},
+	} {
+		stdout, stderr, err := executeForge(args...)
+		if err != nil || stderr != "" || stdout != runID+"\n" {
+			t.Fatalf("run find %v stdout=%q stderr=%q error=%v", args, stdout, stderr, err)
+		}
+	}
+	if _, _, err := executeForge("run", "find"); err == nil || ExitCode(err) != 1 {
+		t.Fatalf("empty run find exit=%d error=%v", ExitCode(err), err)
+	}
+	if _, _, err := executeForge("run", "find", "--ticket", "VAL-999"); ExitCode(err) != ExitForgeUnknownRun {
+		t.Fatalf("unknown run find exit=%d error=%v", ExitCode(err), err)
+	}
+	if _, _, err := executeForge("run", "start", "VAL-306", "--session", "session-other", "--cap", "2"); err != nil {
+		t.Fatalf("start ambiguous run: %v", err)
+	}
+	if _, _, err := executeForge("run", "find", "--ticket", "VAL-306"); !errors.Is(err, forge.ErrAmbiguousRun) || ExitCode(err) != ExitForgeAmbiguousRun {
+		t.Fatalf("ambiguous run find exit=%d error=%v", ExitCode(err), err)
+	}
+	if stdout, _, err := executeForge("run", "find", "--ticket", "VAL-306", "--session", "session-command"); err != nil || stdout != runID+"\n" {
+		t.Fatalf("disambiguated run find stdout=%q error=%v", stdout, err)
+	}
+
+	if _, _, err := executeForge("wave", "open", "--run", runID); err != nil {
+		t.Fatalf("wave open: %v", err)
+	}
+	if _, _, err := executeForge("pass", "next", "--run", runID, "--kind", "wave"); err != nil {
+		t.Fatalf("pass next: %v", err)
+	}
+	for _, args := range [][]string{
+		{"pass", "show", "--run", runID, "--kind", "wave", "--wave", "1"},
+		{"pass", "show", "--run", runID, "--pass", "wave-1"},
+	} {
+		stdout, stderr, err := executeForge(args...)
+		var status forge.PassStatus
+		if err != nil || stderr != "" || strings.Count(stdout, "\n") != 1 || json.Unmarshal([]byte(stdout), &status) != nil {
+			t.Fatalf("pass show %v stdout=%q stderr=%q error=%v", args, stdout, stderr, err)
+		}
+		if status.RunID != runID || status.PassID != "wave-1" || status.Kind != "wave" || status.Wave != 1 || !status.Complete || !filepath.IsAbs(status.CaptureDir) {
+			t.Fatalf("pass show status = %+v", status)
+		}
+	}
+	for _, args := range [][]string{
+		{"pass", "show", "--run", runID},
+		{"pass", "show", "--run", runID, "--pass", "missing"},
+		{"pass", "show", "--run", runID, "--kind", "review", "--wave", "1"},
+	} {
+		if _, _, err := executeForge(args...); ExitCode(err) != ExitForgeInvalidPass {
+			t.Fatalf("invalid pass show %v exit=%d error=%v", args, ExitCode(err), err)
+		}
 	}
 }
 
@@ -238,7 +298,7 @@ func TestForgeCommandsWithSaturatedOutboxAndNoAuth(t *testing.T) {
 	}
 	campaign := commandTestFile(t, "campaign.json", `{"schemaVersion":1,"axes":[{"title":"Navigation","scenarios":[{"title":"Open","steps":["Tap"],"expected":"Opened"}]}]}`)
 	outcome := commandTestFile(t, "outcome.json", `{"schemaVersion":1,"outcomes":[{"axis":"Navigation","scenario":"Open","status":"pass"}]}`)
-	if stdout, _, err := executeForge("contract"); err != nil || stdout != "1\n" {
+	if stdout, _, err := executeForge("contract"); err != nil || stdout != "2\n" {
 		t.Fatalf("contract stdout=%q error=%v", stdout, err)
 	}
 	runID := startCommandRun(t, 2)
