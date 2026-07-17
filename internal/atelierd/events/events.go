@@ -94,8 +94,6 @@ func ParsePayload(args []string) (map[string]any, error) {
 	return out, nil
 }
 
-// ParseJSONPayload is the explicit opt-in channel for typed JSON fields;
-// ParsePayload keeps --data values as verbatim strings.
 func ParseJSONPayload(args []string) (map[string]any, error) {
 	out := make(map[string]any, len(args))
 	for _, raw := range args {
