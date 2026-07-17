@@ -26,6 +26,10 @@ func TestIsValid(t *testing.T) {
 		{"forge:testplan-published", true},
 		{"forge:wave-close", true},
 		{"forge:wave-open", true},
+		{"ship:ci-round", true},
+		{"ship:pr-linked", true},
+		{"ship:run-start", true},
+		{"ship:step", true},
 		{"skill:phase-start", true},
 		{"skill:phase-end", true},
 		{"skill:ticket-created", true},
@@ -34,6 +38,7 @@ func TestIsValid(t *testing.T) {
 		{"transcript:ai-title", true},
 		{"transcript:custom-title", true},
 		{"hook:invented", false},
+		{"ship:unknown", false},
 		{"", false},
 		{"skill:phase-START", false},
 		{"hook:session-start ", false},
@@ -45,9 +50,9 @@ func TestIsValid(t *testing.T) {
 	}
 }
 
-func TestAllReturnsTwentyThreeTypes(t *testing.T) {
-	if got := len(All()); got != 23 {
-		t.Errorf("All() returned %d types, want 23", got)
+func TestAllReturnsTwentySevenTypes(t *testing.T) {
+	if got := len(All()); got != 27 {
+		t.Errorf("All() returned %d types, want 27", got)
 	}
 }
 

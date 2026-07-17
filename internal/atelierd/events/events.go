@@ -28,6 +28,10 @@ const (
 	HookStop               Type = "hook:stop"
 	HookSessionEnd         Type = "hook:session-end"
 	HookAssistantTurn      Type = "hook:assistant-turn"
+	ShipCIRound            Type = "ship:ci-round"
+	ShipPRLinked           Type = "ship:pr-linked"
+	ShipRunStart           Type = "ship:run-start"
+	ShipStep               Type = "ship:step"
 	SkillPhaseStart        Type = "skill:phase-start"
 	SkillPhaseEnd          Type = "skill:phase-end"
 	SkillTicketCreated     Type = "skill:ticket-created"
@@ -55,6 +59,10 @@ func All() []Type {
 		HookSessionStart,
 		HookStop,
 		HookUserPromptSubmit,
+		ShipCIRound,
+		ShipPRLinked,
+		ShipRunStart,
+		ShipStep,
 		SkillActivity,
 		SkillPhaseEnd,
 		SkillPhaseStart,
@@ -86,8 +94,6 @@ func ParsePayload(args []string) (map[string]any, error) {
 	return out, nil
 }
 
-// ParseJSONPayload is the explicit opt-in channel for typed JSON fields;
-// ParsePayload keeps --data values as verbatim strings.
 func ParseJSONPayload(args []string) (map[string]any, error) {
 	out := make(map[string]any, len(args))
 	for _, raw := range args {
