@@ -28,6 +28,10 @@ const (
 	HookStop               Type = "hook:stop"
 	HookSessionEnd         Type = "hook:session-end"
 	HookAssistantTurn      Type = "hook:assistant-turn"
+	ShipCIRound            Type = "ship:ci-round"
+	ShipPRLinked           Type = "ship:pr-linked"
+	ShipRunStart           Type = "ship:run-start"
+	ShipStep               Type = "ship:step"
 	SkillPhaseStart        Type = "skill:phase-start"
 	SkillPhaseEnd          Type = "skill:phase-end"
 	SkillTicketCreated     Type = "skill:ticket-created"
@@ -55,6 +59,10 @@ func All() []Type {
 		HookSessionStart,
 		HookStop,
 		HookUserPromptSubmit,
+		ShipCIRound,
+		ShipPRLinked,
+		ShipRunStart,
+		ShipStep,
 		SkillActivity,
 		SkillPhaseEnd,
 		SkillPhaseStart,
