@@ -99,6 +99,14 @@ func TestFullCampaignScenarios(t *testing.T) {
 			r = f.request("delivery-observe")
 			r.PR = p
 			f.apply(r)
+			r = f.request("verification-reopen")
+			r.Reason = "late change"
+			f.reject(r, ErrConflict)
+			stale := *p
+			stale.State = "OPEN"
+			r = f.request("delivery-observe")
+			r.PR = &stale
+			f.reject(r, ErrConflict)
 			f.apply(f.request("delivery-complete"))
 			r = f.request("suite-publish")
 			r.Reference = "linear-suite-document"

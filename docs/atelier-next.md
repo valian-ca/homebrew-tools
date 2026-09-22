@@ -191,6 +191,8 @@ planned criteria/tests/surfaces passed, independent review, no open/accepted fin
 all final visual captures published for the current HEAD, and resolved decisions.
 It seals the branch as verified. `verification reopen --reason <fact>` returns a
 verified/delivering/pr-open branch to QA before a later repair; old PR identity remains.
+Once a merge has been observed, neither QA reopening nor a stale OPEN observation
+can undo it, even before `delivery complete`.
 
 ### Delivery and suite
 

@@ -414,8 +414,8 @@ func observePR(c *Campaign, p *PullRequest) error {
 	if p.Number < 1 || p.URL != d.Repository+"/pull/"+strconv.Itoa(p.Number) || p.HeadRefName != strings.TrimPrefix(c.Checkout.Branch, "refs/heads/") || p.HeadRefOID != c.ExpectedHead || p.BaseRefName != d.BaseBranch || p.IsDraft || (p.State != "OPEN" && p.State != "MERGED") {
 		return fmt.Errorf("%w: PR must match campaign repository, branch, base and verified SHA", ErrInvalid)
 	}
-	if d.PR != nil && d.PR.Number != p.Number {
-		return fmt.Errorf("%w: a campaign has only one PR", ErrConflict)
+	if d.PR != nil && (d.PR.Number != p.Number || (d.PR.State == "MERGED" && p.State != "MERGED")) {
+		return fmt.Errorf("%w: a campaign has only one PR and cannot undo an observed merge", ErrConflict)
 	}
 	if p.StatusCheckRollup == nil {
 		return fmt.Errorf("%w: CI rollup must be supplied, even when empty", ErrInvalid)
@@ -473,6 +473,9 @@ func finalMutation(ctx context.Context, c *Campaign, r Request, head string, out
 		c.State = "verified"
 		event = "atelier-next:verification-completed"
 	case "verification-reopen":
+		if c.Delivery != nil && c.Delivery.PR != nil && c.Delivery.PR.State == "MERGED" {
+			return event, skill, fmt.Errorf("%w: an observed merge cannot return to repair", ErrConflict)
+		}
 		if c.State != "verified" && c.State != "delivering" && c.State != "pr-open" {
 			return event, skill, ErrInvalid
 		}
