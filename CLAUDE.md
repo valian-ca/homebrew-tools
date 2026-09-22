@@ -129,6 +129,41 @@ Teammates pick up the update with `brew upgrade valian-ca/tools/<name>`.
 Go tools are compiled on the user's machine at install time — the first
 install pulls `go` as a build dependency, subsequent ones don't.
 
+## Atelier Next campaign protocol
+
+`internal/atelierd/next/` and `internal/atelierd/cmds/next.go` implement the isolated
+`atelierd next` contract. The executable reference is `docs/atelier-next.md`; the
+broader product/protocol proposal lives in the `claude-plugins` repository under
+`plugins/atelier-next/PROTOCOL.md`. Keep command names, staging schemas, exit codes,
+identity and recovery rules synchronized with those consumers when activating them.
+Contract 2 includes root QA, repair integrations, a SHA-bound delivery gate, unique
+PR/CI observations, confirmed delivery and the suite registry. No general state
+setter, Linear API client, test runner, Git commit/push/merge or cloud event shipment
+is performed by this book-keeper. It validates caller attestations, not their truth.
+
+The `~/.atelier-next/` namespace is deliberate, independent of `~/.atelier/forge/`.
+One namespace flock protects checkout uniqueness and atomic campaign snapshots;
+one renewable session token controls the cooperative external editor. Tokens fence
+CLI mutations, not arbitrary editor/Git writes, so expiration never authorizes
+silent takeover. A prepared integration journals its exact parent/tree and unique
+`Atelier-Next-Integration:` trailer before an ordinary Git commit. Never replace
+that proof with subject matching, a ticket footer, or an automatic reset/recommit.
+Linear Done synchronization is pending until acknowledged; standalone roots cannot
+be acknowledged at contribution integration.
+
+Next events are retained in the campaign snapshot as a local transactional journal.
+Do not add them to the legacy cloud outbox/whitelist until the dashboard's schema
+accepts them. Tests use temporary repositories and must never run Git against the
+user's checkout. Run the full Go suite, vet, and race tests for Next/cmds when
+changing the ownership or integration rules.
+
+The target source release is 0.17.0. Its stable formula URL and checksum must come
+from the actual tagged tarball after publication (per the release process above),
+never from a guessed SHA or a version bump over the old tarball. The accompanying
+formula change adds the HEAD contract test; the stable version bump is deferred to
+that release step. The plugin skills remain gated until a compatible binary is
+published; no local daemon replacement or restart is implied by implementing Next.
+
 ## Nerd Font glyphs
 
 Some tools (`frn` at least) use Nerd Font glyphs from the Private Use Area

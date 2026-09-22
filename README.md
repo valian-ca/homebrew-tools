@@ -83,6 +83,28 @@ leases from parallel sessions never double-book a device.
 
 ---
 
+## `atelierd next` (experimental, source development)
+
+A separate campaign book-keeper for Atelier Next: one branch/worktree per root,
+one writer lease, sequential contributions, recorded test/review evidence and
+recoverable commit/Linear integration. State lives in `~/.atelier-next/`, never
+in the existing Forge namespace. No Linear requests, commits, PRs or cloud events
+are sent by these commands.
+
+```sh
+go build -o /tmp/atelierd-next-dev ./cmd/atelierd
+/tmp/atelierd-next-dev next contract
+/tmp/atelierd-next-dev next --help
+```
+
+Contract `2` implements campaign creation, planning, ownership, contribution
+integration, blocks/resumes, root QA and repairs, a SHA-bound delivery gate,
+PR/CI observations and the final suite registry. It validates caller attestations;
+the skills run tests, upload real captures and perform external mutations. This
+code is **not part of the old stable 0.16.0 release**.
+See [the CLI contract and examples](docs/atelier-next.md) for staging schemas,
+crash recovery, safety boundaries, tests and the pending 0.17.0 release sequence.
+
 ## Contributing
 
 See [CLAUDE.md](./CLAUDE.md) for conventions when adding a new tool or
