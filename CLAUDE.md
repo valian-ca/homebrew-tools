@@ -129,61 +129,6 @@ Teammates pick up the update with `brew upgrade valian-ca/tools/<name>`.
 Go tools are compiled on the user's machine at install time — the first
 install pulls `go` as a build dependency, subsequent ones don't.
 
-## Atelier Next campaign protocol
-
-`internal/atelierd/next/` and `internal/atelierd/cmds/next.go` implement the isolated
-`atelierd next` contract. The executable reference is `docs/atelier-next.md`; the
-broader product/protocol proposal lives in the `claude-plugins` repository under
-`plugins/atelier-next/PROTOCOL.md`. Keep command names, staging schemas, exit codes,
-identity and recovery rules synchronized with those consumers when activating them.
-Contract 3 / schema 2 includes the post-contribution user-trial gate, root QA,
-repair integrations, a SHA-bound delivery gate, unique PR/CI observations, confirmed
-delivery and suite. Deployment-only criteria remain explicitly unverified, with
-justification/evidence and a matching manual deferred suite entry; tests/surfaces
-and known defects cannot use this exception. CI plumbing repairs have kind=ci and
-a durable maximum of three integrated rounds. The verification document is unique
-per campaign. Old Next schemas are rejected, never silently migrated. No general state
-setter, Linear API client, test runner, Git commit/push/merge or telemetry collection/
-shipment is performed by this book-keeper. It validates caller attestations, not their truth.
-
-Release 0.17.1 keeps contract 3/schema 2 for pre-trial kind=environment repairs.
-Only awaiting-trial accepts them, with a reason/diagnostic reference instead of QA
-finding IDs, plus the same tests/review, lease and exact-parent/tree integration gates.
-Finish preserves awaiting-trial and advances expectedHead; recovery must not overwrite
-that HEAD or manufacture a user response. Pending repairs block trial recording.
-Existing schema-2 snapshots remain readable; 0.17.0 lacks this repair path despite
-sharing the same contract number. Use 0.17.1 or newer for pre-trial repairs.
-
-The `~/.atelier-next/` namespace is deliberate, independent of `~/.atelier/forge/`.
-One namespace flock protects checkout uniqueness and atomic campaign snapshots;
-one renewable session token controls the cooperative external editor. Tokens fence
-CLI mutations, not arbitrary editor/Git writes, so expiration never authorizes
-silent takeover. A prepared integration journals its exact parent/tree and evidence
-before the caller invokes valian:commit. No campaign metadata belongs in commit
-messages. Finish checks the one non-merge HEAD against the prepared parent/tree and
-a clean bound checkout. Recovery reuses the journal's integration ID, never subject
-matching, ticket footers, another commit, or automatic reset/recommit. Hooks changing
-content, extra commits or unknown history require explicit reconciliation.
-Linear Done synchronization is pending until acknowledged; standalone roots cannot
-be acknowledged at contribution integration.
-
-Next keeps operational state and idempotency receipts, not telemetry events, an event
-journal/outbox or an events command. Block resolutions and scope-decision references
-belong to that operational state, not a future dashboard. Event design, Firestore
-shipment and retention wait for actual dashboard requirements; no historical backfill
-is promised. Existing session/Forge telemetry is untouched. Speculative telemetry was
-removed before publishing contract 3/schema 2 in 0.17.0; obsolete experimental snapshots
-with events are refused without automatic migration or deletion. Tests use temporary
-repositories and must never run Git against the user's checkout. Run the full Go suite,
-vet, and race tests for Next/cmds when changing the ownership or integration rules.
-
-Contract 3/schema 2 ship in 0.17.0. The stable formula URL and checksum come from the
-published tagged tarball (per the release process above), never a guessed SHA or a
-version bump over an old tarball. Both stable and HEAD formula tests assert Next
-contract 3 and Forge contract 2. Future incompatible CLI/schema changes must update
-the contract and consumers together, publishing the binary before the plugin.
-No local daemon replacement or restart is implied by implementing Next.
-
 ## Nerd Font glyphs
 
 Some tools (`frn` at least) use Nerd Font glyphs from the Private Use Area

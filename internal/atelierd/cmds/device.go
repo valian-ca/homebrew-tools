@@ -11,7 +11,6 @@ import (
 
 	"github.com/valian-ca/homebrew-tools/internal/atelierd/devicebank"
 	"github.com/valian-ca/homebrew-tools/internal/atelierd/forge"
-	"github.com/valian-ca/homebrew-tools/internal/atelierd/next"
 )
 
 const (
@@ -23,14 +22,6 @@ const (
 	ExitForgeWaveCap       = 23
 	ExitForgeStaging       = 24
 	ExitForgeAmbiguousRun  = 25
-	ExitNextNotFound       = 30
-	ExitNextAmbiguous      = 31
-	ExitNextConflict       = 32
-	ExitNextLease          = 33
-	ExitNextCheckout       = 34
-	ExitNextInvalid        = 35
-	ExitNextReconcile      = 36
-	ExitNextBusy           = 37
 )
 
 func ExitCode(err error) int {
@@ -53,22 +44,6 @@ func ExitCode(err error) int {
 		return ExitForgeStaging
 	case errors.Is(err, forge.ErrAmbiguousRun):
 		return ExitForgeAmbiguousRun
-	case errors.Is(err, next.ErrNotFound):
-		return ExitNextNotFound
-	case errors.Is(err, next.ErrAmbiguous):
-		return ExitNextAmbiguous
-	case errors.Is(err, next.ErrConflict):
-		return ExitNextConflict
-	case errors.Is(err, next.ErrLease):
-		return ExitNextLease
-	case errors.Is(err, next.ErrCheckout):
-		return ExitNextCheckout
-	case errors.Is(err, next.ErrInvalid):
-		return ExitNextInvalid
-	case errors.Is(err, next.ErrReconcile):
-		return ExitNextReconcile
-	case errors.Is(err, next.ErrBusy):
-		return ExitNextBusy
 	}
 	return 1
 }
