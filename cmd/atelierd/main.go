@@ -37,6 +37,7 @@ func main() {
 		cmds.NewWorktreeModeCmd(),
 		cmds.NewDeviceCmd(),
 		cmds.NewForgeCmd(),
+		cmds.NewNextCmd(),
 	)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
