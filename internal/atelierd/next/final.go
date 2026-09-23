@@ -71,12 +71,16 @@ type Verification struct {
 
 type RepairRequest struct {
 	Kind       string   `json:"kind,omitempty"`
+	Reason     string   `json:"reason,omitempty"`
+	Reference  string   `json:"reference,omitempty"`
 	FindingIDs []string `json:"findingIds"`
 	Evidence   Evidence `json:"evidence"`
 }
 
 type Repair struct {
 	Kind        string      `json:"kind,omitempty"`
+	Reason      string      `json:"reason,omitempty"`
+	Reference   string      `json:"reference,omitempty"`
 	FindingIDs  []string    `json:"findingIds"`
 	Integration Integration `json:"integration"`
 }
@@ -158,6 +162,11 @@ func validateTrial(c *Campaign) error {
 func recordTrial(ctx context.Context, c *Campaign, trial *UserTrial) error {
 	if c.State != "awaiting-trial" || trial == nil || trial.Head != c.ExpectedHead {
 		return ErrInvalid
+	}
+	for _, repair := range c.Repairs {
+		if repair.Integration.Commit == "" {
+			return ErrReconcile
+		}
 	}
 	if err := cleanCheckout(ctx, c.Checkout.Worktree); err != nil {
 		return err
@@ -372,8 +381,25 @@ func saveVerification(c *Campaign, v *Verification) error {
 	return nil
 }
 
+func repairMetadataValid(kind, reason, reference string, findings []string) bool {
+	if kind == "environment" {
+		return textOK(reason) && textOK(reference) && len(findings) == 0
+	}
+	return (kind == "" || kind == "ci") && reason == "" && reference == "" && namesValid(findings, true)
+}
+
+func repairStateValid(state, kind string) bool {
+	if kind == "environment" {
+		return state == "awaiting-trial"
+	}
+	return state == "verifying"
+}
+
 func repairPrepare(ctx context.Context, c *Campaign, r *RepairRequest, out *Receipt) error {
-	if c.State != "verifying" || r == nil || !namesValid(r.FindingIDs, true) || c.Verification == nil {
+	if r == nil || !repairStateValid(c.State, r.Kind) || !repairMetadataValid(r.Kind, r.Reason, r.Reference, r.FindingIDs) {
+		return ErrInvalid
+	}
+	if r.Kind != "environment" && c.Verification == nil {
 		return ErrInvalid
 	}
 	ciRounds := 0
@@ -384,9 +410,6 @@ func repairPrepare(ctx context.Context, c *Campaign, r *RepairRequest, out *Rece
 		if prior.Kind == "ci" {
 			ciRounds++
 		}
-	}
-	if r.Kind != "" && r.Kind != "ci" {
-		return fmt.Errorf("%w: repair kind must be empty (QA) or ci", ErrInvalid)
 	}
 	if r.Kind == "ci" && (ciRounds >= 3 || c.Delivery == nil || c.Delivery.PR == nil || c.Delivery.PR.State != "OPEN") {
 		return fmt.Errorf("%w: CI plumbing repairs require an open campaign PR and at most three rounds", ErrInvalid)
@@ -421,13 +444,13 @@ func repairPrepare(ctx context.Context, c *Campaign, r *RepairRequest, out *Rece
 	}
 	id := ulid.New()
 	i := Integration{ID: id, Parent: c.ExpectedHead, Tree: tree, Evidence: r.Evidence}
-	c.Repairs = append(c.Repairs, Repair{Kind: r.Kind, FindingIDs: r.FindingIDs, Integration: i})
+	c.Repairs = append(c.Repairs, Repair{Kind: r.Kind, Reason: r.Reason, Reference: r.Reference, FindingIDs: r.FindingIDs, Integration: i})
 	out.IntegrationID = id
 	return nil
 }
 
 func repairFinish(ctx context.Context, c *Campaign, id, head string, out *Receipt) error {
-	if c.State != "verifying" {
+	if c.State != "verifying" && c.State != "awaiting-trial" {
 		return ErrInvalid
 	}
 	for n := range c.Repairs {
@@ -441,6 +464,9 @@ func repairFinish(ctx context.Context, c *Campaign, id, head string, out *Receip
 			}
 			out.Commit, out.IntegrationID = i.Commit, id
 			return nil
+		}
+		if !repairStateValid(c.State, c.Repairs[n].Kind) {
+			return ErrInvalid
 		}
 		if err := proveIntegration(ctx, c.Checkout.Worktree, head, i); err != nil {
 			return err
@@ -589,11 +615,11 @@ func finalMutation(ctx context.Context, c *Campaign, r Request, head string, out
 	case "repair-finish":
 		return repairFinish(ctx, c, r.IntegrationID, head, out)
 	case "repair-cancel":
-		if c.State != "verifying" || len(c.Repairs) == 0 {
+		if len(c.Repairs) == 0 {
 			return ErrInvalid
 		}
 		last := c.Repairs[len(c.Repairs)-1]
-		if last.Integration.ID != r.IntegrationID || last.Integration.Commit != "" {
+		if !repairStateValid(c.State, last.Kind) || last.Integration.ID != r.IntegrationID || last.Integration.Commit != "" {
 			return ErrInvalid
 		}
 		c.Repairs = c.Repairs[:len(c.Repairs)-1]

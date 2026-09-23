@@ -158,7 +158,7 @@ func validateState(c *Campaign, id string) error {
 	}
 	ciRounds := 0
 	for n, repair := range c.Repairs {
-		if repair.Kind != "" && repair.Kind != "ci" {
+		if !repairMetadataValid(repair.Kind, repair.Reason, repair.Reference, repair.FindingIDs) {
 			return bad()
 		}
 		if repair.Kind == "ci" {
@@ -168,7 +168,7 @@ func validateState(c *Campaign, id string) error {
 			}
 		}
 		i := repair.Integration
-		if integrated != len(c.Contributions) || i.Parent != head || !validID(i.ID) || !hashPattern.MatchString(i.Tree) || i.Evidence.Tree != i.Tree || !namesValid(repair.FindingIDs, true) {
+		if integrated != len(c.Contributions) || integrated == 0 || i.Parent != head || !validID(i.ID) || !hashPattern.MatchString(i.Tree) || i.Evidence.Tree != i.Tree {
 			return bad()
 		}
 		names := []string{}
@@ -182,7 +182,7 @@ func validateState(c *Campaign, id string) error {
 			return err
 		}
 		if i.Commit == "" {
-			if n != len(c.Repairs)-1 || c.State != "verifying" {
+			if n != len(c.Repairs)-1 || !repairStateValid(c.State, repair.Kind) {
 				return bad()
 			}
 		} else {
