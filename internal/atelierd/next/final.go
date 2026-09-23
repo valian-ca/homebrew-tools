@@ -555,92 +555,85 @@ func ciGreen(p *PullRequest) bool {
 	return true
 }
 
-func finalMutation(ctx context.Context, c *Campaign, r Request, head string, out *Receipt) (string, string, error) {
-	event, skill := "atelier-next:campaign-updated", "verification"
+func finalMutation(ctx context.Context, c *Campaign, r Request, head string, out *Receipt) error {
 	switch r.Action {
 	case "trial-record":
-		return event, "realisation", recordTrial(ctx, c, r.Trial)
+		return recordTrial(ctx, c, r.Trial)
 	case "verification-save":
-		return event, skill, saveVerification(c, r.Verification)
+		return saveVerification(c, r.Verification)
 	case "verification-complete":
 		if c.State != "verifying" {
-			return event, skill, ErrInvalid
+			return ErrInvalid
 		}
 		if err := cleanCheckout(ctx, c.Checkout.Worktree); err != nil {
-			return event, skill, err
+			return err
 		}
 		if err := validateVerification(c); err != nil {
-			return event, skill, err
+			return err
 		}
 		c.State = "verified"
-		event = "atelier-next:verification-completed"
 	case "verification-reopen":
 		if c.Delivery != nil && c.Delivery.PR != nil && c.Delivery.PR.State == "MERGED" {
-			return event, skill, fmt.Errorf("%w: an observed merge cannot return to repair", ErrConflict)
+			return fmt.Errorf("%w: an observed merge cannot return to repair", ErrConflict)
 		}
 		if c.State != "verified" && c.State != "delivering" && c.State != "pr-open" {
-			return event, skill, ErrInvalid
+			return ErrInvalid
 		}
 		if !textOK(r.Reason) {
-			return event, skill, ErrInvalid
+			return ErrInvalid
 		}
 		c.State = "verifying"
 		c.SuiteReference = ""
 	case "repair-prepare":
-		return event, skill, repairPrepare(ctx, c, r.Repair, out)
+		return repairPrepare(ctx, c, r.Repair, out)
 	case "repair-finish":
-		return event, skill, repairFinish(ctx, c, r.IntegrationID, head, out)
+		return repairFinish(ctx, c, r.IntegrationID, head, out)
 	case "repair-cancel":
 		if c.State != "verifying" || len(c.Repairs) == 0 {
-			return event, skill, ErrInvalid
+			return ErrInvalid
 		}
 		last := c.Repairs[len(c.Repairs)-1]
 		if last.Integration.ID != r.IntegrationID || last.Integration.Commit != "" {
-			return event, skill, ErrInvalid
+			return ErrInvalid
 		}
 		c.Repairs = c.Repairs[:len(c.Repairs)-1]
 	case "delivery-start":
-		return event, "livraison", deliveryStart(ctx, c, r.BaseBranch)
+		return deliveryStart(ctx, c, r.BaseBranch)
 	case "delivery-observe":
-		return "atelier-next:pr-linked", "livraison", observePR(c, r.PR)
+		return observePR(c, r.PR)
 	case "delivery-check":
-		skill = "livraison"
 		if c.State != "pr-open" || c.Delivery == nil || !ciGreen(c.Delivery.PR) {
-			return event, skill, ErrInvalid
+			return ErrInvalid
 		}
 		if err := cleanCheckout(ctx, c.Checkout.Worktree); err != nil {
-			return event, skill, err
+			return err
 		}
-		return event, skill, validateVerification(c)
+		return validateVerification(c)
 	case "delivery-complete":
-		skill = "livraison"
 		if err := cleanCheckout(ctx, c.Checkout.Worktree); err != nil {
-			return event, skill, err
+			return err
 		}
 		if c.State != "pr-open" || c.Delivery == nil || !ciGreen(c.Delivery.PR) {
-			return event, skill, ErrInvalid
+			return ErrInvalid
 		}
 		p := c.Delivery.PR
 		if p.State != "MERGED" || p.MergeCommit == nil || !hashPattern.MatchString(p.MergeCommit.OID) {
-			return event, skill, fmt.Errorf("%w: confirmed merge required", ErrInvalid)
+			return fmt.Errorf("%w: confirmed merge required", ErrInvalid)
 		}
 		if err := validateVerification(c); err != nil {
-			return event, skill, err
+			return err
 		}
 		c.State = "delivered"
-		event = "atelier-next:delivery-completed"
 	case "suite-publish":
-		skill = "suite"
 		if (c.State != "pr-open" && c.State != "delivered") || !textOK(r.Reference) {
-			return event, skill, ErrInvalid
+			return ErrInvalid
 		}
 		if err := validateVerification(c); err != nil {
-			return event, skill, err
+			return err
 		}
 		c.SuiteReference = r.Reference
-		event = "atelier-next:suite-published"
 	default:
-		return event, skill, fmt.Errorf("%w: unknown action %q", ErrInvalid, r.Action)
+		return fmt.Errorf("%w: unknown action %q", ErrInvalid, r.Action)
 	}
-	return event, skill, nil
+	return nil
 }

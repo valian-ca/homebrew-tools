@@ -59,13 +59,12 @@ atelierd next lease acquire --campaign <id> --session <session> --operation <op>
 atelierd next lease acquire --campaign <id> --session <new-session> --operation <op> --previous-token <expired-token> --confirm-owner-stopped
 atelierd next campaign status --campaign <id>
 atelierd next campaign find --ticket TEST-1
-atelierd next events --campaign <id>
 ```
 
-Status excludes the operation/event journals but retains all working evidence and
-pending sync. Find returns exactly one match; `--repository <canonical-common-dir>`
-can disambiguate. Reads do not renew leases or generate campaign events. They may
-initialize the namespace lock directory.
+Status excludes the idempotency receipt map but retains all working evidence,
+block resolutions and pending sync. Find returns exactly one match;
+`--repository <canonical-common-dir>` can disambiguate. Reads do not renew leases
+or mutate the campaign snapshot. They may initialize the namespace lock directory.
 
 Exit codes: **30** missing campaign, **31** ambiguous, **32** conflict/idempotence,
 **33** lease, **34** checkout, **35** invalid input/proof/transition, **36** Git
@@ -303,25 +302,28 @@ Finish/cancel a prepared child/root integration before blocking. Requested stops
 in CLI state; no additional Linear stop document or mandatory final campaign comment.
 Manual handoffs are short self-contained prose, without harness-specific commands.
 
-## Events, compatibility and limits
+## Operational state, compatibility and limits
 
-Every successful new operation atomically stores a receipt and local event. Envelope:
-schemaVersion=2, eventId, type, operationId, occurredAt UTC, pipeline=atelier-next,
-campaignId, rootTicketId, ticketId, skillName, mode=standalone|parent|child, sessionId,
-integer campaign revision and data. Administrative roles use orchestration, contribution
-roles realisation, final roles verification/livraison/suite. Types (all atelier-next:):
-campaign-created, campaign-updated, contribution-started, contribution-integrated,
-campaign-blocked, campaign-resumed, verification-completed, pr-linked, delivery-completed,
-suite-published. Replays emit nothing; new observations of prior integration use updated.
+Every successful new operation atomically stores the current state and its idempotency
+receipt (request fingerprint plus result). Replays return that result without rewriting
+state or repeating the transition. Receipt revisions must be unique and contiguous.
+Operational records retain ownership, prepared parent/tree intentions, evidence, block
+reasons/resolutions and scope-decision references, trial, verification, PR and suite.
+A resolved block stores the supplied resume reason in `resolution`, next to `resolvedAt`
+and `decisionReference`; recovery does not depend on reconstructing a telemetry history.
 
-**Cloud transport and detailed Next dashboard remain separate**, allowed by the product
-plan. The transactional journal is retained locally and readable through events. No new
-Next type is injected into the old cloud outbox/whitelist before consumer compatibility;
-old forge/skill/ship telemetry is unaffected. Future shipment must deduplicate eventId,
-order by revision and acknowledge before journal compaction.
+**Next collects, stores and ships no telemetry events.** There is no event journal,
+spool/outbox or events command. Event types, Firestore shipment and retention will be
+defined with the actual dashboard requirements; there is no speculative collection or
+promise of historical backfill. Existing forge/skill/ship/session telemetry is untouched.
+
+Contract 3/schema 2 have never been published, so this removal keeps those versions.
+Old schemas and earlier experimental snapshots containing `events` are rejected, not
+silently rewritten or purged. Operational state still persists after completion: removing
+telemetry is not automatic cleanup of recovery evidence or idempotency receipts.
 
 Limits: 8 MiB per state/staging file, 128 contributions/tests, 256 findings, 4096
-operations/events, 4096 bytes per text field. Capacity failures do not evict evidence.
+operations, 4096 bytes per text field. Capacity failures do not evict evidence.
 Git calls time out after 10 s. No mode conversion, automatic migration of old Atelier
 runs, rebase reconciliation or arbitrary state mutation is provided.
 
@@ -338,7 +340,10 @@ The pinned linter invocation matches the workstation linter built with Go 1.25; 
 uses its own compatible toolchain. Tests cover static, multi-child and visual campaign
 flows plus ownership races, crash recovery, scope, missing evidence, stale captures,
 wrong PR, ambiguous CI and merge guards, trailer-free recovery, user-trial gate,
-deployment-only criteria (without waiving tests/captures), unique report and CI cap. These are technical simulations, not claims
+deployment-only criteria (without waiving tests/captures), unique report and CI cap.
+They also check event-free storage, removed events CLI, durable replay/decisions, receipt
+integrity without an event journal, and refusal of obsolete event-bearing snapshots.
+These are technical simulations, not claims
 of completed business-ticket/LLM pilots. Run real pilots before replacing old Atelier.
 
 Release order: source PR and green checks/review, merge, tag `atelierd-0.17.0`, compute

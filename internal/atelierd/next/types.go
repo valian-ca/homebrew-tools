@@ -110,23 +110,7 @@ type Block struct {
 	PlanRevision      int        `json:"planRevision"`
 	DecisionReference string     `json:"decisionReference,omitempty"`
 	ResolvedAt        *time.Time `json:"resolvedAt,omitempty"`
-}
-
-type Event struct {
-	SchemaVersion int            `json:"schemaVersion"`
-	ID            string         `json:"eventId"`
-	Type          string         `json:"type"`
-	OperationID   string         `json:"operationId"`
-	OccurredAt    time.Time      `json:"occurredAt"`
-	Pipeline      string         `json:"pipeline"`
-	CampaignID    string         `json:"campaignId"`
-	RootTicketID  string         `json:"rootTicketId"`
-	TicketID      string         `json:"ticketId"`
-	SkillName     string         `json:"skillName"`
-	Mode          string         `json:"mode"`
-	SessionID     string         `json:"sessionId"`
-	Revision      int            `json:"revision"`
-	Data          map[string]any `json:"data"`
+	Resolution        string     `json:"resolution,omitempty"`
 }
 
 type Receipt struct {
@@ -159,7 +143,6 @@ type Campaign struct {
 	Contributions  []Contribution       `json:"contributions"`
 	Blocks         []Block              `json:"blocks"`
 	Operations     map[string]Operation `json:"operations,omitempty"`
-	Events         []Event              `json:"events,omitempty"`
 	Repairs        []Repair             `json:"repairs,omitempty"`
 	Trial          *UserTrial           `json:"trial,omitempty"`
 	Verification   *Verification        `json:"verification,omitempty"`

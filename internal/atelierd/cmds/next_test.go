@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/cobra"
+
 	"github.com/valian-ca/homebrew-tools/internal/atelierd/next"
 )
 
@@ -37,6 +39,36 @@ func TestNextContractAndHelp(t *testing.T) {
 	}
 	if out, _, err := executeNext("delivery", "teleport"); err == nil || out != "" {
 		t.Fatal("unimplemented delivery must fail", out, err)
+	}
+	for _, cmd := range NewNextCmd().Commands() {
+		if cmd.Name() == "events" {
+			t.Fatal("Next must not expose a telemetry journal")
+		}
+	}
+	for _, args := range [][]string{{"events"}, {"events", "--campaign", "unused"}} {
+		if out, _, err := executeNext(args...); err == nil || out != "" {
+			t.Fatal("removed events command must fail", out, err)
+		}
+	}
+	if out, _, err := executeNext(); err != nil || !strings.Contains(out, "Available Commands") {
+		t.Fatal("bare next command must still show help", out, err)
+	}
+}
+
+func TestNextRemovedEventsUnderParentCommand(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	root := &cobra.Command{Use: "atelierd", SilenceUsage: true, SilenceErrors: true}
+	root.AddCommand(NewNextCmd())
+	var out bytes.Buffer
+	root.SetOut(&out)
+	root.SetErr(&out)
+	root.SetArgs([]string{"next", "events"})
+	if err := root.Execute(); err == nil || out.Len() != 0 {
+		t.Fatal("removed events command must fail, not print help successfully", err, out.String())
+	}
+	if _, err := os.Stat(filepath.Join(home, ".atelier-next")); !os.IsNotExist(err) {
+		t.Fatal("removed command initialized storage", err)
 	}
 }
 
@@ -123,12 +155,7 @@ func TestNextCLIFullLifecycleAndLegacyIsolation(t *testing.T) {
 		t.Fatal(out, err)
 	}
 	var status next.Campaign
-	if err := json.Unmarshal([]byte(out), &status); err != nil || status.State != "realizing" {
-		t.Fatal(out, err)
-	}
-	out, _, err = executeNext("events", "--campaign", receipt.CampaignID)
-	var events []next.Event
-	if err != nil || json.Unmarshal([]byte(out), &events) != nil || len(events) != 5 {
+	if err := json.Unmarshal([]byte(out), &status); err != nil || status.State != "realizing" || len(status.Blocks) != 1 || status.Blocks[0].Resolution != "dependency available" {
 		t.Fatal(out, err)
 	}
 	out, _, err = executeNext("campaign", "find", "--ticket", "TEST-1")

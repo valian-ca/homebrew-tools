@@ -85,7 +85,7 @@ func validateState(c *Campaign, id string) error {
 	if !filepath.IsAbs(c.Checkout.Repository) || !filepath.IsAbs(c.Checkout.Worktree) || !strings.HasPrefix(c.Checkout.Branch, "refs/heads/") || !hashPattern.MatchString(c.Base) || !hashPattern.MatchString(c.ExpectedHead) {
 		return bad()
 	}
-	if c.Revision < 1 || c.Revision > MaxOperations || len(c.Operations) != c.Revision || len(c.Events) != c.Revision || len(c.Blocks) > MaxOperations || len(c.Contributions) > MaxContributions {
+	if c.Revision < 1 || c.Revision > MaxOperations || len(c.Operations) != c.Revision || len(c.Blocks) > MaxOperations || len(c.Contributions) > MaxContributions {
 		return bad()
 	}
 	switch c.State {
@@ -239,7 +239,11 @@ func validateState(c *Campaign, id string) error {
 		if b.ResumeState != "planning" && b.ResumeState != "ready" && b.ResumeState != "realizing" && !finalState(b.ResumeState) {
 			return bad()
 		}
-		if n != len(c.Blocks)-1 && b.ResolvedAt == nil {
+		if b.ResolvedAt != nil {
+			if !textOK(b.Resolution) {
+				return bad()
+			}
+		} else if n != len(c.Blocks)-1 || b.Resolution != "" {
 			return bad()
 		}
 	}
@@ -247,25 +251,13 @@ func validateState(c *Campaign, id string) error {
 	if blocked != (c.State == "blocked" || c.State == "stopped") {
 		return bad()
 	}
-	for n, event := range c.Events {
-		if !validID(event.ID) || event.SchemaVersion != SchemaVersion || event.Pipeline != Pipeline || event.CampaignID != id || event.RootTicketID != c.Root.Identifier || event.Revision != n+1 || event.OccurredAt.IsZero() || !keyPattern.MatchString(event.SessionID) {
+	revisions := map[int]bool{}
+	for operationID, op := range c.Operations {
+		revision := op.Receipt.Revision
+		if !keyPattern.MatchString(operationID) || len(op.Digest) != 64 || strings.IndexFunc(op.Digest, func(r rune) bool { return !unicode.Is(unicode.ASCII_Hex_Digit, r) }) >= 0 || op.Receipt.CampaignID != id || op.Receipt.OperationID != operationID || revision < 1 || revision > c.Revision || revisions[revision] {
 			return bad()
 		}
-		switch event.Type {
-		case "atelier-next:campaign-created", "atelier-next:campaign-updated", "atelier-next:contribution-started", "atelier-next:contribution-integrated", "atelier-next:campaign-blocked", "atelier-next:campaign-resumed", "atelier-next:verification-completed", "atelier-next:pr-linked", "atelier-next:delivery-completed", "atelier-next:suite-published":
-		default:
-			return bad()
-		}
-		if event.SkillName != "orchestration" && event.SkillName != "realisation" && event.SkillName != "verification" && event.SkillName != "livraison" && event.SkillName != "suite" {
-			return bad()
-		}
-		if !ticketPattern.MatchString(event.TicketID) || (event.Mode != "child" && event.Mode != c.Mode) {
-			return bad()
-		}
-		op, ok := c.Operations[event.OperationID]
-		if !ok || !keyPattern.MatchString(event.OperationID) || len(op.Digest) != 64 || strings.IndexFunc(op.Digest, func(r rune) bool { return !unicode.Is(unicode.ASCII_Hex_Digit, r) }) >= 0 || op.Receipt.CampaignID != id || op.Receipt.Revision != n+1 || op.Receipt.OperationID != event.OperationID {
-			return bad()
-		}
+		revisions[revision] = true
 	}
 	return nil
 }

@@ -35,7 +35,7 @@ func (s *Store) start(ctx context.Context, r Request, checkout Checkout, head, d
 	return &Campaign{
 		SchemaVersion: SchemaVersion, Pipeline: Pipeline, ID: ulid.New(), Root: r.Start.Root,
 		Mode: r.Start.Mode, State: "planning", Checkout: checkout, Base: head, ExpectedHead: head,
-		Contributions: []Contribution{}, Blocks: []Block{}, Operations: map[string]Operation{}, Events: []Event{},
+		Contributions: []Contribution{}, Blocks: []Block{}, Operations: map[string]Operation{},
 	}, nil
 }
 
@@ -55,28 +55,23 @@ func active(c *Campaign) *Contribution {
 	return nil
 }
 
-func (s *Store) mutate(ctx context.Context, c *Campaign, r Request, head string, now time.Time, receipt *Receipt) (eventType, skill, ticket string, data map[string]any, err error) {
-	eventType, skill = "atelier-next:campaign-updated", "orchestration"
-	data = map[string]any{"action": r.Action, "from": c.State}
+func (s *Store) mutate(ctx context.Context, c *Campaign, r Request, head string, now time.Time, receipt *Receipt) error {
 	if r.Action != "start" && r.Action != "acquire" {
-		if err = owns(c, r, now); err != nil {
-			return
+		if err := owns(c, r, now); err != nil {
+			return err
 		}
 	}
 	switch r.Action {
 	case "start":
 		c.Lease = &Lease{Session: r.Session, Token: ulid.New(), ExpiresAt: now.Add(LeaseDuration)}
 		receipt.Token = c.Lease.Token
-		eventType = "atelier-next:campaign-created"
 	case "acquire":
 		if c.Lease != nil {
 			if now.Before(c.Lease.ExpiresAt) {
-				err = fmt.Errorf("%w: live owner %s; renew or release with its token", ErrLease, c.Lease.Session)
-				return
+				return fmt.Errorf("%w: live owner %s; renew or release with its token", ErrLease, c.Lease.Session)
 			}
 			if !r.ConfirmOwnerStopped || r.PreviousToken != c.Lease.Token {
-				err = fmt.Errorf("%w: expired owner is not proof it stopped; explicit confirmation and previous token required", ErrLease)
-				return
+				return fmt.Errorf("%w: expired owner is not proof it stopped; explicit confirmation and previous token required", ErrLease)
 			}
 		}
 		c.Lease = &Lease{Session: r.Session, Token: ulid.New(), ExpiresAt: now.Add(LeaseDuration)}
@@ -88,33 +83,27 @@ func (s *Store) mutate(ctx context.Context, c *Campaign, r Request, head string,
 		c.Lease = nil
 	case "block", "stop":
 		if c.State == "blocked" || c.State == "stopped" || c.State == "delivered" {
-			err = fmt.Errorf("%w: already blocked; resolve before another block", ErrInvalid)
-			return
+			return fmt.Errorf("%w: already blocked; resolve before another block", ErrInvalid)
 		}
 		for _, repair := range c.Repairs {
 			if repair.Integration.Commit == "" {
-				err = ErrReconcile
-				return
+				return ErrReconcile
 			}
 		}
 		if child := active(c); child != nil && child.Integration != nil {
-			err = fmt.Errorf("%w: finish or cancel prepared integration before blocking", ErrReconcile)
-			return
+			return fmt.Errorf("%w: finish or cancel prepared integration before blocking", ErrReconcile)
 		}
 		if r.Action == "block" && r.Class == "user-stop" {
-			err = fmt.Errorf("%w: use campaign stop for a user-requested stop", ErrInvalid)
-			return
+			return fmt.Errorf("%w: use campaign stop for a user-requested stop", ErrInvalid)
 		}
 		if r.Action == "stop" {
 			r.Class = "user-stop"
 		}
 		if !textOK(r.Reason) || (r.Class != "scope-local" && r.Class != "scope-transversal" && r.Class != "environment" && r.Class != "user-stop") {
-			err = fmt.Errorf("%w: block class and reason required", ErrInvalid)
-			return
+			return fmt.Errorf("%w: block class and reason required", ErrInvalid)
 		}
 		if r.Class == "scope-local" && active(c) == nil {
-			err = fmt.Errorf("%w: local scope requires an active contribution", ErrInvalid)
-			return
+			return fmt.Errorf("%w: local scope requires an active contribution", ErrInvalid)
 		}
 		b := Block{Class: r.Class, Reason: r.Reason, ResumeState: c.State}
 		if c.Plan != nil {
@@ -125,77 +114,34 @@ func (s *Store) mutate(ctx context.Context, c *Campaign, r Request, head string,
 		if r.Action == "stop" {
 			c.State = "stopped"
 		}
-		eventType = "atelier-next:campaign-blocked"
-		data["class"], data["reason"] = b.Class, b.Reason
 	default:
 		if head != c.ExpectedHead && r.Action != "finish" && r.Action != "repair-finish" {
-			err = fmt.Errorf("%w: HEAD moved outside recorded integration", ErrReconcile)
-			return
+			return fmt.Errorf("%w: HEAD moved outside recorded integration", ErrReconcile)
 		}
 		switch r.Action {
 		case "plan":
-			err = setPlan(c, r.Plan)
+			return setPlan(c, r.Plan)
 		case "resume":
-			err = resume(c, r, now)
-			eventType = "atelier-next:campaign-resumed"
-			data["decisionReference"] = r.DecisionReference
-			data["reason"] = r.Reason
+			return resume(c, r, now)
 		case "open":
-			skill, ticket = "realisation", r.Ticket
-			err = openContribution(ctx, c, r.Ticket)
-			eventType = "atelier-next:contribution-started"
+			return openContribution(ctx, c, r.Ticket)
 		case "prepare":
-			skill = "realisation"
-			err = prepare(ctx, c, r.Evidence, receipt)
-			if child := active(c); child != nil {
-				ticket = child.Spec.Ticket.Identifier
-			}
+			return prepare(ctx, c, r.Evidence, receipt)
 		case "cancel":
-			skill = "realisation"
 			child := active(c)
 			if child == nil || child.Integration == nil || child.Integration.ID != r.IntegrationID {
-				err = fmt.Errorf("%w: active prepared integration required", ErrInvalid)
-				return
+				return fmt.Errorf("%w: active prepared integration required", ErrInvalid)
 			}
-			ticket = child.Spec.Ticket.Identifier
-			data["integrationId"] = child.Integration.ID
 			child.Integration = nil
 		case "finish":
-			skill = "realisation"
-			var fresh bool
-			ticket, fresh, err = finish(ctx, c, r.IntegrationID, head, receipt)
-			if fresh {
-				eventType = "atelier-next:contribution-integrated"
-			}
+			return finish(ctx, c, r.IntegrationID, head, receipt)
 		case "ack":
-			skill, ticket = "realisation", r.Ticket
-			err = acknowledge(c, r, now)
+			return acknowledge(c, r, now)
 		default:
-			eventType, skill, err = finalMutation(ctx, c, r, head, receipt)
+			return finalMutation(ctx, c, r, head, receipt)
 		}
 	}
-	data["to"] = c.State
-	if err == nil {
-		switch r.Action {
-		case "verification-complete":
-			data["verifiedHead"], data["reference"] = c.Verification.Head, c.Verification.Reference
-		case "delivery-observe", "delivery-complete":
-			p := c.Delivery.PR
-			data["number"], data["url"], data["head"] = p.Number, p.URL, p.HeadRefOID
-			if p.MergeCommit != nil {
-				data["mergeCommit"] = p.MergeCommit.OID
-			}
-		case "suite-publish":
-			data["reference"] = c.SuiteReference
-		}
-	}
-	if receipt.IntegrationID != "" {
-		data["integrationId"] = receipt.IntegrationID
-	}
-	if receipt.Commit != "" {
-		data["commit"] = receipt.Commit
-	}
-	return
+	return nil
 }
 
 func setPlan(c *Campaign, p *Plan) error {
@@ -286,7 +232,7 @@ func resume(c *Campaign, r Request, now time.Time) error {
 	if !textOK(r.Reason) {
 		return fmt.Errorf("%w: resolution reason required", ErrInvalid)
 	}
-	b.ResolvedAt, b.DecisionReference = &now, r.DecisionReference
+	b.ResolvedAt, b.DecisionReference, b.Resolution = &now, r.DecisionReference, r.Reason
 	c.State = b.ResumeState
 	if b.Class == "scope-transversal" && finalState(c.State) {
 		c.State = "verifying"
@@ -356,7 +302,7 @@ func prepare(ctx context.Context, c *Campaign, e *Evidence, receipt *Receipt) er
 	return nil
 }
 
-func finish(ctx context.Context, c *Campaign, id, head string, receipt *Receipt) (string, bool, error) {
+func finish(ctx context.Context, c *Campaign, id, head string, receipt *Receipt) error {
 	for n := range c.Contributions {
 		child := &c.Contributions[n]
 		i := child.Integration
@@ -365,16 +311,16 @@ func finish(ctx context.Context, c *Campaign, id, head string, receipt *Receipt)
 		}
 		if i.Commit != "" {
 			if head != c.ExpectedHead {
-				return "", false, ErrReconcile
+				return ErrReconcile
 			}
 			receipt.Commit, receipt.IntegrationID = i.Commit, i.ID
-			return child.Spec.Ticket.Identifier, false, nil
+			return nil
 		}
 		if c.State != "realizing" || child.State != "active" {
-			return "", false, ErrInvalid
+			return ErrInvalid
 		}
 		if err := proveIntegration(ctx, c.Checkout.Worktree, head, i); err != nil {
-			return "", false, err
+			return err
 		}
 		i.Commit, child.State, c.ExpectedHead = head, "integrated", head
 		child.Linear.Pending = c.Mode == "parent"
@@ -389,9 +335,9 @@ func finish(ctx context.Context, c *Campaign, id, head string, receipt *Receipt)
 			c.State = "awaiting-trial"
 			c.Trial = nil
 		}
-		return child.Spec.Ticket.Identifier, true, nil
+		return nil
 	}
-	return "", false, fmt.Errorf("%w: unknown integration ID", ErrInvalid)
+	return fmt.Errorf("%w: unknown integration ID", ErrInvalid)
 }
 
 func acknowledge(c *Campaign, r Request, now time.Time) error {

@@ -88,8 +88,12 @@ leases from parallel sessions never double-book a device.
 A separate campaign book-keeper for Atelier Next: one branch/worktree per root,
 one writer lease, sequential contributions, recorded test/review evidence and
 recoverable commit/Linear integration. State lives in `~/.atelier-next/`, never
-in the existing Forge namespace. No Linear requests, commits, PRs or cloud events
-are sent by these commands.
+in the existing Forge namespace. No Linear requests, commits or PRs are sent by
+these commands. Next collects/stores/ships no telemetry events: there is no event
+journal or pending cloud outbox. Operational state, evidence, decisions and idempotency
+receipts remain for recovery. Event design, Firestore shipment and retention wait for
+the dashboard requirements, without a promise of historical backfill; existing
+session/Forge telemetry is unchanged.
 
 ```sh
 go build -o /tmp/atelierd-next-dev ./cmd/atelierd

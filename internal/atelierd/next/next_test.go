@@ -221,14 +221,8 @@ func TestStandaloneLifecycleAndLostResponses(t *testing.T) {
 	if c.State != "awaiting-trial" || c.ExpectedHead != sha || c.Contributions[0].Linear.Pending {
 		t.Fatalf("standalone finish: %+v", c)
 	}
-	integrations := 0
-	for _, e := range c.Events {
-		if e.Type == "atelier-next:contribution-integrated" {
-			integrations++
-		}
-	}
-	if integrations != 1 {
-		t.Fatalf("duplicate integration events: %d", integrations)
+	if len(c.Contributions) != 1 || c.Contributions[0].Integration.Commit != sha {
+		t.Fatal("duplicate or lost integration")
 	}
 	r := f.request("ack")
 	r.Ticket, r.Commit, r.StateID, r.StateType = rootTicket.Identifier, sha, completedState, "completed"
@@ -549,7 +543,7 @@ func TestScopeBlocksAndReplanning(t *testing.T) {
 	f.apply(r)
 }
 
-func TestOperationConflictsAndEventEnvelope(t *testing.T) {
+func TestOperationConflictsAndReceipts(t *testing.T) {
 	f := setup(t, "standalone")
 	r := f.request("plan")
 	r.Plan = makePlan(rootTicket)
@@ -561,17 +555,17 @@ func TestOperationConflictsAndEventEnvelope(t *testing.T) {
 	f.commit(prepared)
 	f.finish(prepared)
 	c := f.status()
-	ids := map[string]bool{}
-	for n, e := range c.Events {
-		if e.Pipeline != Pipeline || e.Mode != "standalone" || e.CampaignID != f.id || e.RootTicketID != rootTicket.Identifier || e.TicketID != rootTicket.Identifier || e.SchemaVersion != SchemaVersion || e.Revision != n+1 || e.SessionID != "session-a" || ids[e.ID] {
-			t.Fatalf("invalid event %+v", e)
+	revisions := map[int]bool{}
+	for id, op := range c.Operations {
+		if op.Receipt.CampaignID != f.id || op.Receipt.OperationID != id || op.Receipt.Revision < 1 || op.Receipt.Revision > c.Revision || revisions[op.Receipt.Revision] {
+			t.Fatalf("invalid operation %+v", op)
 		}
-		ids[e.ID] = true
+		revisions[op.Receipt.Revision] = true
 	}
-	before := c.Events
-	if !reflect.DeepEqual(before, f.status().Events) {
-		t.Fatal("read generated events")
+	if len(revisions) != c.Revision || !reflect.DeepEqual(c, f.status()) {
+		t.Fatal("missing receipt or read changed campaign")
 	}
+	assertOperationalStateOnly(t, f)
 }
 
 func TestStoreRejectsSymlinksAndCorruption(t *testing.T) {

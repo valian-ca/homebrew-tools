@@ -121,18 +121,10 @@ func TestFullCampaignScenarios(t *testing.T) {
 			if c.State != "delivered" || c.SuiteReference == "" {
 				t.Fatal("missing delivery/suite")
 			}
-			linked := false
-			for _, e := range c.Events {
-				if e.Type == "atelier-next:pr-linked" {
-					linked = true
-					if e.Data["number"] != float64(7) || e.Data["url"] != p.URL || e.Data["head"] != p.HeadRefOID {
-						t.Fatal("PR event cannot project the link", e)
-					}
-				}
+			if c.Delivery.PR.Number != 7 || c.Delivery.PR.URL != p.URL || c.Delivery.PR.HeadRefOID != p.HeadRefOID || c.Delivery.PR.State != "MERGED" {
+				t.Fatal("missing observed PR identity/merge")
 			}
-			if !linked {
-				t.Fatal("missing PR event")
-			}
+			assertOperationalStateOnly(t, f)
 		})
 	}
 }

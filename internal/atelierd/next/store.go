@@ -17,8 +17,6 @@ import (
 
 	oklogulid "github.com/oklog/ulid/v2"
 	"golang.org/x/sys/unix"
-
-	"github.com/valian-ca/homebrew-tools/internal/atelierd/ulid"
 )
 
 var keyPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
@@ -338,24 +336,11 @@ func (s *Store) Apply(ctx context.Context, r Request) (Receipt, error) {
 		}
 		now := s.now().UTC()
 		receipt = Receipt{CampaignID: c.ID, OperationID: r.OperationID, Revision: c.Revision + 1}
-		eventType, skill, ticket, data, err := s.mutate(ctx, c, r, head, now, &receipt)
-		if err != nil {
+		if err := s.mutate(ctx, c, r, head, now, &receipt); err != nil {
 			return err
 		}
 		c.Revision++
 		c.Operations[r.OperationID] = Operation{Digest: digest, Receipt: receipt}
-		mode := c.Mode
-		if ticket == "" {
-			ticket = c.Root.Identifier
-		}
-		if ticket != c.Root.Identifier {
-			mode = "child"
-		}
-		c.Events = append(c.Events, Event{
-			SchemaVersion: SchemaVersion, ID: ulid.New(), Type: eventType, OperationID: r.OperationID,
-			OccurredAt: now, Pipeline: Pipeline, CampaignID: c.ID, RootTicketID: c.Root.Identifier,
-			TicketID: ticket, SkillName: skill, Mode: mode, SessionID: r.Session, Revision: c.Revision, Data: data,
-		})
 		return s.save(c)
 	})
 	if err != nil {

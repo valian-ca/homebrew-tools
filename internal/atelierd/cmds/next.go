@@ -14,9 +14,11 @@ func NewNextCmd() *cobra.Command {
 	command := &cobra.Command{
 		Use:   "next",
 		Short: "Manage isolated Atelier Next campaigns (experimental contract 3)",
+		Args:  cobra.NoArgs,
+		RunE:  func(cmd *cobra.Command, _ []string) error { return cmd.Help() },
 		Long: `Persist Atelier Next campaigns under ~/.atelier-next (HOME selects the home directory).
 This is independent of atelierd forge. No Linear API call, git commit, branch creation,
-PR or cloud event shipment is performed. Git is required for checkout checks.
+PR or telemetry event collection/shipment is performed. Git is required for checkout checks.
 
 Mutations run from the bound worktree with --session, --token and a unique
 --operation. Reuse exactly the same operation and arguments after a lost response.
@@ -68,7 +70,7 @@ CI results or merge authorization. Campaign state cannot be set arbitrarily.`,
 	delivery.AddCommand(nextMutation("start", "delivery-start", "Require the delivery gate before pushing"), nextMutation("observe", "delivery-observe", "Record unmodified gh pr view JSON"), nextMutation("check", "delivery-check", "Require current PR identity and green CI before merge"), nextMutation("complete", "delivery-complete", "Record a confirmed merge with green CI"))
 	suite := &cobra.Command{Use: "suite", Short: "Read and publish only explicitly deferred or manual actions"}
 	suite.AddCommand(nextRead("show"), nextMutation("publish", "suite-publish", "Record the published suite reference"))
-	command.AddCommand(campaign, lease, plan, contribution, integration, linear, trial, verification, repair, delivery, suite, nextRead("events"))
+	command.AddCommand(campaign, lease, plan, contribution, integration, linear, trial, verification, repair, delivery, suite)
 	for _, group := range command.Commands() {
 		if group.HasSubCommands() {
 			group.Args = cobra.NoArgs
@@ -191,10 +193,7 @@ func nextRead(action string) *cobra.Command {
 				}
 				return json.NewEncoder(cmd.OutOrStdout()).Encode(items)
 			}
-			if action == "events" {
-				return json.NewEncoder(cmd.OutOrStdout()).Encode(c.Events)
-			}
-			c.Operations, c.Events = nil, nil
+			c.Operations = nil
 			return json.NewEncoder(cmd.OutOrStdout()).Encode(c)
 		},
 	}
