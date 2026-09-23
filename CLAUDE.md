@@ -146,13 +146,13 @@ per campaign. Old Next schemas are rejected, never silently migrated. No general
 setter, Linear API client, test runner, Git commit/push/merge or telemetry collection/
 shipment is performed by this book-keeper. It validates caller attestations, not their truth.
 
-The local prototype keeps contract 3/schema 2 for pre-trial kind=environment repairs.
+Release 0.17.1 keeps contract 3/schema 2 for pre-trial kind=environment repairs.
 Only awaiting-trial accepts them, with a reason/diagnostic reference instead of QA
 finding IDs, plus the same tests/review, lease and exact-parent/tree integration gates.
 Finish preserves awaiting-trial and advances expectedHead; recovery must not overwrite
 that HEAD or manufacture a user response. Pending repairs block trial recording.
-Existing schema-2 snapshots remain readable; the published 0.17.0 binary lacks this
-path, so local testing uses an isolated updated source binary. No release is implied.
+Existing schema-2 snapshots remain readable; 0.17.0 lacks this repair path despite
+sharing the same contract number. Use 0.17.1 or newer for pre-trial repairs.
 
 The `~/.atelier-next/` namespace is deliberate, independent of `~/.atelier/forge/`.
 One namespace flock protects checkout uniqueness and atomic campaign snapshots;

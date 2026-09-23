@@ -109,8 +109,10 @@ root QA, explicit unverified deployment-only criteria, bounded CI repairs, uniqu
 PR/report and suite registry. Old states are refused without silent migration.
 It validates caller attestations;
 the skills run tests, upload real captures and perform external mutations. This
-code ships in [atelierd 0.17.0](https://github.com/valian-ca/homebrew-tools/releases/tag/atelierd-0.17.0),
-not the old 0.16.0 release. Real business-ticket/LLM pilots remain necessary before
+code has shipped since 0.17.0. [atelierd 0.17.1](https://github.com/valian-ca/homebrew-tools/releases/tag/atelierd-0.17.1)
+also permits environment repairs before the user trial while preserving the repaired
+HEAD and the pending user response. That repair path requires 0.17.1 or newer, although
+the Next contract remains 3. Real business-ticket/LLM pilots remain necessary before
 replacing the existing pipeline.
 See [the CLI contract and examples](docs/atelier-next.md) for staging schemas,
 crash recovery, safety boundaries and tests.

@@ -4,9 +4,9 @@ Atelier Next's independent campaign book-keeper, shipped in **atelierd 0.17.0**.
 `next contract` prints `3`; the existing `forge contract` still prints `2`, with no
 changes to its commands, state, exit codes or event taxonomy.
 
-The local prototype also supports pre-trial environment repairs under contract 3 /
-schema 2. This path requires the updated source binary; the published 0.17.0 binary
-does not implement it. Existing schema-2 campaigns remain readable without migration.
+Release **0.17.1** adds pre-trial environment repairs under contract 3 / schema 2.
+Use 0.17.1 or newer for this path; 0.17.0 does not implement it despite sharing the
+same contract number. Existing schema-2 campaigns remain readable without migration.
 
 ```sh
 go build -o /tmp/atelierd-next-dev ./cmd/atelierd
@@ -390,7 +390,7 @@ integrity without an event journal, and refusal of obsolete event-bearing snapsh
 These are technical simulations, not claims
 of completed business-ticket/LLM pilots. Run real pilots before replacing old Atelier.
 
-Release 0.17.0 is published as `atelierd-0.17.0`; the stable formula uses the actual
+Release 0.17.1 is published as `atelierd-0.17.1`; the stable formula uses the actual
 GitHub archive checksum. For future releases: source PR and green checks/review, merge,
 tag the reviewed source, compute its tarball SHA, update/test the formula, then publish
 any dependent plugin. Never relabel an old tarball or invent a checksum. No daemon
