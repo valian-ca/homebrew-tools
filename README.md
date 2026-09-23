@@ -81,42 +81,6 @@ atelierd device status                              # bank + physical devices, s
 State lives in `~/.atelier/devices.json`, guarded by a `flock` so concurrent
 leases from parallel sessions never double-book a device.
 
----
-
-## `atelierd next` (experimental, available since 0.17.0)
-
-A separate campaign book-keeper for Atelier Next: one branch/worktree per root,
-one writer lease, sequential contributions, recorded test/review evidence and
-recoverable commit/Linear integration. State lives in `~/.atelier-next/`, never
-in the existing Forge namespace. No Linear requests, commits or PRs are sent by
-these commands. Next collects/stores/ships no telemetry events: there is no event
-journal or pending cloud outbox. Operational state, evidence, decisions and idempotency
-receipts remain for recovery. Event design, Firestore shipment and retention wait for
-the dashboard requirements, without a promise of historical backfill; existing
-session/Forge telemetry is unchanged.
-
-```sh
-brew upgrade valian-ca/tools/atelierd
-atelierd next contract
-atelierd next --help
-```
-
-For a first install, use `brew install valian-ca/tools/atelierd`.
-
-Contract `3` / schema `2` implements campaign creation, planning, ownership,
-trailer-free parent/tree integration recovery, a ready-stack user-trial gate before
-root QA, explicit unverified deployment-only criteria, bounded CI repairs, unique
-PR/report and suite registry. Old states are refused without silent migration.
-It validates caller attestations;
-the skills run tests, upload real captures and perform external mutations. This
-code has shipped since 0.17.0. [atelierd 0.17.1](https://github.com/valian-ca/homebrew-tools/releases/tag/atelierd-0.17.1)
-also permits environment repairs before the user trial while preserving the repaired
-HEAD and the pending user response. That repair path requires 0.17.1 or newer, although
-the Next contract remains 3. Real business-ticket/LLM pilots remain necessary before
-replacing the existing pipeline.
-See [the CLI contract and examples](docs/atelier-next.md) for staging schemas,
-crash recovery, safety boundaries and tests.
-
 ## Contributing
 
 See [CLAUDE.md](./CLAUDE.md) for conventions when adding a new tool or
