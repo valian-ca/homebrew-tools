@@ -4,6 +4,10 @@ Atelier Next's independent campaign book-keeper, shipped in **atelierd 0.17.0**.
 `next contract` prints `3`; the existing `forge contract` still prints `2`, with no
 changes to its commands, state, exit codes or event taxonomy.
 
+The local prototype also supports pre-trial environment repairs under contract 3 /
+schema 2. This path requires the updated source binary; the published 0.17.0 binary
+does not implement it. Existing schema-2 campaigns remain readable without migration.
+
 ```sh
 go build -o /tmp/atelierd-next-dev ./cmd/atelierd
 /tmp/atelierd-next-dev next contract
@@ -165,19 +169,58 @@ trial with the stack running, then **wait for the response**. No full attended t
 `trial record --from <file>`:
 
 ```json
-{"head":"<final-contribution-HEAD>","response":"tested","reference":"actual-user-response","readiness":"ready-stack-evidence"}
+{"head":"<current-expectedHead-including-environment-repairs>","response":"tested","reference":"actual-user-response","readiness":"ready-stack-evidence"}
 ```
 
 Response is tested or declined, never silence. A static plan with no surfaces may
 instead use response not-applicable, reference to the plan and notApplicableReason,
 without a fictitious readiness value. The gate transitions to verifying. Lost responses
 replay idempotently; stop/resume preserves awaiting-trial. Trial HEAD is the integrated
-HEAD when recorded, initially the last contribution. Later repairs preserve this
+HEAD when recorded, including any pre-trial environment repairs. Later QA/CI repairs preserve this
 historical trial; new contributions/changed finalChecks invalidate it and require a
 new trial at the then-current integrated HEAD. The CLI validates the attestation, not that the human truly answered.
 Device-bank policy belongs to the skill: mandatory lease when available, wait/retry
 when exhausted, stop/ask when unavailable; no automatic off-bank fallback or explicit
 mandatory device renewal. The campaign lease renewal remains required independently.
+
+### Environment repairs before the trial
+
+If readiness requires a Git change, `repair prepare --from <file>` accepts the
+following only in **awaiting-trial**, in both standalone and parent campaigns:
+
+```json
+{
+  "kind":"environment",
+  "reason":"The emulator socket prevents preparation of the trial account",
+  "reference":"orchestration-diagnostic",
+  "evidence":{
+    "tree":"<full-staged-tree-hash>",
+    "tests":[{"name":"environment-regression","command":"actual command","status":"pass","reference":"test-log"}],
+    "review":{"independent":true,"reference":"targeted-independent-review"}
+  }
+}
+```
+
+No findingIds (or an empty array), no QA report and no manufactured trial are needed.
+Reason and diagnostic reference are mandatory and persisted with the repair. Run
+targeted tests and project-required checks, valian:verify and independent local review.
+This lane restores trial infrastructure, accounts or data; product changes still follow
+scope decisions. The CLI validates attestations, not the semantic scope of the diff.
+
+Use the same live lease, bound checkout, staged-tree evidence and exact-parent protocol
+as QA repairs: prepare, valian:commit, `repair finish --integration <id>`. Finish advances
+expectedHead and keeps **awaiting-trial**, without changing contributions, their Linear
+sync, or the plan. Multiple sequential environment repairs are allowed; only one intent
+may be prepared. An unfinished repair blocks `trial record` even if the tree is clean.
+QA save/complete and delivery remain forbidden until an actual trial response.
+
+Recovery uses the same ID: before commit, finish the prepared work or `repair cancel`;
+after commit, finish without recommitting; after finish, keep the recorded repaired HEAD.
+Finish/cancel before blocking or stopping. For an environment block originating at this
+gate, resume with the diagnosis and recovery path, then repair in awaiting-trial, never
+while blocked/stopped. Rebuild/restart and check readiness at the repaired HEAD before
+offering the trial and waiting for the user's tested/declined response. Stop/resume and
+fresh-store recovery preserve both the repair and the pending trial.
 
 ### Final verification
 

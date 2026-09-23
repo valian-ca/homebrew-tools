@@ -182,6 +182,25 @@ func TestNextCLIFullLifecycleAndLegacyIsolation(t *testing.T) {
 	}
 	runGit("commit", "-m", "test: contribution")
 	invoke([]string{"integration", "finish"}, "--operation", "finish-1", "--integration", prepared.IntegrationID)
+	if err := os.WriteFile(filepath.Join(repo, "environment.txt"), []byte("repair fixture\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit("add", "environment.txt")
+	evidence.Tree = runGit("write-tree")
+	repair := next.RepairRequest{Kind: "environment", Reason: "Local service cannot start", Reference: "diagnostic-log", Evidence: evidence}
+	out = invoke([]string{"repair", "prepare"}, "--operation", "repair-prepare-1", "--from", jsonFile("repair.json", repair))
+	if err := json.Unmarshal([]byte(out), &prepared); err != nil {
+		t.Fatal(err)
+	}
+	runGit("commit", "-m", "test: repair environment")
+	invoke([]string{"repair", "finish"}, "--operation", "repair-finish-1", "--integration", prepared.IntegrationID)
+	out, _, err = executeNext("campaign", "status", "--campaign", receipt.CampaignID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(out), &status); err != nil || status.State != "awaiting-trial" || status.Trial != nil || len(status.Repairs) != 1 {
+		t.Fatal(out, err)
+	}
 	head := runGit("rev-parse", "HEAD")
 	trial := next.UserTrial{Head: head, Response: "not-applicable", Reference: "document-1", NotApplicableReason: "Static fixture"}
 	invoke([]string{"trial", "record"}, "--operation", "trial-1", "--from", jsonFile("trial.json", trial))
