@@ -136,8 +136,13 @@ install pulls `go` as a build dependency, subsequent ones don't.
 broader product/protocol proposal lives in the `claude-plugins` repository under
 `plugins/atelier-next/PROTOCOL.md`. Keep command names, staging schemas, exit codes,
 identity and recovery rules synchronized with those consumers when activating them.
-Contract 2 includes root QA, repair integrations, a SHA-bound delivery gate, unique
-PR/CI observations, confirmed delivery and the suite registry. No general state
+Contract 3 / schema 2 includes the post-contribution user-trial gate, root QA,
+repair integrations, a SHA-bound delivery gate, unique PR/CI observations, confirmed
+delivery and suite. Deployment-only criteria remain explicitly unverified, with
+justification/evidence and a matching manual deferred suite entry; tests/surfaces
+and known defects cannot use this exception. CI plumbing repairs have kind=ci and
+a durable maximum of three integrated rounds. The verification document is unique
+per campaign. Old Next schemas are rejected, never silently migrated. No general state
 setter, Linear API client, test runner, Git commit/push/merge or cloud event shipment
 is performed by this book-keeper. It validates caller attestations, not their truth.
 
@@ -145,9 +150,12 @@ The `~/.atelier-next/` namespace is deliberate, independent of `~/.atelier/forge
 One namespace flock protects checkout uniqueness and atomic campaign snapshots;
 one renewable session token controls the cooperative external editor. Tokens fence
 CLI mutations, not arbitrary editor/Git writes, so expiration never authorizes
-silent takeover. A prepared integration journals its exact parent/tree and unique
-`Atelier-Next-Integration:` trailer before an ordinary Git commit. Never replace
-that proof with subject matching, a ticket footer, or an automatic reset/recommit.
+silent takeover. A prepared integration journals its exact parent/tree and evidence
+before the caller invokes valian:commit. No campaign metadata belongs in commit
+messages. Finish checks the one non-merge HEAD against the prepared parent/tree and
+a clean bound checkout. Recovery reuses the journal's integration ID, never subject
+matching, ticket footers, another commit, or automatic reset/recommit. Hooks changing
+content, extra commits or unknown history require explicit reconciliation.
 Linear Done synchronization is pending until acknowledged; standalone roots cannot
 be acknowledged at contribution integration.
 

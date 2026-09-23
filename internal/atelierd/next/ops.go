@@ -257,6 +257,9 @@ func setPlan(c *Campaign, p *Plan) error {
 			children[n].Spec = spec
 		}
 	}
+	if c.Plan != nil && (!reflect.DeepEqual(c.Plan.FinalChecks, p.FinalChecks) || len(c.Contributions) != len(children)) {
+		c.Trial = nil
+	}
 	c.Plan, c.Contributions = p, children
 	if c.State == "planning" {
 		c.State = "ready"
@@ -292,13 +295,17 @@ func resume(c *Campaign, r Request, now time.Time) error {
 	if c.State == "planning" && c.Plan != nil {
 		c.State = "ready"
 	}
-	if c.State == "verifying" {
+	if c.State == "verifying" || c.State == "awaiting-trial" {
 		for _, child := range c.Contributions {
 			if child.State != "integrated" {
 				c.State = "realizing"
+				c.Trial = nil
 				break
 			}
 		}
+	}
+	if c.State == "verifying" && c.Trial == nil {
+		c.State = "awaiting-trial"
 	}
 	return nil
 }
@@ -344,8 +351,8 @@ func prepare(ctx context.Context, c *Campaign, e *Evidence, receipt *Receipt) er
 		return fmt.Errorf("%w: evidence must attest the staged tree", ErrInvalid)
 	}
 	id := ulid.New()
-	child.Integration = &Integration{ID: id, Parent: c.ExpectedHead, Tree: tree, Trailer: "Atelier-Next-Integration: " + id, Evidence: *e}
-	receipt.IntegrationID, receipt.Trailer = id, child.Integration.Trailer
+	child.Integration = &Integration{ID: id, Parent: c.ExpectedHead, Tree: tree, Evidence: *e}
+	receipt.IntegrationID = id
 	return nil
 }
 
@@ -379,7 +386,8 @@ func finish(ctx context.Context, c *Campaign, id, head string, receipt *Receipt)
 			}
 		}
 		if allIntegrated {
-			c.State = "verifying"
+			c.State = "awaiting-trial"
+			c.Trial = nil
 		}
 		return child.Spec.Ticket.Identifier, true, nil
 	}

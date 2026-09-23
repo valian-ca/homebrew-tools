@@ -32,6 +32,12 @@ func finalFixture(t *testing.T, visual, parent bool) *fixture {
 			f.apply(r)
 		}
 	}
+	r = f.request("trial-record")
+	r.Trial = &UserTrial{Head: f.status().ExpectedHead, Response: "not-applicable", Reference: "static-plan", NotApplicableReason: "Static fixture"}
+	if visual {
+		r.Trial = &UserTrial{Head: f.status().ExpectedHead, Response: "declined", Reference: "user-response", Readiness: "readiness-log"}
+	}
+	f.apply(r)
 	return f
 }
 

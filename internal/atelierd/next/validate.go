@@ -89,7 +89,7 @@ func validateState(c *Campaign, id string) error {
 		return bad()
 	}
 	switch c.State {
-	case "planning", "ready", "realizing", "verifying", "verified", "delivering", "pr-open", "delivered", "blocked", "stopped":
+	case "planning", "ready", "realizing", "awaiting-trial", "verifying", "verified", "delivering", "pr-open", "delivered", "blocked", "stopped":
 	default:
 		return bad()
 	}
@@ -145,7 +145,7 @@ func validateState(c *Campaign, id string) error {
 			return bad()
 		}
 		if i := child.Integration; i != nil {
-			if !validID(i.ID) || i.Parent != child.Base || !hashPattern.MatchString(i.Tree) || i.Trailer != "Atelier-Next-Integration: "+i.ID || i.Evidence.Tree != i.Tree {
+			if !validID(i.ID) || i.Parent != child.Base || !hashPattern.MatchString(i.Tree) || i.Evidence.Tree != i.Tree {
 				return bad()
 			}
 			if child.State == "active" && i.Commit != "" {
@@ -156,9 +156,19 @@ func validateState(c *Campaign, id string) error {
 			}
 		}
 	}
+	ciRounds := 0
 	for n, repair := range c.Repairs {
+		if repair.Kind != "" && repair.Kind != "ci" {
+			return bad()
+		}
+		if repair.Kind == "ci" {
+			ciRounds++
+			if ciRounds > 3 || c.Delivery == nil || c.Delivery.PR == nil {
+				return bad()
+			}
+		}
 		i := repair.Integration
-		if integrated != len(c.Contributions) || i.Parent != head || !validID(i.ID) || !hashPattern.MatchString(i.Tree) || i.Evidence.Tree != i.Tree || i.Trailer != "Atelier-Next-Integration: "+i.ID || !namesValid(repair.FindingIDs, true) {
+		if integrated != len(c.Contributions) || i.Parent != head || !validID(i.ID) || !hashPattern.MatchString(i.Tree) || i.Evidence.Tree != i.Tree || !namesValid(repair.FindingIDs, true) {
 			return bad()
 		}
 		names := []string{}
@@ -181,6 +191,14 @@ func validateState(c *Campaign, id string) error {
 			}
 			head = i.Commit
 		}
+	}
+	if c.Trial != nil {
+		if err := validateTrial(c); err != nil {
+			return err
+		}
+	}
+	if c.State == "verifying" && c.Trial == nil {
+		return bad()
 	}
 	if c.Verification != nil {
 		if !hashPattern.MatchString(c.Verification.Head) || c.Verification.PlanRevision < 1 || !textOK(c.Verification.Reference) {

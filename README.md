@@ -97,9 +97,11 @@ go build -o /tmp/atelierd-next-dev ./cmd/atelierd
 /tmp/atelierd-next-dev next --help
 ```
 
-Contract `2` implements campaign creation, planning, ownership, contribution
-integration, blocks/resumes, root QA and repairs, a SHA-bound delivery gate,
-PR/CI observations and the final suite registry. It validates caller attestations;
+Contract `3` / schema `2` implements campaign creation, planning, ownership,
+trailer-free parent/tree integration recovery, a ready-stack user-trial gate before
+root QA, explicit unverified deployment-only criteria, bounded CI repairs, unique
+PR/report and suite registry. Old states are refused without silent migration.
+It validates caller attestations;
 the skills run tests, upload real captures and perform external mutations. This
 code is **not part of the old stable 0.16.0 release**.
 See [the CLI contract and examples](docs/atelier-next.md) for staging schemas,

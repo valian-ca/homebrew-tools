@@ -28,7 +28,7 @@ func executeNext(args ...string) (string, string, error) {
 
 func TestNextContractAndHelp(t *testing.T) {
 	out, stderr, err := executeNext("contract")
-	if err != nil || out != "2\n" || stderr != "" {
+	if err != nil || out != "3\n" || stderr != "" {
 		t.Fatal(out, stderr, err)
 	}
 	out, _, err = executeNext("--help")
@@ -153,9 +153,11 @@ func TestNextCLIFullLifecycleAndLegacyIsolation(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &prepared); err != nil {
 		t.Fatal(err)
 	}
-	runGit("commit", "-m", "test: contribution", "-m", prepared.Trailer)
+	runGit("commit", "-m", "test: contribution")
 	invoke([]string{"integration", "finish"}, "--operation", "finish-1", "--integration", prepared.IntegrationID)
 	head := runGit("rev-parse", "HEAD")
+	trial := next.UserTrial{Head: head, Response: "not-applicable", Reference: "document-1", NotApplicableReason: "Static fixture"}
+	invoke([]string{"trial", "record"}, "--operation", "trial-1", "--from", jsonFile("trial.json", trial))
 	v := next.Verification{Head: head, PlanRevision: 1, Reference: "fixture-report", Criteria: []next.Check{{Name: "AC1", Status: "pass", Reference: "fixture-log"}}, Tests: []next.Check{{Name: "static", Status: "pass", Reference: "fixture-log"}}, Review: evidence.Review}
 	invoke([]string{"verification", "save"}, "--operation", "save-1", "--from", jsonFile("verification.json", v))
 	invoke([]string{"verification", "complete"}, "--operation", "verify-1")

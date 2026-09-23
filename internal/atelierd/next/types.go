@@ -6,8 +6,8 @@ import (
 )
 
 const (
-	ContractVersion  = 2
-	SchemaVersion    = 1
+	ContractVersion  = 3
+	SchemaVersion    = 2
 	Pipeline         = "atelier-next"
 	LeaseDuration    = 30 * time.Minute
 	MaxFileBytes     = 8 << 20
@@ -85,7 +85,6 @@ type Integration struct {
 	ID       string   `json:"id"`
 	Parent   string   `json:"parent"`
 	Tree     string   `json:"tree"`
-	Trailer  string   `json:"trailer"`
 	Evidence Evidence `json:"evidence"`
 	Commit   string   `json:"commit,omitempty"`
 }
@@ -136,7 +135,6 @@ type Receipt struct {
 	Revision      int    `json:"revision"`
 	Token         string `json:"token,omitempty"`
 	IntegrationID string `json:"integrationId,omitempty"`
-	Trailer       string `json:"trailer,omitempty"`
 	Commit        string `json:"commit,omitempty"`
 }
 
@@ -163,6 +161,7 @@ type Campaign struct {
 	Operations     map[string]Operation `json:"operations,omitempty"`
 	Events         []Event              `json:"events,omitempty"`
 	Repairs        []Repair             `json:"repairs,omitempty"`
+	Trial          *UserTrial           `json:"trial,omitempty"`
 	Verification   *Verification        `json:"verification,omitempty"`
 	Delivery       *Delivery            `json:"delivery,omitempty"`
 	SuiteReference string               `json:"suiteReference,omitempty"`
@@ -189,6 +188,7 @@ type Request struct {
 	DecisionReference   string
 	PreviousToken       string
 	ConfirmOwnerStopped bool
+	Trial               *UserTrial
 	Verification        *Verification
 	Repair              *RepairRequest
 	PR                  *PullRequest

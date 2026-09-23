@@ -172,9 +172,18 @@ func (s *Store) load(id string) (*Campaign, error) {
 	if err != nil {
 		return nil, err
 	}
+	var header struct {
+		SchemaVersion int `json:"schemaVersion"`
+	}
+	if err := json.Unmarshal(data, &header); err != nil {
+		return nil, fmt.Errorf("%w: corrupt campaign JSON: %v", ErrInvalid, err)
+	}
+	if header.SchemaVersion != SchemaVersion {
+		return nil, fmt.Errorf("%w: campaign schema %d is unsupported (expected %d); preserve the state and resolve with compatible tooling, no automatic migration", ErrInvalid, header.SchemaVersion, SchemaVersion)
+	}
 	var c Campaign
 	if err := decode(data, &c); err != nil {
-		return nil, fmt.Errorf("next: corrupt campaign: %w", err)
+		return nil, fmt.Errorf("%w: corrupt campaign: %v", ErrInvalid, err)
 	}
 	if err := validateState(&c, id); err != nil {
 		return nil, err

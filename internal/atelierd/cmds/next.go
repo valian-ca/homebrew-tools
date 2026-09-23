@@ -13,7 +13,7 @@ import (
 func NewNextCmd() *cobra.Command {
 	command := &cobra.Command{
 		Use:   "next",
-		Short: "Manage isolated Atelier Next campaigns (experimental contract 2)",
+		Short: "Manage isolated Atelier Next campaigns (experimental contract 3)",
 		Long: `Persist Atelier Next campaigns under ~/.atelier-next (HOME selects the home directory).
 This is independent of atelierd forge. No Linear API call, git commit, branch creation,
 PR or cloud event shipment is performed. Git is required for checkout checks.
@@ -53,20 +53,22 @@ CI results or merge authorization. Campaign state cannot be set arbitrarily.`,
 	contribution := &cobra.Command{Use: "contribution", Short: "Realize contributions sequentially in plan order"}
 	contribution.AddCommand(nextMutation("open", "open", "Open the next contribution on the clean recorded HEAD"))
 	integration := &cobra.Command{Use: "integration", Short: "Prepare and reconcile exactly one commit per contribution"}
-	integration.AddCommand(nextMutation("prepare", "prepare", "Record staged tree, passing tests and independent review; return a unique commit trailer"),
-		nextMutation("finish", "finish", "Prove the committed parent, tree and trailer; record integration and pending Linear sync"),
+	integration.AddCommand(nextMutation("prepare", "prepare", "Journal parent, staged tree, tests and independent review; return an integration ID"),
+		nextMutation("finish", "finish", "Prove the committed parent and tree; record integration and pending Linear sync"),
 		nextMutation("cancel", "cancel", "Cancel a prepared intent only while HEAD is still its parent"))
 	linear := &cobra.Command{Use: "linear", Short: "Acknowledge observed child completion (never calls Linear)"}
 	linear.AddCommand(nextMutation("ack", "ack", "Acknowledge a completed Linear state after saving and reading the child"))
+	trial := &cobra.Command{Use: "trial", Short: "Record the user trial after contributions, before verification"}
+	trial.AddCommand(nextMutation("record", "trial-record", "Record stack readiness and the user's tested/declined response (static: not-applicable)"))
 	verification := &cobra.Command{Use: "verification", Short: "Record final QA and seal the verified HEAD"}
-	verification.AddCommand(nextMutation("save", "verification-save", "Save QA evidence and the complete findings registry"), nextMutation("complete", "verification-complete", "Require all promises, tests, captures and accepted corrections complete"), nextMutation("reopen", "verification-reopen", "Return to QA before changing an attested branch"))
+	verification.AddCommand(nextMutation("save", "verification-save", "Save QA evidence and the complete findings registry"), nextMutation("complete", "verification-complete", "Require QA complete; keep evidenced deployment-only criteria explicitly unverified"), nextMutation("reopen", "verification-reopen", "Return to QA before changing an attested branch"))
 	repair := &cobra.Command{Use: "repair", Short: "Integrate targeted root corrections before the PR"}
 	repair.AddCommand(nextMutation("prepare", "repair-prepare", "Prepare a tested repair for named findings"), nextMutation("finish", "repair-finish", "Prove and integrate the prepared repair commit"), nextMutation("cancel", "repair-cancel", "Cancel an uncommitted repair intent"))
 	delivery := &cobra.Command{Use: "delivery", Short: "Fence delivery on the verified SHA and one PR"}
 	delivery.AddCommand(nextMutation("start", "delivery-start", "Require the delivery gate before pushing"), nextMutation("observe", "delivery-observe", "Record unmodified gh pr view JSON"), nextMutation("check", "delivery-check", "Require current PR identity and green CI before merge"), nextMutation("complete", "delivery-complete", "Record a confirmed merge with green CI"))
 	suite := &cobra.Command{Use: "suite", Short: "Read and publish only explicitly deferred or manual actions"}
 	suite.AddCommand(nextRead("show"), nextMutation("publish", "suite-publish", "Record the published suite reference"))
-	command.AddCommand(campaign, lease, plan, contribution, integration, linear, verification, repair, delivery, suite, nextRead("events"))
+	command.AddCommand(campaign, lease, plan, contribution, integration, linear, trial, verification, repair, delivery, suite, nextRead("events"))
 	for _, group := range command.Commands() {
 		if group.HasSubCommands() {
 			group.Args = cobra.NoArgs
@@ -97,6 +99,9 @@ func nextMutation(use, action, short string) *cobra.Command {
 			case "prepare":
 				r.Evidence = &next.Evidence{}
 				err = next.DecodeFile(from, r.Evidence)
+			case "trial-record":
+				r.Trial = &next.UserTrial{}
+				err = next.DecodeFile(from, r.Trial)
 			case "verification-save":
 				r.Verification = &next.Verification{}
 				err = next.DecodeFile(from, r.Verification)
@@ -136,7 +141,7 @@ func nextMutation(use, action, short string) *cobra.Command {
 		flag(&r.Token, "token", "current lease token (required)", true)
 	}
 	switch action {
-	case "start", "plan", "prepare", "verification-save", "repair-prepare", "delivery-observe":
+	case "start", "plan", "prepare", "trial-record", "verification-save", "repair-prepare", "delivery-observe":
 		flag(&from, "from", "strict staging JSON file (required; see docs/atelier-next.md)", true)
 	case "open":
 		flag(&r.Ticket, "ticket", "exact contribution identifier (required)", true)

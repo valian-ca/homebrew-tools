@@ -110,24 +110,15 @@ func stagedTree(ctx context.Context, cwd string) (string, error) {
 
 func proveIntegration(ctx context.Context, cwd, head string, i *Integration) error {
 	if head == i.Parent {
-		return fmt.Errorf("%w: no commit yet; use the recorded trailer and prepared tree", ErrReconcile)
+		return fmt.Errorf("%w: no commit yet; commit the prepared tree", ErrReconcile)
 	}
-	value, err := git(ctx, cwd, "show", "-s", "--format=%P%n%T%n%B", head)
+	value, err := git(ctx, cwd, "show", "-s", "--format=%P%n%T", head)
 	if err != nil {
 		return err
 	}
-	parts := strings.SplitN(value, "\n", 3)
-	if len(parts) != 3 || parts[0] != i.Parent || parts[1] != i.Tree {
+	parts := strings.Split(value, "\n")
+	if len(parts) != 2 || parts[0] != i.Parent || parts[1] != i.Tree {
 		return fmt.Errorf("%w: HEAD must be one non-merge commit with the prepared parent and tree", ErrReconcile)
-	}
-	count := 0
-	for _, line := range strings.Split(parts[2], "\n") {
-		if line == i.Trailer {
-			count++
-		}
-	}
-	if count != 1 {
-		return fmt.Errorf("%w: HEAD must contain the exact integration trailer once", ErrReconcile)
 	}
 	return cleanCheckout(ctx, cwd)
 }

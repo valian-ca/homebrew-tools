@@ -19,10 +19,25 @@ type FinalChecks struct {
 	NoVisualReason string   `json:"noVisualReason,omitempty"`
 }
 
+type UserTrial struct {
+	Head                string `json:"head"`
+	Response            string `json:"response"`
+	Reference           string `json:"reference"`
+	Readiness           string `json:"readiness,omitempty"`
+	NotApplicableReason string `json:"notApplicableReason,omitempty"`
+}
+
+type PostDeployment struct {
+	Reason    string `json:"reason"`
+	Trigger   string `json:"trigger"`
+	FindingID string `json:"findingId"`
+}
+
 type Check struct {
-	Name      string `json:"name"`
-	Status    string `json:"status"`
-	Reference string `json:"reference"`
+	Name           string          `json:"name"`
+	Status         string          `json:"status"`
+	Reference      string          `json:"reference"`
+	PostDeployment *PostDeployment `json:"postDeployment,omitempty"`
 }
 
 type Finding struct {
@@ -55,11 +70,13 @@ type Verification struct {
 }
 
 type RepairRequest struct {
+	Kind       string   `json:"kind,omitempty"`
 	FindingIDs []string `json:"findingIds"`
 	Evidence   Evidence `json:"evidence"`
 }
 
 type Repair struct {
+	Kind        string      `json:"kind,omitempty"`
 	FindingIDs  []string    `json:"findingIds"`
 	Integration Integration `json:"integration"`
 }
@@ -108,9 +125,54 @@ func Suite(c *Campaign) (SuiteView, error) {
 	return result, nil
 }
 
+func validateTrial(c *Campaign) error {
+	t := c.Trial
+	if t == nil || c.Plan == nil || c.Plan.FinalChecks == nil || len(c.Contributions) == 0 || !textOK(t.Reference) {
+		return fmt.Errorf("%w: record the user trial before verification", ErrInvalid)
+	}
+	last := c.Contributions[len(c.Contributions)-1].Integration
+	known := last != nil && t.Head == last.Commit && last.Commit != ""
+	for _, repair := range c.Repairs {
+		if repair.Integration.Commit != "" && t.Head == repair.Integration.Commit {
+			known = true
+		}
+	}
+	if !known {
+		return fmt.Errorf("%w: trial must attest a recorded integrated HEAD", ErrInvalid)
+	}
+	switch t.Response {
+	case "tested", "declined":
+		if !textOK(t.Readiness) || t.NotApplicableReason != "" {
+			return fmt.Errorf("%w: ready stack and actual user response required", ErrInvalid)
+		}
+	case "not-applicable":
+		if c.Plan.FinalChecks.Visual || len(c.Plan.FinalChecks.Surfaces) != 0 || !textOK(t.NotApplicableReason) || t.Readiness != "" {
+			return fmt.Errorf("%w: only a static campaign may omit the app trial", ErrInvalid)
+		}
+	default:
+		return fmt.Errorf("%w: user response must be tested or declined, not silence", ErrInvalid)
+	}
+	return nil
+}
+
+func recordTrial(ctx context.Context, c *Campaign, trial *UserTrial) error {
+	if c.State != "awaiting-trial" || trial == nil || trial.Head != c.ExpectedHead {
+		return ErrInvalid
+	}
+	if err := cleanCheckout(ctx, c.Checkout.Worktree); err != nil {
+		return err
+	}
+	c.Trial = trial
+	if err := validateTrial(c); err != nil {
+		return err
+	}
+	c.State = "verifying"
+	return nil
+}
+
 func finalState(state string) bool {
 	switch state {
-	case "verifying", "verified", "delivering", "pr-open", "delivered":
+	case "awaiting-trial", "verifying", "verified", "delivering", "pr-open", "delivered":
 		return true
 	}
 	return false
@@ -137,14 +199,36 @@ func validateFinalChecks(f *FinalChecks) error {
 	return nil
 }
 
-func checkCoverage(required []string, actual []Check) error {
+func checkCoverage(required []string, actual []Check, findings []Finding, allowPostDeployment bool) error {
 	if len(actual) != len(required) {
 		return fmt.Errorf("%w: coverage must match planned checks", ErrInvalid)
 	}
 	seen := map[string]bool{}
 	for _, c := range actual {
-		if c.Status != "pass" || !textOK(c.Reference) || seen[c.Name] {
-			return fmt.Errorf("%w: check missing, duplicated or not passing", ErrInvalid)
+		if !textOK(c.Reference) || seen[c.Name] {
+			return fmt.Errorf("%w: check missing evidence or duplicated", ErrInvalid)
+		}
+		switch c.Status {
+		case "pass":
+			if c.PostDeployment != nil {
+				return fmt.Errorf("%w: a post-deployment check is not a pass", ErrInvalid)
+			}
+		case "post-deployment":
+			p := c.PostDeployment
+			if !allowPostDeployment || p == nil || !textOK(p.Reason) || !textOK(p.Trigger) {
+				return fmt.Errorf("%w: only deployment-only criteria with justification may remain unverified", ErrInvalid)
+			}
+			linked := false
+			for _, f := range findings {
+				if f.ID == p.FindingID && f.Class == "manual" && f.Status == "deferred" && f.Trigger == p.Trigger && f.Reference == c.Reference {
+					linked = true
+				}
+			}
+			if !linked {
+				return fmt.Errorf("%w: deployment-only criterion needs a matching manual suite entry", ErrInvalid)
+			}
+		default:
+			return fmt.Errorf("%w: check not passing or reserved for post-deployment", ErrInvalid)
 		}
 		seen[c.Name] = true
 	}
@@ -205,6 +289,9 @@ func validateVerification(c *Campaign) error {
 	if err := validateFinalChecks(c.Plan.FinalChecks); err != nil {
 		return err
 	}
+	if err := validateTrial(c); err != nil {
+		return err
+	}
 	if v == nil || v.Head != c.ExpectedHead || v.PlanRevision != c.Plan.Revision || !textOK(v.Reference) || !v.Review.Independent || !textOK(v.Review.Reference) {
 		return fmt.Errorf("%w: current HEAD/plan and independent final review required", ErrInvalid)
 	}
@@ -219,11 +306,11 @@ func validateVerification(c *Campaign) error {
 		}
 	}
 	f := c.Plan.FinalChecks
-	for _, pair := range []struct {
+	for index, pair := range []struct {
 		required []string
 		actual   []Check
 	}{{f.Criteria, v.Criteria}, {f.Tests, v.Tests}, {f.Surfaces, v.Surfaces}} {
-		if err := checkCoverage(pair.required, pair.actual); err != nil {
+		if err := checkCoverage(pair.required, pair.actual, v.Findings, index == 0); err != nil {
 			return err
 		}
 	}
@@ -263,6 +350,9 @@ func saveVerification(c *Campaign, v *Verification) error {
 		return err
 	}
 	if c.Verification != nil {
+		if v.Reference != c.Verification.Reference {
+			return fmt.Errorf("%w: extend the campaign's verification document; do not replace it", ErrInvalid)
+		}
 		next := map[string]Finding{}
 		for _, f := range v.Findings {
 			next[f.ID] = f
@@ -286,10 +376,20 @@ func repairPrepare(ctx context.Context, c *Campaign, r *RepairRequest, out *Rece
 	if c.State != "verifying" || r == nil || !namesValid(r.FindingIDs, true) || c.Verification == nil {
 		return ErrInvalid
 	}
+	ciRounds := 0
 	for _, prior := range c.Repairs {
 		if prior.Integration.Commit == "" {
 			return ErrReconcile
 		}
+		if prior.Kind == "ci" {
+			ciRounds++
+		}
+	}
+	if r.Kind != "" && r.Kind != "ci" {
+		return fmt.Errorf("%w: repair kind must be empty (QA) or ci", ErrInvalid)
+	}
+	if r.Kind == "ci" && (ciRounds >= 3 || c.Delivery == nil || c.Delivery.PR == nil || c.Delivery.PR.State != "OPEN") {
+		return fmt.Errorf("%w: CI plumbing repairs require an open campaign PR and at most three rounds", ErrInvalid)
 	}
 	for _, id := range r.FindingIDs {
 		found := false
@@ -320,9 +420,9 @@ func repairPrepare(ctx context.Context, c *Campaign, r *RepairRequest, out *Rece
 		return ErrInvalid
 	}
 	id := ulid.New()
-	i := Integration{ID: id, Parent: c.ExpectedHead, Tree: tree, Trailer: "Atelier-Next-Integration: " + id, Evidence: r.Evidence}
-	c.Repairs = append(c.Repairs, Repair{FindingIDs: r.FindingIDs, Integration: i})
-	out.IntegrationID, out.Trailer = id, i.Trailer
+	i := Integration{ID: id, Parent: c.ExpectedHead, Tree: tree, Evidence: r.Evidence}
+	c.Repairs = append(c.Repairs, Repair{Kind: r.Kind, FindingIDs: r.FindingIDs, Integration: i})
+	out.IntegrationID = id
 	return nil
 }
 
@@ -458,6 +558,8 @@ func ciGreen(p *PullRequest) bool {
 func finalMutation(ctx context.Context, c *Campaign, r Request, head string, out *Receipt) (string, string, error) {
 	event, skill := "atelier-next:campaign-updated", "verification"
 	switch r.Action {
+	case "trial-record":
+		return event, "realisation", recordTrial(ctx, c, r.Trial)
 	case "verification-save":
 		return event, skill, saveVerification(c, r.Verification)
 	case "verification-complete":

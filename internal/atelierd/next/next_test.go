@@ -174,7 +174,7 @@ func (f *fixture) prepare() Receipt {
 
 func (f *fixture) commit(prepared Receipt) string {
 	f.t.Helper()
-	f.run(f.cwd, "commit", "-m", "feat: integrate contribution", "-m", prepared.Trailer)
+	f.run(f.cwd, "commit", "-m", "feat: integrate contribution")
 	return f.run(f.cwd, "rev-parse", "HEAD")
 }
 
@@ -218,7 +218,7 @@ func TestStandaloneLifecycleAndLostResponses(t *testing.T) {
 	}
 	f.finish(prepared)
 	c = f.status()
-	if c.State != "verifying" || c.ExpectedHead != sha || c.Contributions[0].Linear.Pending {
+	if c.State != "awaiting-trial" || c.ExpectedHead != sha || c.Contributions[0].Linear.Pending {
 		t.Fatalf("standalone finish: %+v", c)
 	}
 	integrations := 0
@@ -271,7 +271,7 @@ func TestParentOrderAndPendingLinearSync(t *testing.T) {
 	prepared = f.prepare()
 	f.commit(prepared)
 	f.finish(prepared)
-	if f.status().State != "verifying" || !f.status().Contributions[1].Linear.Pending {
+	if f.status().State != "awaiting-trial" || !f.status().Contributions[1].Linear.Pending {
 		t.Fatal("parent must keep pending sync visible at verification entry")
 	}
 }
@@ -464,15 +464,13 @@ func TestEvidenceGatesAndCancel(t *testing.T) {
 }
 
 func TestIntegrationRejectsAmbiguousCommit(t *testing.T) {
-	for _, tc := range []string{"missing-trailer", "wrong-tree", "multiple-commits", "duplicate-trailer", "dirty-after-commit"} {
+	for _, tc := range []string{"wrong-tree", "multiple-commits", "merge-commit", "dirty-after-commit"} {
 		t.Run(tc, func(t *testing.T) {
 			f := setup(t, "standalone")
 			f.plan(rootTicket)
 			f.open(rootTicket)
 			prepared := f.prepare()
 			switch tc {
-			case "missing-trailer":
-				f.run(f.cwd, "commit", "-m", "feat: same tree without identity")
 			case "wrong-tree":
 				if err := os.WriteFile(filepath.Join(f.cwd, "extra"), []byte("extra"), 0o600); err != nil {
 					t.Fatal(err)
@@ -481,9 +479,12 @@ func TestIntegrationRejectsAmbiguousCommit(t *testing.T) {
 				f.commit(prepared)
 			case "multiple-commits":
 				f.commit(prepared)
-				f.run(f.cwd, "commit", "--allow-empty", "-m", "feat: another commit", "-m", prepared.Trailer)
-			case "duplicate-trailer":
-				f.run(f.cwd, "commit", "-m", "feat: duplicate", "-m", prepared.Trailer+"\n"+prepared.Trailer)
+				f.run(f.cwd, "commit", "--allow-empty", "-m", "feat: another commit")
+			case "merge-commit":
+				parent := f.status().ExpectedHead
+				other := f.run(f.cwd, "commit-tree", f.run(f.cwd, "rev-parse", "HEAD^{tree}"), "-m", "other root")
+				merge := f.run(f.cwd, "commit-tree", f.status().Contributions[0].Integration.Tree, "-p", parent, "-p", other, "-m", "merge")
+				f.run(f.cwd, "reset", "--hard", merge)
 			case "dirty-after-commit":
 				f.commit(prepared)
 				if err := os.WriteFile(filepath.Join(f.cwd, "extra"), []byte("extra"), 0o600); err != nil {
@@ -562,7 +563,7 @@ func TestOperationConflictsAndEventEnvelope(t *testing.T) {
 	c := f.status()
 	ids := map[string]bool{}
 	for n, e := range c.Events {
-		if e.Pipeline != Pipeline || e.Mode != "standalone" || e.CampaignID != f.id || e.RootTicketID != rootTicket.Identifier || e.TicketID != rootTicket.Identifier || e.SchemaVersion != 1 || e.Revision != n+1 || e.SessionID != "session-a" || ids[e.ID] {
+		if e.Pipeline != Pipeline || e.Mode != "standalone" || e.CampaignID != f.id || e.RootTicketID != rootTicket.Identifier || e.TicketID != rootTicket.Identifier || e.SchemaVersion != SchemaVersion || e.Revision != n+1 || e.SessionID != "session-a" || ids[e.ID] {
 			t.Fatalf("invalid event %+v", e)
 		}
 		ids[e.ID] = true
