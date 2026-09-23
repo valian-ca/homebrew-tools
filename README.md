@@ -83,7 +83,7 @@ leases from parallel sessions never double-book a device.
 
 ---
 
-## `atelierd next` (experimental, source development)
+## `atelierd next` (experimental, available since 0.17.0)
 
 A separate campaign book-keeper for Atelier Next: one branch/worktree per root,
 one writer lease, sequential contributions, recorded test/review evidence and
@@ -96,10 +96,12 @@ the dashboard requirements, without a promise of historical backfill; existing
 session/Forge telemetry is unchanged.
 
 ```sh
-go build -o /tmp/atelierd-next-dev ./cmd/atelierd
-/tmp/atelierd-next-dev next contract
-/tmp/atelierd-next-dev next --help
+brew upgrade valian-ca/tools/atelierd
+atelierd next contract
+atelierd next --help
 ```
+
+For a first install, use `brew install valian-ca/tools/atelierd`.
 
 Contract `3` / schema `2` implements campaign creation, planning, ownership,
 trailer-free parent/tree integration recovery, a ready-stack user-trial gate before
@@ -107,9 +109,11 @@ root QA, explicit unverified deployment-only criteria, bounded CI repairs, uniqu
 PR/report and suite registry. Old states are refused without silent migration.
 It validates caller attestations;
 the skills run tests, upload real captures and perform external mutations. This
-code is **not part of the old stable 0.16.0 release**.
+code ships in [atelierd 0.17.0](https://github.com/valian-ca/homebrew-tools/releases/tag/atelierd-0.17.0),
+not the old 0.16.0 release. Real business-ticket/LLM pilots remain necessary before
+replacing the existing pipeline.
 See [the CLI contract and examples](docs/atelier-next.md) for staging schemas,
-crash recovery, safety boundaries, tests and the pending 0.17.0 release sequence.
+crash recovery, safety boundaries and tests.
 
 ## Contributing
 

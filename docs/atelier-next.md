@@ -1,6 +1,6 @@
 # `atelierd next` — campaign contract 3 (schema 2)
 
-Atelier Next's independent campaign book-keeper. Target release: **atelierd 0.17.0**.
+Atelier Next's independent campaign book-keeper, shipped in **atelierd 0.17.0**.
 `next contract` prints `3`; the existing `forge contract` still prints `2`, with no
 changes to its commands, state, exit codes or event taxonomy.
 
@@ -10,7 +10,8 @@ go build -o /tmp/atelierd-next-dev ./cmd/atelierd
 /tmp/atelierd-next-dev next --help
 ```
 
-Use the development binary until the release is actually published. This CLI
+The commands above build an isolated development binary. The published version is
+available through `brew install|upgrade valian-ca/tools/atelierd`. This CLI
 **does not run tests, call Linear, take screenshots, commit, push or merge**. It
 validates and persists the caller's attestations and external observations. The
 six skills in `claude-plugins/plugins/atelier-next` perform those real operations.
@@ -317,7 +318,7 @@ spool/outbox or events command. Event types, Firestore shipment and retention wi
 defined with the actual dashboard requirements; there is no speculative collection or
 promise of historical backfill. Existing forge/skill/ship/session telemetry is untouched.
 
-Contract 3/schema 2 have never been published, so this removal keeps those versions.
+Telemetry was removed before the first publication of contract 3/schema 2 in 0.17.0.
 Old schemas and earlier experimental snapshots containing `events` are rejected, not
 silently rewritten or purged. Operational state still persists after completion: removing
 telemetry is not automatic cleanup of recovery evidence or idempotency receipts.
@@ -346,7 +347,8 @@ integrity without an event journal, and refusal of obsolete event-bearing snapsh
 These are technical simulations, not claims
 of completed business-ticket/LLM pilots. Run real pilots before replacing old Atelier.
 
-Release order: source PR and green checks/review, merge, tag `atelierd-0.17.0`, compute
-the actual GitHub tarball SHA, update/test the formula, then publish the plugin. Never
-label the old tarball as a new source release or invent a checksum. No daemon replacement
-is necessary to publish; users upgrade when ready.
+Release 0.17.0 is published as `atelierd-0.17.0`; the stable formula uses the actual
+GitHub archive checksum. For future releases: source PR and green checks/review, merge,
+tag the reviewed source, compute its tarball SHA, update/test the formula, then publish
+any dependent plugin. Never relabel an old tarball or invent a checksum. No daemon
+replacement is necessary to publish; users upgrade when ready.

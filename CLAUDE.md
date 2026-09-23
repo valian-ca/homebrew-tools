@@ -163,18 +163,18 @@ Next keeps operational state and idempotency receipts, not telemetry events, an 
 journal/outbox or an events command. Block resolutions and scope-decision references
 belong to that operational state, not a future dashboard. Event design, Firestore
 shipment and retention wait for actual dashboard requirements; no historical backfill
-is promised. Existing session/Forge telemetry is untouched. Contract 3/schema 2 are
-still unpublished and stay unchanged for this removal; obsolete experimental snapshots
+is promised. Existing session/Forge telemetry is untouched. Speculative telemetry was
+removed before publishing contract 3/schema 2 in 0.17.0; obsolete experimental snapshots
 with events are refused without automatic migration or deletion. Tests use temporary
 repositories and must never run Git against the user's checkout. Run the full Go suite,
 vet, and race tests for Next/cmds when changing the ownership or integration rules.
 
-The target source release is 0.17.0. Its stable formula URL and checksum must come
-from the actual tagged tarball after publication (per the release process above),
-never from a guessed SHA or a version bump over the old tarball. The accompanying
-formula change adds the HEAD contract test; the stable version bump is deferred to
-that release step. The plugin skills remain gated until a compatible binary is
-published; no local daemon replacement or restart is implied by implementing Next.
+Contract 3/schema 2 ship in 0.17.0. The stable formula URL and checksum come from the
+published tagged tarball (per the release process above), never a guessed SHA or a
+version bump over an old tarball. Both stable and HEAD formula tests assert Next
+contract 3 and Forge contract 2. Future incompatible CLI/schema changes must update
+the contract and consumers together, publishing the binary before the plugin.
+No local daemon replacement or restart is implied by implementing Next.
 
 ## Nerd Font glyphs
 
