@@ -49,6 +49,9 @@ const (
 	// updateTimeout caps the brew update+upgrade run; the upgrade compiles from
 	// source, so it must be generous.
 	updateTimeout = 10 * time.Minute
+	// relaunchGrace is how long the daemon waits for launchd's kickstart
+	// SIGTERM before falling back to exiting on its own for a KeepAlive respawn.
+	relaunchGrace = 60 * time.Second
 	// refreshPollInterval is how often the refresher re-checks the wall-clock
 	// expiry of the idToken. We poll instead of using one long time.After()
 	// because Go timers track the monotonic clock, which is frozen during
@@ -162,7 +165,8 @@ func runRun(cmd *cobra.Command, _ []string) error {
 	go func() { defer wg.Done(); credentialsWatcherLoop(rootCtx, state) }()
 	go func() { defer wg.Done(); sessionsManagerLoop(rootCtx, state) }()
 	go func() { defer wg.Done(); sessionStoreWatcherLoop(rootCtx, state) }()
-	go func() { defer wg.Done(); updaterLoop(rootCtx, state, cancel) }()
+	restart := func() { restartOntoNewBinary(rootCtx, updater.NewRelauncher(), cancel, relaunchGrace) }
+	go func() { defer wg.Done(); updaterLoop(rootCtx, state, restart) }()
 	go func() { defer wg.Done(); stateGCLoop(rootCtx, state) }()
 	go func() { defer wg.Done(); sessionEndJanitorLoop(rootCtx, state) }()
 
@@ -868,8 +872,8 @@ func handleCredentialsChange(state *runState) {
 // brew at startup (deduped against the persisted last-check time) and every
 // 24h after. It never inspects auth state — an associate in auth-lost mode
 // still receives updates. When a newer version is installed, requestRestart
-// routes through the normal shutdown path; the process exits and launchd's
-// keep_alive respawns the new binary.
+// (restartOntoNewBinary in production) gets launchd to replace this process
+// with the new binary.
 func updaterLoop(ctx context.Context, state *runState, requestRestart func()) {
 	if Version == devVersion {
 		atelierlog.Info("updater: dev build, auto-update disabled")
@@ -931,4 +935,37 @@ func runUpdateCheck(ctx context.Context, state *runState, up upgrader, requestRe
 
 	atelierlog.Info("updater: new version installed, restarting", "from", Version, "to", installed)
 	requestRestart()
+}
+
+// relauncher is the subset of *updater.Relauncher restartOntoNewBinary needs,
+// declared as an interface so tests can drive it with a fake.
+type relauncher interface {
+	Relaunch(ctx context.Context) (string, error)
+}
+
+// restartOntoNewBinary replaces the running daemon with the freshly installed
+// binary. Preferred path: an explicit `launchctl kickstart -k` on our own job,
+// whose SIGTERM flows through the normal shutdown path and whose respawn does
+// not depend on launchd scheduling a KeepAlive relaunch — after a Homebrew
+// upgrade a job was observed loaded with `runs = 0` and a pending speculative
+// spawn that never ran. Fallback (not launchd-managed, launchctl unavailable,
+// or no SIGTERM within grace): exit via cancel and rely on KeepAlive, as before.
+func restartOntoNewBinary(ctx context.Context, r relauncher, cancel func(), grace time.Duration) {
+	target, err := r.Relaunch(ctx)
+	if err != nil {
+		atelierlog.Warn("updater: launchd kickstart unavailable, exiting for a KeepAlive respawn", "err", err.Error())
+		cancel()
+		return
+	}
+	atelierlog.Info("updater: asked launchd to restart the job", "target", target)
+	go func() {
+		t := time.NewTimer(grace)
+		defer t.Stop()
+		select {
+		case <-ctx.Done():
+		case <-t.C:
+			atelierlog.Warn("updater: no SIGTERM from launchd kickstart, exiting for a KeepAlive respawn", "target", target, "grace", grace.String())
+			cancel()
+		}
+	}()
 }
