@@ -109,20 +109,56 @@ var errStatusFail = fmt.Errorf("atelierd status: at least one check failed")
 func IsStatusFail(err error) bool { return err != nil && err.Error() == errStatusFail.Error() }
 
 func checkVersion(s *status.File) checkResult {
-	version := Version
-	if s != nil && s.Version != "" {
-		version = s.Version
+	return versionCheck(s, Version, time.Now())
+}
+
+// versionCheck reports the daemon's version next to the version of this
+// binary. The two differ after a `brew upgrade` until the daemon restarts, and
+// the status file keeps the last daemon's version after it stops — reporting
+// that alone once made a daemon stopped for a day look healthy on the old
+// version. A stale or mismatched daemon is a WARN; the watcher and heartbeat
+// rows carry the FAIL-worthy signal.
+func versionCheck(s *status.File, binary string, now time.Time) checkResult {
+	const hint = "start it: brew services restart atelierd — if it stays stopped: launchctl kickstart -k gui/$(id -u)/sh.brew.atelierd"
+	if s == nil || s.Version == "" {
+		note := binary + " (daemon has not written a status file yet)"
+		if binary == devVersion {
+			note = binary + " (dev build — auto-update disabled; no status file yet)"
+		}
+		return checkResult{name: "Version", tier: tierOK, note: note}
 	}
-	if version == devVersion {
-		return checkResult{name: "Version", tier: tierOK, note: version + " (dev build — auto-update disabled)"}
+
+	daemon := s.Version
+	if age := now.Sub(s.LastTickAt); s.LastTickAt.IsZero() || age >= tickStaleAfter {
+		seen := "never ticked"
+		if !s.LastTickAt.IsZero() {
+			seen = "last seen " + age.Round(time.Second).String() + " ago"
+		}
+		return checkResult{
+			name: "Version",
+			tier: tierWarn,
+			note: fmt.Sprintf("daemon not running (status file from %s, %s); installed binary %s — %s", daemon, seen, binary, hint),
+		}
 	}
-	if s == nil || s.LastUpdateCheckAt.IsZero() {
-		return checkResult{name: "Version", tier: tierOK, note: version + " (no update check yet)"}
+
+	if daemon != binary && daemon != devVersion && binary != devVersion {
+		return checkResult{
+			name: "Version",
+			tier: tierWarn,
+			note: fmt.Sprintf("daemon runs %s but installed binary is %s — it restarts onto it after its next update check, or now with: brew services restart atelierd", daemon, binary),
+		}
+	}
+
+	if daemon == devVersion {
+		return checkResult{name: "Version", tier: tierOK, note: daemon + " (dev build — auto-update disabled)"}
+	}
+	if s.LastUpdateCheckAt.IsZero() {
+		return checkResult{name: "Version", tier: tierOK, note: daemon + " (no update check yet)"}
 	}
 	return checkResult{
 		name: "Version",
 		tier: tierOK,
-		note: fmt.Sprintf("%s (last update check %s ago)", version, time.Since(s.LastUpdateCheckAt).Round(time.Second)),
+		note: fmt.Sprintf("%s (last update check %s ago)", daemon, now.Sub(s.LastUpdateCheckAt).Round(time.Second)),
 	}
 }
 

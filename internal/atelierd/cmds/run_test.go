@@ -242,39 +242,95 @@ func TestRunStateMarkUpdateCheck(t *testing.T) {
 	}
 }
 
-func TestCheckVersion(t *testing.T) {
+func TestVersionCheck(t *testing.T) {
 	t.Parallel()
+	now := time.Date(2026, 9, 24, 19, 0, 0, 0, time.UTC)
+	fresh := now.Add(-10 * time.Second)
 	cases := []struct {
 		name     string
 		file     *status.File
-		contains string
+		binary   string
+		tier     checkTier
+		contains []string
 	}{
 		{
-			name:     "checked recently",
-			file:     &status.File{Version: "0.7.0", LastUpdateCheckAt: time.Now().Add(-3 * time.Hour)},
-			contains: "last update check",
+			name:     "running, same version, checked recently",
+			file:     &status.File{Version: "0.18.0", LastTickAt: fresh, LastUpdateCheckAt: now.Add(-3 * time.Hour)},
+			binary:   "0.18.0",
+			tier:     tierOK,
+			contains: []string{"0.18.0", "last update check 3h0m0s ago"},
 		},
 		{
-			name:     "never checked",
-			file:     &status.File{Version: "0.7.0"},
-			contains: "no update check yet",
+			name:     "running, never checked",
+			file:     &status.File{Version: "0.18.0", LastTickAt: fresh},
+			binary:   "0.18.0",
+			tier:     tierOK,
+			contains: []string{"no update check yet"},
 		},
 		{
-			name:     "dev build",
-			file:     &status.File{Version: "dev"},
-			contains: "dev build",
+			name:     "running dev build",
+			file:     &status.File{Version: "dev", LastTickAt: fresh},
+			binary:   "dev",
+			tier:     tierOK,
+			contains: []string{"dev build"},
+		},
+		{
+			// The incident: brew upgraded the binary, the old daemon was stopped
+			// and the new one never spawned, so the status file kept 0.16.0.
+			name:     "stopped daemon left an old status file",
+			file:     &status.File{Version: "0.16.0", LastTickAt: now.Add(-25 * time.Hour), LastUpdateCheckAt: now.Add(-49 * time.Hour)},
+			binary:   "0.18.0",
+			tier:     tierWarn,
+			contains: []string{"daemon not running", "status file from 0.16.0", "last seen 25h0m0s ago", "installed binary 0.18.0", "launchctl kickstart"},
+		},
+		{
+			name:     "stale tick at exactly the threshold",
+			file:     &status.File{Version: "0.18.0", LastTickAt: now.Add(-tickStaleAfter)},
+			binary:   "0.18.0",
+			tier:     tierWarn,
+			contains: []string{"daemon not running"},
+		},
+		{
+			name:     "status file without a tick",
+			file:     &status.File{Version: "0.18.0"},
+			binary:   "0.18.0",
+			tier:     tierWarn,
+			contains: []string{"never ticked"},
+		},
+		{
+			name:     "running daemon older than installed binary",
+			file:     &status.File{Version: "0.17.1", LastTickAt: fresh},
+			binary:   "0.18.0",
+			tier:     tierWarn,
+			contains: []string{"daemon runs 0.17.1", "installed binary is 0.18.0"},
+		},
+		{
+			name:     "running release daemon, dev binary on PATH",
+			file:     &status.File{Version: "0.18.0", LastTickAt: fresh},
+			binary:   "dev",
+			tier:     tierOK,
+			contains: []string{"0.18.0"},
+		},
+		{
+			name:     "no status file",
+			file:     nil,
+			binary:   "0.18.0",
+			tier:     tierOK,
+			contains: []string{"0.18.0", "has not written a status file"},
 		},
 	}
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := checkVersion(tc.file)
-			if got.tier != tierOK {
-				t.Fatalf("checkVersion tier = %v, want OK (informational)", got.tier)
+			got := versionCheck(tc.file, tc.binary, now)
+			if got.tier != tc.tier {
+				t.Fatalf("tier = %v, want %v (note %q)", got.tier, tc.tier, got.note)
 			}
-			if !strings.Contains(got.note, tc.contains) {
-				t.Fatalf("checkVersion note %q does not contain %q", got.note, tc.contains)
+			for _, want := range tc.contains {
+				if !strings.Contains(got.note, want) {
+					t.Fatalf("note %q does not contain %q", got.note, want)
+				}
 			}
 		})
 	}
@@ -342,5 +398,59 @@ func TestUpdaterLoopDevExemption(t *testing.T) {
 	updaterLoop(context.Background(), state, func() { restarted = true })
 	if restarted {
 		t.Fatal("dev build must not request a restart")
+	}
+}
+
+type fakeRelauncher struct {
+	target string
+	err    error
+	calls  int
+}
+
+func (f *fakeRelauncher) Relaunch(context.Context) (string, error) {
+	f.calls++
+	return f.target, f.err
+}
+
+func TestRestartOntoNewBinary_FallsBackToExitWhenNotLaunchdManaged(t *testing.T) {
+	t.Parallel()
+	r := &fakeRelauncher{err: errors.New("not managed")}
+	cancelled := make(chan struct{})
+	restartOntoNewBinary(context.Background(), r, func() { close(cancelled) }, time.Hour)
+	select {
+	case <-cancelled:
+	default:
+		t.Fatal("a failed relaunch must cancel immediately so KeepAlive respawns the daemon")
+	}
+}
+
+func TestRestartOntoNewBinary_WaitsForLaunchdSIGTERM(t *testing.T) {
+	t.Parallel()
+	ctx, stop := context.WithCancel(context.Background())
+	r := &fakeRelauncher{target: "gui/501/sh.brew.atelierd"}
+	cancelled := make(chan struct{}, 1)
+	restartOntoNewBinary(ctx, r, func() { cancelled <- struct{}{} }, 50*time.Millisecond)
+	if r.calls != 1 {
+		t.Fatalf("Relaunch called %d times, want 1", r.calls)
+	}
+	// launchd's SIGTERM cancels the root context before the grace elapses.
+	stop()
+	time.Sleep(150 * time.Millisecond)
+	select {
+	case <-cancelled:
+		t.Fatal("must not self-cancel once launchd has begun the shutdown")
+	default:
+	}
+}
+
+func TestRestartOntoNewBinary_GraceFallback(t *testing.T) {
+	t.Parallel()
+	r := &fakeRelauncher{target: "gui/501/sh.brew.atelierd"}
+	cancelled := make(chan struct{})
+	restartOntoNewBinary(context.Background(), r, func() { close(cancelled) }, 20*time.Millisecond)
+	select {
+	case <-cancelled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("without a SIGTERM within grace the daemon must exit for a KeepAlive respawn")
 	}
 }
