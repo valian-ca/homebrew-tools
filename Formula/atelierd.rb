@@ -1,8 +1,8 @@
 class Atelierd < Formula
   desc "Atelier dashboard daemon - local bridge to the cloud event stream"
   homepage "https://github.com/valian-ca/homebrew-tools"
-  url "https://github.com/valian-ca/homebrew-tools/archive/refs/tags/atelierd-0.18.0.tar.gz"
-  sha256 "4aff7f2d25e0fadef3a574feb0c1926920536cc182fbd4ab535fb797771850f8"
+  url "https://github.com/valian-ca/homebrew-tools/archive/refs/tags/atelierd-0.18.1.tar.gz"
+  sha256 "05d91c3286112462ebf9ae3d8ebaed86d7aa4667af414847951f091de738dbac"
   license "MIT"
   head "https://github.com/valian-ca/homebrew-tools.git", branch: "main"
 
