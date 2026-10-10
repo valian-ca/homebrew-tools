@@ -599,3 +599,38 @@ func TestRunStateGC_RemovesOrphansKeepsLive(t *testing.T) {
 		t.Errorf("orphan 0.18.x subagent state dir should be pruned, got err=%v", err)
 	}
 }
+
+// A session-start that moves the session to another transcript while a read
+// is in flight must not be undone by the reader's save.
+func TestReadSessionTree_DoesNotUndoAConcurrentReRegistration(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	oldPath := filepath.Join(dir, "cs-1.jsonl")
+	newPath := filepath.Join(dir, "moved", "cs-1.jsonl")
+	writeJSONL(t, oldPath, lineAt("user", recentMinute(4)))
+	writeJSONL(t, newPath, lineAt("user", recentMinute(2)))
+	mustRegister(t, "cs-1", oldPath)
+
+	reRegistered := false
+	readHook = func() {
+		if !reRegistered {
+			reRegistered = true
+			mustRegister(t, "cs-1", newPath)
+		}
+	}
+	t.Cleanup(func() { readHook = nil })
+	mustRead(t, "cs-1")
+	readHook = nil
+
+	s, err := transcript.LoadState("cs-1")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if s.JSONLPath != newPath {
+		t.Fatalf("JSONLPath = %q, want the re-registered %q", s.JSONLPath, newPath)
+	}
+	mustRead(t, "cs-1")
+	if !hasEnvelope(t, transcript.ActivityMinuteID("cs-1", recentMinute(2))) {
+		t.Error("the new transcript was not read after the re-registration")
+	}
+}

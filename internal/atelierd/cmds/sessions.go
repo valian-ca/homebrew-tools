@@ -44,6 +44,10 @@ var stateGCInterval = 24 * time.Hour
 // quarantined.
 const maxHeartbeatSkew = 5 * time.Minute
 
+// readHook runs between a tree read and its state save. Test-only seam for
+// interleaving a concurrent `atelierd emit` registration.
+var readHook func()
+
 func isSessionActive(s *transcript.State, now time.Time) bool {
 	return now.Sub(s.LastActivityAt) < sessionIdleTimeout
 }
@@ -219,6 +223,9 @@ func readSessionTree(ctx context.Context, claudeSessionID string) (*transcript.S
 		return state, nil
 	}
 
+	if readHook != nil {
+		readHook()
+	}
 	now := time.Now().UTC()
 	for _, env := range envs {
 		if env.TS != nil && env.TS.After(now.Add(maxHeartbeatSkew)) {
@@ -233,6 +240,16 @@ func readSessionTree(ctx context.Context, claudeSessionID string) (*transcript.S
 	}
 
 	state.LastActivityAt = now
+	if current, lerr := transcript.LoadState(claudeSessionID); lerr == nil && current.JSONLPath != state.JSONLPath {
+		// `atelierd emit` moved the session to another transcript during
+		// this read: keep its registration, whose offsets belong to the new
+		// file, and only add the minutes this read emitted.
+		for minute := range state.EmittedMinutes {
+			current.EmittedMinutes[minute] = true
+		}
+		current.LastActivityAt = now
+		state = current
+	}
 	if serr := transcript.SaveState(state); serr != nil {
 		atelierlog.Warn("session-reader: save state failed", "session", claudeSessionID, "err", serr.Error())
 	}

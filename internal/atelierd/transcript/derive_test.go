@@ -173,3 +173,11 @@ func TestDerive_ForgottenMinuteCanEmitAgain(t *testing.T) {
 		t.Fatalf("forgotten minute: want 1 heartbeat, got %d", len(again))
 	}
 }
+
+func TestDerive_OffsetTimestampMapsToItsUTCMinute(t *testing.T) {
+	t.Parallel()
+	envs := Derive(newTestState(), []byte(`{"type":"user","timestamp":"2026-10-10T12:03:42.5+02:00"}`), fakeClock(time.Now()), fakeULID())
+	if len(envs) != 1 || envs[0].ULID != "cs-test_202610101003" {
+		t.Fatalf("envelopes = %#v, want cs-test_202610101003", envs)
+	}
+}
