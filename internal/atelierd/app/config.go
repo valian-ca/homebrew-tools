@@ -1,8 +1,3 @@
-// Package app holds build-time configuration for the atelierd daemon.
-//
-// All values here are public — same as those shipped in the valian-dashboards
-// frontend bundle. They live as Go consts (rather than ldflags-stamped vars)
-// because they don't need per-build override; only the version is stamped.
 package app
 
 const (
@@ -55,6 +50,15 @@ func UserDocumentURL(uid string) string {
 	return FirestoreBaseURL + "/users/" + uid
 }
 
-// CommitURL returns the Firestore REST :commit endpoint, which supports
-// transforms (used for serverTimestamp on heartbeat).
-const CommitURL = "https://firestore.googleapis.com/v1/projects/" + FirebaseProjectID + "/databases/(default)/documents:commit"
+// commitURL is the Firestore REST :commit endpoint, which supports transforms
+// (used for serverTimestamp on heartbeat). A var so tests can point the
+// shipper at a fake Firestore.
+var commitURL = "https://firestore.googleapis.com/v1/projects/" + FirebaseProjectID + "/databases/(default)/documents:commit"
+
+func CommitURL() string { return commitURL }
+
+func SetCommitURLForTest(url string) (restore func()) {
+	prev := commitURL
+	commitURL = url
+	return func() { commitURL = prev }
+}

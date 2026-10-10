@@ -58,7 +58,7 @@ func sessionStoreWatcherLoop(ctx context.Context, _ *runState) {
 		case <-tick.C:
 			addStoreWatches(watcher, storeRoot)
 			reconcileSessionStore(storeRoot)
-		case ev, ok := <-watcherEventsRaw(watcher):
+		case ev, ok := <-watcherEvents(watcher):
 			if !ok {
 				watcher = nil
 				continue
@@ -122,10 +122,7 @@ func reconcileSessionStore(storeRoot string) {
 	}
 }
 
-// consumeStoreEntry derives the title event for one store entry and, when there
-// is one to emit, persists the new state BEFORE writing the envelope — the same
-// crash-safety order as the transcript watcher's consume(): a kill -9 in the
-// gap drops the event rather than risking a duplicate on restart.
+// State before envelope: a kill -9 in the gap drops the title event rather than duplicating it on restart.
 func consumeStoreEntry(entry sessionstore.Entry) {
 	state, err := sessionstore.LoadState(entry.CliSessionID)
 	if err != nil {

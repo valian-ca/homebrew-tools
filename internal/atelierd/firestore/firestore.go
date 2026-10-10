@@ -1,9 +1,3 @@
-// Package firestore is a thin REST + Bearer-idToken client for the Firestore
-// writes the daemon performs as the authenticated end user.
-//
-// We use REST rather than the Firestore Go SDK because the SDK assumes
-// Application Default Credentials and fights any attempt to authenticate as a
-// user; REST gives us total control with stdlib only.
 package firestore
 
 import (
@@ -20,8 +14,6 @@ import (
 	"github.com/valian-ca/homebrew-tools/internal/atelierd/app"
 )
 
-// Error wraps an HTTP error from Firestore REST, carrying the status so the
-// caller can distinguish auth-lost (401/403) from transient (5xx, network).
 type Error struct {
 	Status  int
 	Message string
@@ -43,15 +35,21 @@ func IsAuthLost(err error) bool {
 }
 
 // IsPermissionDenied reports whether err is a Firestore 403 PERMISSION_DENIED:
-// the token is valid but the write was rejected by security rules. The
-// canonical case is an /events/{ulid} doc that already exists — the rule allows
-// create but not update, so re-shipping a duplicate is denied.
+// the token is valid but the write was rejected by security rules.
 func IsPermissionDenied(err error) bool {
 	var fe *Error
 	if !errors.As(err, &fe) {
 		return false
 	}
 	return fe.Status == http.StatusForbidden
+}
+
+func IsAlreadyExists(err error) bool {
+	var fe *Error
+	if !errors.As(err, &fe) {
+		return false
+	}
+	return fe.Status == http.StatusConflict
 }
 
 // EventDoc is the shape persisted at /events/{ulid}. Mirrors EventZod in
@@ -66,8 +64,10 @@ type EventDoc struct {
 	Payload         map[string]any `json:"payload"`
 }
 
-// CommitEvents writes len(events) /events/{ulid} documents atomically via a
-// single :commit batch. Order is preserved.
+// CommitEvents creates len(events) /events/{ulid} documents atomically via a
+// single :commit batch. Order is preserved. Each write carries an
+// exists=false precondition so a doc already shipped fails with 409 before
+// rules evaluation, instead of a 403 indistinguishable from a real rejection.
 func CommitEvents(ctx context.Context, idToken string, events []*EventDoc) error {
 	if len(events) == 0 {
 		return nil
@@ -79,6 +79,7 @@ func CommitEvents(ctx context.Context, idToken string, events []*EventDoc) error
 				"name":   "projects/" + app.FirebaseProjectID + "/databases/(default)/documents/events/" + e.ULID,
 				"fields": encodeEventFields(e),
 			},
+			"currentDocument": map[string]any{"exists": false},
 		})
 	}
 	return commit(ctx, idToken, writes)
@@ -136,12 +137,13 @@ func PingUser(ctx context.Context, idToken, uid string) error {
 	return &Error{Status: resp.StatusCode, Message: string(raw)}
 }
 
+// REST rather than the Firestore Go SDK: the SDK assumes Application Default Credentials and fights authenticating as an end user.
 func commit(ctx context.Context, idToken string, writes []map[string]any) error {
 	body, err := json.Marshal(map[string]any{"writes": writes})
 	if err != nil {
 		return fmt.Errorf("marshal commit: %w", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, app.CommitURL, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, app.CommitURL(), bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("build commit request: %w", err)
 	}

@@ -190,9 +190,11 @@ func TestClassifyShipError(t *testing.T) {
 		// token must pause the daemon — this is the only path to auth-lost.
 		{"firestore 401 -> auth-lost", &firestore.Error{Status: http.StatusUnauthorized}, shipOutcomeAuthLost},
 		{"refresh token rejected -> auth-lost", &firebaseauth.AuthError{Status: http.StatusUnauthorized}, shipOutcomeAuthLost},
-		// A 403 is a permission error on this specific write (e.g. a duplicate
-		// /events doc) — it must be quarantined, never mistaken for auth loss.
+		// A 403 is a permission error on this specific write — it must be
+		// quarantined, never mistaken for auth loss.
 		{"firestore 403 -> quarantine", &firestore.Error{Status: http.StatusForbidden}, shipOutcomeQuarantine},
+		// A 409 is a doc already shipped: a success, never a quarantine.
+		{"firestore 409 -> already exists", &firestore.Error{Status: http.StatusConflict}, shipOutcomeAlreadyExists},
 		// Everything else is transient and retried with backoff.
 		{"firestore 500 -> transient", &firestore.Error{Status: http.StatusInternalServerError}, shipOutcomeTransient},
 		{"network error -> transient", errors.New("dial tcp: i/o timeout"), shipOutcomeTransient},

@@ -78,10 +78,11 @@ func NewRunCmd() *cobra.Command {
 Firestore /events/{ulid}. Refreshes the idToken before expiry. Writes a
 heartbeat to /users/{uid}.lastHeartbeat every 60s. Writes a status snapshot to
 ~/.atelier/status every 30s. Watches ~/.atelier/credentials and reloads on
-re-link without requiring brew services restart. Watches ~/.atelier/sessions/
-and tails the Claude Code transcript JSONL for each registered session,
-deriving hook:user-prompt-submit, hook:pre-tool-use, hook:post-tool-use, and
-hook:assistant-turn events into the outbox (cf. VAL-201). Watches the Claude
+re-link without requiring brew services restart. Reads the Claude Code
+transcripts of each session registered in ~/.atelier/sessions/ — the parent,
+its subagents and its Workflow agents — and queues one activity:minute
+heartbeat per session and UTC minute a transcript line was written, plus
+transcript:ai-title / transcript:custom-title on a title change. Watches the Claude
 Desktop session store and derives transcript:ai-title / transcript:custom-title
 events for sessions that never write a title into the transcript (cf. VAL-243).
 Checks for a newer published version via brew at startup and every 24h, installing
@@ -149,15 +150,12 @@ func runRun(cmd *cobra.Command, _ []string) error {
 		cancel()
 	}()
 
-	// Proactive refresh if the loaded credentials are already (or near) expired —
-	// prevents a heartbeat-before-refresh race that would otherwise trip
-	// auth-lost on the first 60 s heartbeat tick after a long machine-off.
 	refreshOnBoot(rootCtx, state)
 
 	atelierlog.Info("atelierd run started", "uid", state.snapshot().UID, "host", host, "version", Version)
 
 	var wg sync.WaitGroup
-	wg.Add(10)
+	wg.Add(9)
 	go func() { defer wg.Done(); shipperLoop(rootCtx, state) }()
 	go func() { defer wg.Done(); refresherLoop(rootCtx, state) }()
 	go func() { defer wg.Done(); heartbeatLoop(rootCtx, state) }()
@@ -168,7 +166,6 @@ func runRun(cmd *cobra.Command, _ []string) error {
 	restart := func() { restartOntoNewBinary(rootCtx, updater.NewRelauncher(), cancel, relaunchGrace) }
 	go func() { defer wg.Done(); updaterLoop(rootCtx, state, restart) }()
 	go func() { defer wg.Done(); stateGCLoop(rootCtx, state) }()
-	go func() { defer wg.Done(); sessionEndJanitorLoop(rootCtx, state) }()
 
 	wg.Wait()
 	atelierlog.Info("atelierd run stopped")
@@ -317,11 +314,6 @@ func writeStatusSnapshot(s *runState) error {
 	return status.Save(s.snapshot())
 }
 
-// refreshOnBoot synchronously refreshes the idToken if the loaded credentials
-// are within refreshLeadTime of expiry (or already past). Without this, a long
-// machine-off can leave creds expired at boot, and the heartbeat goroutine
-// (which fires immediately) would race the refresher and trip auth-lost on
-// the first 401.
 func refreshOnBoot(ctx context.Context, state *runState) {
 	creds := state.currentCreds()
 	if !shouldRefreshNow(creds.IDTokenExpiresAt, refreshLeadTime, time.Now()) {
@@ -332,17 +324,9 @@ func refreshOnBoot(ctx context.Context, state *runState) {
 	}
 }
 
-// withAuthRecovery runs op (a Firestore call carrying the current idToken).
-// If op returns 401/403, it attempts a single proactive refresh of the
-// idToken and retries op once with the freshly minted token. Only escalates
-// to auth-lost when:
-//
-//  1. The refresh itself returns 401/403 — the refresh token is truly revoked.
-//  2. The retry still returns 401/403 even with a fresh idToken.
-//
-// This unblocks the common post-sleep failure mode where macOS froze the
-// monotonic-clock refresh timer for hours, the idToken silently expired, and
-// the next Firestore write would otherwise irreversibly trip auth-lost.
+// After macOS sleep the idToken can expire before the refresher's next
+// wall-clock poll; one reactive refresh on a 401 keeps that window from
+// tripping auth-lost irreversibly.
 func withAuthRecovery(ctx context.Context, state *runState, opName string, op func(idToken string) error) error {
 	creds := state.currentCreds()
 	err := op(creds.IDToken)
@@ -424,8 +408,6 @@ func shouldShipOnEvent(ev fsnotify.Event) bool {
 	return strings.HasSuffix(ev.Name, ".json")
 }
 
-// tryShip lists the outbox, batches up to shipBatchMax (or shipBatchTime),
-// and ships each batch. Updates state at the end.
 func tryShip(ctx context.Context, state *runState) {
 	state.touchTick()
 	if state.isAuthLost() {
@@ -451,9 +433,7 @@ func tryShip(ctx context.Context, state *runState) {
 		files = files[batchSize:]
 
 		err := shipBatch(ctx, state, batch)
-		if err != nil && classifyShipError(err) == shipOutcomeQuarantine {
-			// A rejected atomic batch blocks every event behind it; isolate so
-			// healthy events ship and rejected ones are quarantined.
+		if err != nil && shouldIsolate(classifyShipError(err)) {
 			err = shipFilesIndividually(ctx, state, batch)
 		}
 		if err != nil {
@@ -526,11 +506,6 @@ func shipBatch(ctx context.Context, state *runState, files []string) error {
 	return nil
 }
 
-// buildEventDoc reads an outbox file and enriches it into a Firestore EventDoc:
-// uid from the current credentials, host from the run state, ts decoded from
-// the ULID prefix (the three fields `atelierd emit` intentionally omits). On an
-// unreadable file or a bad ULID it moves the file aside with a .corrupt suffix
-// so the shipper never loops on it, and returns the error.
 func buildEventDoc(state *runState, f string) (*firestore.EventDoc, error) {
 	env, err := outbox.Read(f)
 	if err != nil {
@@ -538,9 +513,9 @@ func buildEventDoc(state *runState, f string) (*firestore.EventDoc, error) {
 		_ = os.Rename(f, f+".corrupt")
 		return nil, err
 	}
-	ts, err := ulid.Timestamp(env.ULID)
+	ts, err := eventTimestamp(env)
 	if err != nil {
-		atelierlog.Warn("shipper: bad ULID in outbox file", "file", filepath.Base(f), "err", err.Error())
+		atelierlog.Warn("shipper: bad event time in outbox file", "file", filepath.Base(f), "err", err.Error())
 		_ = os.Rename(f, f+".corrupt")
 		return nil, err
 	}
@@ -556,12 +531,24 @@ func buildEventDoc(state *runState, f string) (*firestore.EventDoc, error) {
 	}, nil
 }
 
+func eventTimestamp(env *outbox.Envelope) (time.Time, error) {
+	if env.TS == nil {
+		return ulid.Timestamp(env.ULID)
+	}
+	ts := env.TS.UTC()
+	if !ts.Equal(ts.Truncate(time.Minute)) {
+		return time.Time{}, fmt.Errorf("ts %s is not a whole minute", ts.Format(time.RFC3339Nano))
+	}
+	return ts, nil
+}
+
 type shipOutcome int
 
 const (
-	shipOutcomeAuthLost   shipOutcome = iota // 401 — token rejected; pause everything
-	shipOutcomeQuarantine                    // 403 — permission denied; this event is permanently unshippable
-	shipOutcomeTransient                     // 5xx / network — retry later with backoff
+	shipOutcomeAuthLost      shipOutcome = iota // 401 — token rejected; pause everything
+	shipOutcomeQuarantine                       // 403 — permission denied; this event is permanently unshippable
+	shipOutcomeAlreadyExists                    // 409 — the doc was already shipped; a success
+	shipOutcomeTransient                        // 5xx / network — retry later with backoff
 )
 
 func classifyShipError(err error) shipOutcome {
@@ -570,17 +557,18 @@ func classifyShipError(err error) shipOutcome {
 		return shipOutcomeAuthLost
 	case firestore.IsPermissionDenied(err):
 		return shipOutcomeQuarantine
+	case firestore.IsAlreadyExists(err):
+		return shipOutcomeAlreadyExists
 	default:
 		return shipOutcomeTransient
 	}
 }
 
-// shipFilesIndividually retries each file in its own single-document commit
-// after an atomic batch was rejected with PERMISSION_DENIED. Because a batch
-// fails all-or-nothing, one event Firestore refuses (e.g. a duplicate that
-// already exists — the /events rule allows create but not update) would
-// otherwise block every event behind it forever. Isolating lets the healthy
-// events through and quarantines the rejected ones.
+func shouldIsolate(o shipOutcome) bool {
+	return o == shipOutcomeQuarantine || o == shipOutcomeAlreadyExists
+}
+
+// A batch fails all-or-nothing, so one event Firestore refuses or already holds would otherwise block every event behind it forever.
 func shipFilesIndividually(ctx context.Context, state *runState, files []string) error {
 	shipped, quarantined := 0, 0
 	// recordShipProgress (not markShipped) on every exit path: an interrupted
@@ -610,6 +598,12 @@ func shipFilesIndividually(ctx context.Context, state *runState, files []string)
 		}
 
 		switch classifyShipError(err) {
+		case shipOutcomeAlreadyExists:
+			if derr := outbox.Delete(f); derr != nil {
+				atelierlog.Warn("shipper: delete after ship failed", "file", filepath.Base(f), "err", derr.Error())
+			}
+			atelierlog.Info("shipper: event already exists in Firestore, dropped from outbox", "file", filepath.Base(f), "ulid", doc.ULID)
+			shipped++
 		case shipOutcomeQuarantine:
 			if rerr := os.Rename(f, f+".rejected"); rerr != nil {
 				atelierlog.Warn("shipper: quarantine rename failed", "file", filepath.Base(f), "err", rerr.Error())
@@ -678,11 +672,6 @@ func shouldRefreshNow(expiresAt time.Time, leadTime time.Duration, now time.Time
 	return now.Add(leadTime).After(expiresAt) || now.Add(leadTime).Equal(expiresAt)
 }
 
-// performRefresh is the inner step of refresherLoop: trade the current refresh
-// token for a new idToken, persist credentials, update state. Used both by
-// refresherLoop (proactive, scheduled) and by withAuthRecovery (reactive, after
-// an unexpected 401 from Firestore). Returns the underlying firebaseauth error
-// untouched so callers can distinguish auth-lost from transient.
 func performRefresh(ctx context.Context, state *runState) error {
 	creds := state.currentCreds()
 	refreshCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -902,11 +891,6 @@ func updaterLoop(ctx context.Context, state *runState, requestRestart func()) {
 	}
 }
 
-// runUpdateCheck performs one update cycle. Every failure is logged and
-// swallowed so the daemon keeps running on its current version and retries at
-// the next tick; it restarts only when brew actually installed a new version.
-// upgrader is the subset of *updater.Updater's methods runUpdateCheck needs,
-// declared as an interface so tests can drive the restart decision with a fake.
 type upgrader interface {
 	Upgrade(ctx context.Context) error
 	InstalledVersion(ctx context.Context) (string, error)
@@ -937,8 +921,6 @@ func runUpdateCheck(ctx context.Context, state *runState, up upgrader, requestRe
 	requestRestart()
 }
 
-// relauncher is the subset of *updater.Relauncher restartOntoNewBinary needs,
-// declared as an interface so tests can drive it with a fake.
 type relauncher interface {
 	Relaunch(ctx context.Context) (string, error)
 }
@@ -949,7 +931,7 @@ type relauncher interface {
 // not depend on launchd scheduling a KeepAlive relaunch — after a Homebrew
 // upgrade a job was observed loaded with `runs = 0` and a pending speculative
 // spawn that never ran. Fallback (not launchd-managed, launchctl unavailable,
-// or no SIGTERM within grace): exit via cancel and rely on KeepAlive, as before.
+// or no SIGTERM within grace): exit via cancel and rely on KeepAlive.
 func restartOntoNewBinary(ctx context.Context, r relauncher, cancel func(), grace time.Duration) {
 	target, err := r.Relaunch(ctx)
 	if err != nil {
