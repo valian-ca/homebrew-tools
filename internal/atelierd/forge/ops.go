@@ -152,6 +152,9 @@ func FindRunContext(ctx context.Context, ticket, session string) (string, error)
 			if err != nil {
 				return err
 			}
+			if predatesContract3(runID) {
+				continue
+			}
 			if (ticket == "" || state.Ticket == ticket) && (session == "" || state.Session == session) {
 				matches = append(matches, runID)
 			}
@@ -543,7 +546,7 @@ func SaveCampaignContext(ctx context.Context, runID, stagingPath string) error {
 		if len(state.Passes) > 0 && !state.CampaignRequired {
 			return fmt.Errorf("%w: run allocated passes without a campaign", ErrInvalidStaging)
 		}
-		if err := writeJSON(paths.ForgeCampaign(runID), campaign); err != nil {
+		if err := writeCampaign(runID, campaign); err != nil {
 			return err
 		}
 		state.CampaignRequired = true
@@ -645,7 +648,7 @@ func AppendCampaignContext(ctx context.Context, runID string, waveNumber int, st
 		if err := validateCampaign(campaign); err != nil {
 			return fmt.Errorf("%w: %v", ErrInvalidStaging, err)
 		}
-		if err := writeJSON(paths.ForgeCampaign(runID), campaign); err != nil {
+		if err := writeCampaign(runID, campaign); err != nil {
 			return err
 		}
 		queueCampaignSaved(state, campaign)

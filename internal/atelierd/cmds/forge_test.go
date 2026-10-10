@@ -486,6 +486,10 @@ func TestForgeHelpDocumentsStagingAndPositionalRef(t *testing.T) {
 	if err != nil || !strings.Contains(stdout, `"rank":9,"access":"readonly|mutating"`) {
 		t.Fatalf("campaign save help=%q error=%v", stdout, err)
 	}
+	stdout, _, err = executeForge("campaign", "append", "--help")
+	if err != nil || !strings.Contains(stdout, `"rank":6,"access":"readonly"`) || !strings.Contains(stdout, "Wave 2 accepts up to 6 scenarios") {
+		t.Fatalf("campaign append help=%q error=%v", stdout, err)
+	}
 	stdout, _, err = executeForge("ref", "set", "--help")
 	if err != nil || !strings.Contains(stdout, "set <value> --run <id> --key report|testplan") {
 		t.Fatalf("ref set help=%q error=%v", stdout, err)

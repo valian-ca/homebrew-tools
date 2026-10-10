@@ -1443,6 +1443,18 @@ func TestOutcomeRequiresSeverityAndReason(t *testing.T) {
 	if _, err := Summary(runID); err == nil || !strings.Contains(err.Error(), "severity") {
 		t.Fatalf("ledger finding without severity error = %v", err)
 	}
+	if err := withRunLock(runID, func() error {
+		return writeJSON(paths.ForgeLedger(runID), &ledger{SchemaVersion: LedgerSchemaVersion, Passes: []ledgerPass{{
+			PassID: "wave-1", Kind: passWave, Wave: 1,
+			Outcomes: []Outcome{{Axis: "A", Scenario: "S", Status: "not_exercised"}},
+			Counts:   counts{NotExercised: 1},
+		}}})
+	}); err != nil {
+		t.Fatalf("write ledger without reason: %v", err)
+	}
+	if _, err := Summary(runID); err == nil || !strings.Contains(err.Error(), "reason") {
+		t.Fatalf("ledger not_exercised without reason error = %v", err)
+	}
 }
 
 func TestCampaignRequiresRankAndAccess(t *testing.T) {
@@ -1485,6 +1497,20 @@ func TestCampaignRequiresRankAndAccess(t *testing.T) {
 		}
 	})
 
+	t.Run("persisted scenario wave out of range", func(t *testing.T) {
+		for _, wave := range []int{1, MaxWaves + 1} {
+			t.Setenv("HOME", t.TempDir())
+			runID := startTestRun(t, DefaultCap)
+			stored := fmt.Sprintf(`{"schemaVersion":2,"axes":[{"title":"A","scenarios":[{"title":"S","steps":["Do"],"expected":"Done","rank":5,"access":"readonly","wave":%d}]}]}`, wave)
+			if err := os.WriteFile(paths.ForgeCampaign(runID), []byte(stored), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := LoadCampaign(runID); !errors.Is(err, ErrCampaignInvalid) || !strings.Contains(err.Error(), "invalid append wave") {
+				t.Fatalf("wave %d LoadCampaign error = %v; want ErrCampaignInvalid", wave, err)
+			}
+		}
+	})
+
 	t.Run("schema 1 campaign refused on read", func(t *testing.T) {
 		t.Setenv("HOME", t.TempDir())
 		runID := startTestRun(t, DefaultCap)
@@ -1523,6 +1549,78 @@ func TestContractTwoLedgerRefusedAsRestart(t *testing.T) {
 	}
 	if _, err := os.Stat(paths.ForgeCampaign(runID)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("campaign stored over a contract-2 ledger: %v", err)
+	}
+}
+
+func TestAppendCampaignRefusesUnreadableSize(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	runID := startTestRun(t, DefaultCap)
+	bulky := func(title string, steps int) Scenario {
+		scenario := Scenario{Title: title, Expected: "Done", Rank: 5, Access: "readonly"}
+		for range steps {
+			scenario.Steps = append(scenario.Steps, strings.Repeat("x", 4000))
+		}
+		return scenario
+	}
+	if err := SaveCampaign(runID, writeCampaignStaging(t, Axis{Title: "A", Scenarios: []Scenario{bulky("A-1", MaxSteps), bulky("A-2", 28)}})); err != nil {
+		t.Fatalf("SaveCampaign: %v", err)
+	}
+	if _, err := OpenWave(runID); err != nil {
+		t.Fatalf("OpenWave 1: %v", err)
+	}
+	playWave(t, runID, 1, Outcome{Axis: "A", Scenario: "A-1", Status: "finding", Severity: "degraded"})
+	if _, err := OpenWave(runID); err != nil {
+		t.Fatalf("OpenWave 2: %v", err)
+	}
+	before, err := os.ReadFile(paths.ForgeCampaign(runID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = AppendCampaign(runID, 2, writeCampaignStaging(t, Axis{Title: "A", Scenarios: []Scenario{bulky("A-3", 6)}}))
+	if !errors.Is(err, ErrInvalidStaging) || !strings.Contains(err.Error(), "campaign would exceed") {
+		t.Fatalf("oversized append error = %v; want ErrInvalidStaging", err)
+	}
+	after, err := os.ReadFile(paths.ForgeCampaign(runID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(before, after) {
+		t.Fatal("refused append changed campaign.json")
+	}
+	if err := AppendCampaign(runID, 2, writeCampaignStaging(t, Axis{Title: "A", Scenarios: stagedScenarios("small", 1)})); err != nil {
+		t.Fatalf("small append after refusal: %v", err)
+	}
+	if _, err := LoadCampaign(runID); err != nil {
+		t.Fatalf("LoadCampaign after append: %v", err)
+	}
+}
+
+func TestFindRunSkipsRunsPredatingContract3(t *testing.T) {
+	for _, legacy := range []struct {
+		name string
+		path func(string) string
+		body string
+	}{
+		{"campaign", paths.ForgeCampaign, `{"schemaVersion":1,"axes":[{"title":"A","scenarios":[{"title":"S","steps":["Do"],"expected":"Done"}]}]}`},
+		{"ledger", paths.ForgeLedger, `{"schemaVersion":1,"passes":[]}`},
+	} {
+		t.Run(legacy.name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			stale := startTestRun(t, DefaultCap)
+			if err := os.WriteFile(legacy.path(stale), []byte(legacy.body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := FindRun("VAL-306", ""); !errors.Is(err, ErrUnknownRun) {
+				t.Fatalf("FindRun with only a contract-2 run error = %v; want ErrUnknownRun", err)
+			}
+			restarted := startTestRun(t, DefaultCap)
+			if got, err := FindRun("VAL-306", ""); err != nil || got != restarted {
+				t.Fatalf("FindRun after restart = %q, %v; want %q", got, err, restarted)
+			}
+			if got, err := FindRun("", "session-306"); err != nil || got != restarted {
+				t.Fatalf("FindRun by session after restart = %q, %v; want %q", got, err, restarted)
+			}
+		})
 	}
 }
 
@@ -1938,6 +2036,31 @@ func TestNotExercisedNeverCountsAsPass(t *testing.T) {
 	}
 	if got := strings.Count(testplan, "- Dernier résultat : Réussi\n"); got != 1 {
 		t.Fatalf("Réussi count = %d; want 1\n%s", got, testplan)
+	}
+}
+
+func TestEnglishTestplanShowsSeverity(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	runID := startTestRun(t, DefaultCap)
+	if err := SaveCampaign(runID, writeCampaignStaging(t, Axis{Title: "A", Scenarios: stagedScenarios("S", 3)})); err != nil {
+		t.Fatalf("SaveCampaign: %v", err)
+	}
+	if _, err := OpenWave(runID); err != nil {
+		t.Fatalf("OpenWave: %v", err)
+	}
+	playWave(t, runID, 1,
+		Outcome{Axis: "A", Scenario: "S-1", Status: "finding", Severity: "blocking"},
+		Outcome{Axis: "A", Scenario: "S-2", Status: "finding", Severity: "degraded"},
+		Outcome{Axis: "A", Scenario: "S-3", Status: "finding", Severity: "cosmetic"},
+	)
+	testplan, _, err := RenderTestplan(runID, "en", "")
+	if err != nil {
+		t.Fatalf("RenderTestplan: %v", err)
+	}
+	for _, want := range []string{"Finding (Blocking)", "Finding (Degraded)", "Finding (Cosmetic)"} {
+		if !strings.Contains(testplan, "- Latest outcome: "+want+"\n") {
+			t.Fatalf("testplan lacks %q:\n%s", want, testplan)
+		}
 	}
 }
 

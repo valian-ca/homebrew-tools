@@ -387,12 +387,52 @@ func validateCampaignAndLedger(state *runState, campaign *Campaign, value *ledge
 }
 
 func writeJSON(path string, value any) error {
-	data, err := json.MarshalIndent(value, "", "  ")
+	data, err := marshalJSON(value)
 	if err != nil {
 		return err
 	}
-	data = append(data, '\n')
 	return writeBytes(path, data)
+}
+
+func writeCampaign(runID string, campaign *Campaign) error {
+	data, err := marshalJSON(campaign)
+	if err != nil {
+		return err
+	}
+	if len(data) > MaxCampaignFileBytes {
+		return fmt.Errorf("%w: campaign would exceed %d bytes", ErrInvalidStaging, MaxCampaignFileBytes)
+	}
+	return writeBytes(paths.ForgeCampaign(runID), data)
+}
+
+func marshalJSON(value any) ([]byte, error) {
+	data, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return append(data, '\n'), nil
+}
+
+func predatesContract3(runID string) bool {
+	for _, file := range []struct {
+		path     string
+		maxBytes int64
+	}{
+		{paths.ForgeCampaign(runID), MaxCampaignFileBytes},
+		{paths.ForgeLedger(runID), MaxLedgerFileBytes},
+	} {
+		data, err := readNoFollow(file.path, file.maxBytes)
+		if err != nil {
+			continue
+		}
+		var header struct {
+			SchemaVersion int `json:"schemaVersion"`
+		}
+		if json.Unmarshal(data, &header) == nil && header.SchemaVersion == 1 {
+			return true
+		}
+	}
+	return false
 }
 
 func writeBytes(path string, data []byte) error {

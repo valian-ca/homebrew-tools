@@ -15,13 +15,10 @@ const (
 	LedgerSchemaVersion   = 2
 	ContractVersion       = 3
 	DefaultCap            = 10
-	// Normal waves remain controlled by the run's --cap value. Each auxiliary
-	// stream has its own v1 bound so review/repair cannot grow without limit.
-	MaxAuxiliaryPasses = 32
+	MaxAuxiliaryPasses    = 32
 
-	// V1 limits are deliberately conservative: forge state is local, small,
-	// and is written synchronously. They also bound the amount of JSON a
-	// command will accept before decoding it.
+	// Forge state is local, small and written synchronously; these caps also
+	// bound how much JSON a command reads before decoding it.
 	MaxRunFileBytes      = 256 * 1024
 	MaxCampaignFileBytes = 256 * 1024
 	MaxLedgerFileBytes   = 512 * 1024
