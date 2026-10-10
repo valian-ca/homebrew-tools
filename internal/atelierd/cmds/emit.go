@@ -114,20 +114,21 @@ Examples:
 // it block registration forever.
 func registerSession(claudeSessionID, jsonlPath string) error {
 	now := time.Now().UTC()
-	state, err := transcript.LoadState(claudeSessionID)
-	switch {
-	case err == nil && state.JSONLPath == jsonlPath:
-		state.LastActivityAt = now
-	case err == nil:
-		state.JSONLPath = jsonlPath
-		state.Offsets = nil
-		state.LastActivityAt = now
-	default:
-		state = &transcript.State{
-			ClaudeSessionID: claudeSessionID,
-			JSONLPath:       jsonlPath,
-			LastActivityAt:  now,
+	return transcript.UpdateState(claudeSessionID, func(state *transcript.State, err error) *transcript.State {
+		switch {
+		case err == nil && state.JSONLPath == jsonlPath:
+			state.LastActivityAt = now
+		case err == nil:
+			state.JSONLPath = jsonlPath
+			state.Offsets = nil
+			state.LastActivityAt = now
+		default:
+			state = &transcript.State{
+				ClaudeSessionID: claudeSessionID,
+				JSONLPath:       jsonlPath,
+				LastActivityAt:  now,
+			}
 		}
-	}
-	return transcript.SaveState(state)
+		return state
+	})
 }

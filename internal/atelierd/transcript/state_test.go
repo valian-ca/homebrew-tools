@@ -1,10 +1,13 @@
 package transcript
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
+	"sync"
 	"testing"
 	"time"
 )
@@ -164,12 +167,93 @@ func TestLoadState_MigratesLegacyTreeKeepingOffsets(t *testing.T) {
 	if !s.LastActivityAt.Equal(time.Date(2026, 10, 9, 10, 0, 0, 0, time.UTC)) {
 		t.Errorf("LastActivityAt = %s", s.LastActivityAt)
 	}
-	if _, err := os.Stat(filepath.Join(SessionsDir(), "cs-old")); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("legacy subagent state dir still present: %v", err)
+	if _, err := os.Stat(filepath.Join(SessionsDir(), "cs-old", "subagents", "agent-a.json")); err != nil {
+		t.Errorf("legacy subagent state removed by the migration, want it kept until GC: %v", err)
 	}
 	again, err := LoadState("cs-old")
 	if err != nil || again.Offsets["cs-old/subagents/agent-a.jsonl"] != 300 {
 		t.Fatalf("reload after migration: %v, %v", err, again)
+	}
+}
+
+func TestSaveState_KeepsTheParentOffsetReadableBy018(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if err := SaveState(&State{ClaudeSessionID: "cs-1", JSONLPath: "/p/cs-1.jsonl", Offsets: map[string]int64{"cs-1.jsonl": 4242, "cs-1/subagents/agent-a.jsonl": 7}}); err != nil {
+		t.Fatalf("SaveState: %v", err)
+	}
+	raw, _ := os.ReadFile(SessionFile("cs-1"))
+	var legacy legacyState
+	if err := json.Unmarshal(raw, &legacy); err != nil || legacy.Offset != 4242 || legacy.JSONLPath != "/p/cs-1.jsonl" {
+		t.Fatalf("0.18.x view of a v2 state = %+v, %v; want offset 4242", legacy, err)
+	}
+}
+
+func TestLoadState_ConcurrentMigrationsKeepEveryOffset(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	transcripts := t.TempDir()
+	const sessions, agents = 40, 12
+	for i := 0; i < sessions; i++ {
+		id := fmt.Sprintf("cs-%02d", i)
+		parent := filepath.Join(transcripts, id+".jsonl")
+		writeFile(t, SessionFile(id), fmt.Sprintf(`{"claudeSessionId":%q,"jsonlPath":%q,"offset":100}`, id, parent))
+		for a := 0; a < agents; a++ {
+			agent := filepath.Join(transcripts, id, "subagents", fmt.Sprintf("agent-%02d.jsonl", a))
+			writeFile(t, filepath.Join(SessionsDir(), id, "subagents", fmt.Sprintf("agent-%02d.json", a)),
+				fmt.Sprintf(`{"claudeSessionId":%q,"jsonlPath":%q,"offset":%d}`, id, agent, 10+a))
+		}
+	}
+
+	var wg sync.WaitGroup
+	for w := 0; w < 4; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			if w == 3 {
+				_, _ = PruneLegacyDirs()
+			}
+			_, _ = ListStates()
+			_, _ = PruneLegacyDirs()
+		}(w)
+	}
+	wg.Wait()
+
+	for i := 0; i < sessions; i++ {
+		id := fmt.Sprintf("cs-%02d", i)
+		s, err := LoadState(id)
+		if err != nil {
+			t.Fatalf("LoadState(%s): %v", id, err)
+		}
+		if len(s.Offsets) != agents+1 {
+			t.Errorf("%s: %d offsets after concurrent migrations, want %d", id, len(s.Offsets), agents+1)
+		}
+	}
+}
+
+func TestUpdateState_SerializesConcurrentWriters(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if err := SaveState(&State{ClaudeSessionID: "cs-1", JSONLPath: "/p/cs-1.jsonl"}); err != nil {
+		t.Fatalf("SaveState: %v", err)
+	}
+	var wg sync.WaitGroup
+	for w := 0; w < 8; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			for i := 0; i < 25; i++ {
+				_ = UpdateState("cs-1", func(s *State, err error) *State {
+					if err != nil {
+						return nil
+					}
+					s.SetOffset(fmt.Sprintf("/p/cs-1/subagents/agent-%d-%d.jsonl", w, i), 1)
+					return s
+				})
+			}
+		}(w)
+	}
+	wg.Wait()
+	s, err := LoadState("cs-1")
+	if err != nil || len(s.Offsets) != 200 {
+		t.Fatalf("offsets after 200 concurrent updates = %d, %v; want 200 (no lost update)", len(s.Offsets), err)
 	}
 }
 
@@ -232,50 +316,24 @@ func TestDeleteState_RemovesFileAndLegacyDir(t *testing.T) {
 	}
 }
 
-func TestPruneOrphanLegacyDirs(t *testing.T) {
+func TestPruneLegacyDirs(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	writeFile(t, SessionFile("cs-live"), `{}`)
-	writeFile(t, filepath.Join(SessionsDir(), "cs-live", "subagents", "agent-a.json"), `{}`)
+	writeFile(t, SessionFile("cs-pending"), `{"claudeSessionId":"cs-pending","jsonlPath":"/p/cs-pending.jsonl","offset":1}`)
+	writeFile(t, filepath.Join(SessionsDir(), "cs-pending", "subagents", "agent-a.json"), `{}`)
+	if err := SaveState(&State{ClaudeSessionID: "cs-migrated", JSONLPath: "/p/cs-migrated.jsonl"}); err != nil {
+		t.Fatalf("SaveState: %v", err)
+	}
+	writeFile(t, filepath.Join(SessionsDir(), "cs-migrated", "subagents", "agent-a.json"), `{}`)
 	writeFile(t, filepath.Join(SessionsDir(), "cs-orphan", "subagents", "agent-a.json"), `{}`)
 
-	removed, err := PruneOrphanLegacyDirs()
-	if err != nil || removed != 1 {
-		t.Fatalf("PruneOrphanLegacyDirs = %d, %v; want 1, nil", removed, err)
+	removed, err := PruneLegacyDirs()
+	if err != nil || removed != 2 {
+		t.Fatalf("PruneLegacyDirs = %d, %v; want 2, nil", removed, err)
 	}
-	if _, err := os.Stat(filepath.Join(SessionsDir(), "cs-orphan")); !errors.Is(err, os.ErrNotExist) {
-		t.Error("orphan legacy dir still present")
-	}
-	if _, err := os.Stat(filepath.Join(SessionsDir(), "cs-live")); err != nil {
-		t.Errorf("live session's legacy dir pruned before its migration: %v", err)
-	}
-}
-
-func TestSaveState_ConcurrentWritersNeverCorruptTheState(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	big := map[string]bool{}
-	for i := 0; i < 600; i++ {
-		big[time.Date(2026, 10, 10, 0, 0, 0, 0, time.UTC).Add(time.Duration(i)*time.Minute).Format("200601021504")] = true
-	}
-	done := make(chan struct{})
-	for w := 0; w < 4; w++ {
-		go func(w int) {
-			defer func() { done <- struct{}{} }()
-			for i := 0; i < 50; i++ {
-				s := &State{ClaudeSessionID: "cs-race", JSONLPath: "/p/cs-race.jsonl"}
-				if w%2 == 0 {
-					s.EmittedMinutes = big
-				}
-				_ = SaveState(s)
-			}
-		}(w)
-	}
-	for w := 0; w < 4; w++ {
-		<-done
-	}
-	if _, err := LoadState("cs-race"); err != nil {
-		t.Fatalf("state corrupted by concurrent writers: %v", err)
-	}
-	if leftovers, _ := filepath.Glob(filepath.Join(SessionsDir(), "*.tmp")); len(leftovers) != 0 {
-		t.Errorf("temp files left behind: %v", leftovers)
+	for id, want := range map[string]bool{"cs-pending": true, "cs-migrated": false, "cs-orphan": false} {
+		_, err := os.Stat(filepath.Join(SessionsDir(), id))
+		if got := err == nil; got != want {
+			t.Errorf("%s legacy dir present = %v, want %v", id, got, want)
+		}
 	}
 }

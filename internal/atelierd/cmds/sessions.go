@@ -240,19 +240,27 @@ func readSessionTree(ctx context.Context, claudeSessionID string) (*transcript.S
 	}
 
 	state.LastActivityAt = now
-	if current, lerr := transcript.LoadState(claudeSessionID); lerr == nil && current.JSONLPath != state.JSONLPath {
-		// `atelierd emit` moved the session to another transcript during
-		// this read: keep its registration, whose offsets belong to the new
-		// file, and only add the minutes this read emitted.
-		for minute := range state.EmittedMinutes {
-			current.EmittedMinutes[minute] = true
+	saved := state
+	serr := transcript.UpdateState(claudeSessionID, func(current *transcript.State, lerr error) *transcript.State {
+		switch {
+		case errors.Is(lerr, os.ErrNotExist):
+			return nil
+		case lerr == nil && current.JSONLPath != state.JSONLPath:
+			// `atelierd emit` moved the session to another transcript during
+			// this read: keep its registration, whose offsets belong to the
+			// new file, and only add the minutes this read emitted.
+			for minute := range state.EmittedMinutes {
+				current.EmittedMinutes[minute] = true
+			}
+			current.LastActivityAt = now
+			saved = current
 		}
-		current.LastActivityAt = now
-		state = current
-	}
-	if serr := transcript.SaveState(state); serr != nil {
+		return saved
+	})
+	if serr != nil {
 		atelierlog.Warn("session-reader: save state failed", "session", claudeSessionID, "err", serr.Error())
 	}
+	state = saved
 	return state, nil
 }
 
@@ -348,7 +356,7 @@ func runStateGC() {
 		}
 		deleted++
 	}
-	legacy, err := transcript.PruneOrphanLegacyDirs()
+	legacy, err := transcript.PruneLegacyDirs()
 	if err != nil {
 		atelierlog.Warn("state-gc: prune legacy subagent states failed", "err", err.Error())
 	}

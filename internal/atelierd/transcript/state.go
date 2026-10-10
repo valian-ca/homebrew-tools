@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/valian-ca/homebrew-tools/internal/atelierd/paths"
 )
 
@@ -41,6 +43,11 @@ type State struct {
 	LastTitleType   string           `json:"lastTitleType,omitempty"`
 	LastActivityAt  time.Time        `json:"lastActivityAt"`
 	SchemaVersion   int              `json:"schemaVersion"`
+
+	// LegacyParentOffset mirrors the parent's offset under the 0.18.x key so
+	// a 0.18.x daemon still running after a manual `brew upgrade` resumes
+	// where this version stopped instead of re-reading from 0.
+	LegacyParentOffset int64 `json:"offset"`
 }
 
 func (s *State) ensureMaps() {
@@ -155,12 +162,69 @@ func validateKey(key string) error {
 	return nil
 }
 
+// withSessionsLock serializes every load-modify-save of a session state
+// across the daemon's goroutines and `atelierd emit` processes: two
+// concurrent migrations, or a re-registration racing the reader's save,
+// would otherwise each save what the other just lost.
+func withSessionsLock(fn func() error) error {
+	if err := paths.EnsureDir(SessionsDir()); err != nil {
+		return fmt.Errorf("ensure session state dir: %w", err)
+	}
+	f, err := os.OpenFile(filepath.Join(SessionsDir(), "sessions.lock"), os.O_RDWR|os.O_CREATE, paths.FileMode)
+	if err != nil {
+		return fmt.Errorf("open sessions lock: %w", err)
+	}
+	defer f.Close()
+	for {
+		err = unix.Flock(int(f.Fd()), unix.LOCK_EX)
+		if !errors.Is(err, unix.EINTR) {
+			break
+		}
+	}
+	if err != nil {
+		return fmt.Errorf("lock sessions: %w", err)
+	}
+	defer func() { _ = unix.Flock(int(f.Fd()), unix.LOCK_UN) }()
+	return fn()
+}
+
 // LoadState reads a persisted state, migrating a 0.18.x layout on the fly.
 // Returns an error wrapping os.ErrNotExist when the session is not registered.
 func LoadState(claudeSessionID string) (*State, error) {
 	if err := validateKey(claudeSessionID); err != nil {
 		return nil, err
 	}
+	s, err := readState(claudeSessionID)
+	if err != nil || s.SchemaVersion >= SchemaVersion {
+		return s, err
+	}
+	var loadErr error
+	if lockErr := withSessionsLock(func() error {
+		s, loadErr = loadStateLocked(claudeSessionID)
+		return nil
+	}); lockErr != nil {
+		return nil, lockErr
+	}
+	return s, loadErr
+}
+
+// UpdateState runs fn on the current state of a session under the sessions
+// lock and saves the state fn returns; a nil state saves nothing. fn receives
+// the load error, os.ErrNotExist included, so it decides how to register.
+func UpdateState(claudeSessionID string, fn func(current *State, loadErr error) *State) error {
+	if err := validateKey(claudeSessionID); err != nil {
+		return err
+	}
+	return withSessionsLock(func() error {
+		next := fn(loadStateLocked(claudeSessionID))
+		if next == nil {
+			return nil
+		}
+		return saveStateLocked(next)
+	})
+}
+
+func readState(claudeSessionID string) (*State, error) {
 	raw, err := os.ReadFile(SessionFile(claudeSessionID))
 	if err != nil {
 		return nil, err
@@ -169,11 +233,16 @@ func LoadState(claudeSessionID string) (*State, error) {
 	if err := json.Unmarshal(raw, &s); err != nil {
 		return nil, fmt.Errorf("parse session state %s: %w", claudeSessionID, err)
 	}
-	if s.SchemaVersion < SchemaVersion {
-		return migrateLegacyState(claudeSessionID, raw)
-	}
 	s.ensureMaps()
 	return &s, nil
+}
+
+func loadStateLocked(claudeSessionID string) (*State, error) {
+	s, err := readState(claudeSessionID)
+	if err != nil || s.SchemaVersion >= SchemaVersion {
+		return s, err
+	}
+	return migrateLegacyState(claudeSessionID)
 }
 
 type legacyState struct {
@@ -187,15 +256,22 @@ type legacyState struct {
 
 // migrateLegacyState folds a 0.18.x parent state and its per-subagent state
 // files into one tree state, carrying every offset over: an upgrade must not
-// re-read, and so re-emit, any transcript. A state without a transcript is the
-// retired OpenCode signature; it is deleted with no session end synthesized.
-func migrateLegacyState(claudeSessionID string, raw []byte) (*State, error) {
+// re-read, and so re-emit, any transcript. The subagent states stay on disk
+// until the state GC prunes them, so a 0.18.x daemon still running after a
+// manual `brew upgrade` keeps its offsets. A state without a transcript is
+// the retired OpenCode signature; it is deleted with no session end
+// synthesized.
+func migrateLegacyState(claudeSessionID string) (*State, error) {
+	raw, err := os.ReadFile(SessionFile(claudeSessionID))
+	if err != nil {
+		return nil, err
+	}
 	var legacy legacyState
 	if err := json.Unmarshal(raw, &legacy); err != nil {
 		return nil, fmt.Errorf("parse legacy session state %s: %w", claudeSessionID, err)
 	}
 	if legacy.JSONLPath == "" {
-		if err := DeleteState(claudeSessionID); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := deleteStateLocked(claudeSessionID); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return nil, fmt.Errorf("delete transcript-less state %s: %w", claudeSessionID, err)
 		}
 		return nil, fmt.Errorf("transcript-less session %s retired: %w", claudeSessionID, os.ErrNotExist)
@@ -223,17 +299,13 @@ func migrateLegacyState(claudeSessionID string, raw []byte) (*State, error) {
 		s.SetOffset(sub.JSONLPath, sub.Offset)
 	}
 
-	if err := SaveState(s); err != nil {
+	if err := saveStateLocked(s); err != nil {
 		return nil, fmt.Errorf("save migrated session state %s: %w", claudeSessionID, err)
 	}
-	_ = os.RemoveAll(legacySubagentsDir(claudeSessionID))
 	return s, nil
 }
 
-// SaveState writes s atomically (mode 0600). Each writer gets its own temp
-// file: `atelierd emit` and the daemon's reader can save the same session at
-// once, and a shared .tmp interleaves their bytes into an unparseable state
-// that stops the session's reader.
+// SaveState writes s atomically (mode 0600) under the sessions lock.
 func SaveState(s *State) error {
 	if s.ClaudeSessionID == "" {
 		return errors.New("save state: claudeSessionID is empty")
@@ -241,12 +313,20 @@ func SaveState(s *State) error {
 	if err := validateKey(s.ClaudeSessionID); err != nil {
 		return err
 	}
-	if err := paths.EnsureDir(SessionsDir()); err != nil {
-		return fmt.Errorf("ensure session state dir: %w", err)
+	return withSessionsLock(func() error { return saveStateLocked(s) })
+}
+
+// saveStateLocked gives each write its own temp file: a shared .tmp let
+// concurrent writers interleave their bytes into an unparseable state, which
+// stops the session's reader.
+func saveStateLocked(s *State) error {
+	if s.ClaudeSessionID == "" {
+		return errors.New("save state: claudeSessionID is empty")
 	}
 	s.ensureMaps()
 	s.pruneEmittedMinutes()
 	s.SchemaVersion = SchemaVersion
+	s.LegacyParentOffset = s.Offset(s.JSONLPath)
 	raw, err := json.Marshal(s)
 	if err != nil {
 		return fmt.Errorf("marshal session state: %w", err)
@@ -275,6 +355,10 @@ func DeleteState(claudeSessionID string) error {
 	if err := validateKey(claudeSessionID); err != nil {
 		return err
 	}
+	return withSessionsLock(func() error { return deleteStateLocked(claudeSessionID) })
+}
+
+func deleteStateLocked(claudeSessionID string) error {
 	err := os.Remove(SessionFile(claudeSessionID))
 	_ = os.RemoveAll(legacySubagentsDir(claudeSessionID))
 	return err
@@ -306,27 +390,32 @@ func ListStates() ([]*State, error) {
 	return states, nil
 }
 
-// PruneOrphanLegacyDirs removes 0.18.x subagent state directories whose parent
-// state no longer exists; migration only cleans the ones it folds.
-func PruneOrphanLegacyDirs() (int, error) {
-	entries, err := os.ReadDir(SessionsDir())
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return 0, nil
-		}
-		return 0, fmt.Errorf("read sessions dir: %w", err)
-	}
+// PruneLegacyDirs removes the 0.18.x subagent state directories that no
+// longer serve: their parent state is gone or already migrated. A directory
+// whose parent is still in the 0.18.x layout waits for its migration.
+func PruneLegacyDirs() (int, error) {
 	removed := 0
-	for _, e := range entries {
-		if !e.IsDir() || validateKey(e.Name()) != nil {
-			continue
+	err := withSessionsLock(func() error {
+		entries, err := os.ReadDir(SessionsDir())
+		if err != nil {
+			return fmt.Errorf("read sessions dir: %w", err)
 		}
-		if _, err := os.Stat(SessionFile(e.Name())); !errors.Is(err, os.ErrNotExist) {
-			continue
+		for _, e := range entries {
+			if !e.IsDir() || validateKey(e.Name()) != nil {
+				continue
+			}
+			parent, perr := readState(e.Name())
+			if perr == nil && parent.SchemaVersion < SchemaVersion {
+				continue
+			}
+			if perr != nil && !errors.Is(perr, os.ErrNotExist) {
+				continue
+			}
+			if os.RemoveAll(legacySubagentsDir(e.Name())) == nil {
+				removed++
+			}
 		}
-		if err := os.RemoveAll(legacySubagentsDir(e.Name())); err == nil {
-			removed++
-		}
-	}
-	return removed, nil
+		return nil
+	})
+	return removed, err
 }
