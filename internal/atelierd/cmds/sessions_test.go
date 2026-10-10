@@ -3,6 +3,7 @@ package cmds
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -10,10 +11,18 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fsnotify/fsnotify"
-
 	"github.com/valian-ca/homebrew-tools/internal/atelierd/outbox"
 	"github.com/valian-ca/homebrew-tools/internal/atelierd/transcript"
+)
+
+// fixtureSessionID and fixtureMinutes describe transcript/testdata/forge-session:
+// a real forge session tree (parent, 13 subagents, 4 Workflow agents) stripped
+// to type/timestamp/sessionId. fixtureMinutes is the number of distinct UTC
+// minutes over all its timestamped agent and parent lines, computed once with
+// jq at fixture creation; the parent alone covers 51 of them.
+const (
+	fixtureSessionID = "fixture-forge-session"
+	fixtureMinutes   = 78
 )
 
 func writeJSONL(t *testing.T, path string, lines ...string) {
@@ -25,6 +34,26 @@ func writeJSONL(t *testing.T, path string, lines ...string) {
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatalf("write %s: %v", path, err)
 	}
+}
+
+func appendRaw(t *testing.T, path, raw string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("mkdir for %s: %v", path, err)
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatalf("open %s: %v", path, err)
+	}
+	defer f.Close()
+	if _, err := f.WriteString(raw); err != nil {
+		t.Fatalf("append %s: %v", path, err)
+	}
+}
+
+func appendJSONL(t *testing.T, path string, lines ...string) {
+	t.Helper()
+	appendRaw(t, path, strings.Join(lines, "\n")+"\n")
 }
 
 func waitFor(t *testing.T, deadline time.Duration, cond func() bool) bool {
@@ -39,367 +68,437 @@ func waitFor(t *testing.T, deadline time.Duration, cond func() bool) bool {
 	return cond()
 }
 
-func collectEnvelopesByModel(t *testing.T) map[string]string {
+func outboxEnvelopes(t *testing.T) []*outbox.Envelope {
 	t.Helper()
 	files, err := outbox.List()
 	if err != nil {
 		t.Fatalf("outbox.List: %v", err)
 	}
-	out := map[string]string{}
+	envs := make([]*outbox.Envelope, 0, len(files))
 	for _, f := range files {
 		env, err := outbox.Read(f)
 		if err != nil {
 			t.Fatalf("outbox.Read: %v", err)
 		}
-		if env.Type != "hook:assistant-turn" {
-			continue
-		}
-		model, _ := env.Payload["model"].(string)
-		out[model] = env.ClaudeSessionID
+		envs = append(envs, env)
 	}
-	return out
+	return envs
 }
 
-func TestShouldSpawnWatcher(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+func countByType(t *testing.T) map[string]int {
+	t.Helper()
+	counts := map[string]int{}
+	for _, env := range outboxEnvelopes(t) {
+		counts[env.Type]++
+	}
+	return counts
+}
 
+func hasEnvelope(t *testing.T, id string) bool {
+	t.Helper()
+	_, err := os.Stat(filepath.Join(os.Getenv("HOME"), ".atelier", "outbox", id+".json"))
+	return err == nil
+}
+
+// drainOutbox stands for a successful ship: the queue empties.
+func drainOutbox(t *testing.T) {
+	t.Helper()
+	files, _ := outbox.List()
+	for _, f := range files {
+		_ = outbox.Delete(f)
+	}
+}
+
+func copyFixture(t *testing.T) string {
+	t.Helper()
+	src := filepath.Join("..", "transcript", "testdata", "forge-session")
+	dst := t.TempDir()
+	err := filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(src, path)
+		target := filepath.Join(dst, rel)
+		if d.IsDir() {
+			return os.MkdirAll(target, 0o700)
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(target, raw, 0o600)
+	})
+	if err != nil {
+		t.Fatalf("copy fixture: %v", err)
+	}
+	return filepath.Join(dst, fixtureSessionID+".jsonl")
+}
+
+func mustRegister(t *testing.T, id, jsonl string) {
+	t.Helper()
+	if err := registerSession(id, jsonl); err != nil {
+		t.Fatalf("registerSession: %v", err)
+	}
+}
+
+func mustRead(t *testing.T, id string) *transcript.State {
+	t.Helper()
+	s, err := readSessionTree(context.Background(), id)
+	if err != nil {
+		t.Fatalf("readSessionTree: %v", err)
+	}
+	return s
+}
+
+func lineAt(typ string, at time.Time) string {
+	return fmt.Sprintf(`{"type":%q,"timestamp":%q}`, typ, at.UTC().Format("2006-01-02T15:04:05.000Z"))
+}
+
+// testMinute anchors every relative minute of a test run, so a check never
+// recomputes a minute that rolled over since its line was written.
+var testMinute = time.Now().UTC().Truncate(time.Minute)
+
+func recentMinute(ago int) time.Time {
+	return testMinute.Add(-time.Duration(ago) * time.Minute)
+}
+
+// AC 1: replaying a reference forge tree queues exactly one activity:minute
+// per active minute, the title once, and nothing of a detailed type.
+func TestReadSessionTree_FixtureReplayEmitsOneHeartbeatPerMinute(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	parent := copyFixture(t)
+	mustRegister(t, fixtureSessionID, parent)
+
+	mustRead(t, fixtureSessionID)
+
+	counts := countByType(t)
+	if counts["activity:minute"] != fixtureMinutes {
+		t.Errorf("activity:minute = %d, want %d (distinct minutes of the fixture)", counts["activity:minute"], fixtureMinutes)
+	}
+	if counts["transcript:custom-title"] != 1 {
+		t.Errorf("transcript:custom-title = %d, want 1 (unchanged title deduped)", counts["transcript:custom-title"])
+	}
+	for typ := range counts {
+		if typ != "activity:minute" && typ != "transcript:custom-title" {
+			t.Errorf("reader queued a %q event", typ)
+		}
+	}
+	for _, env := range outboxEnvelopes(t) {
+		if env.ClaudeSessionID != fixtureSessionID {
+			t.Errorf("envelope %s carries %q, want the parent session id", env.ULID, env.ClaudeSessionID)
+		}
+		if env.Type == "activity:minute" && (env.TS == nil || env.ULID != transcript.ActivityMinuteID(fixtureSessionID, *env.TS)) {
+			t.Errorf("heartbeat %s is not keyed by its minute (TS %v)", env.ULID, env.TS)
+		}
+	}
+
+	drainOutbox(t)
+	mustRead(t, fixtureSessionID)
+	if n := len(outboxEnvelopes(t)); n != 0 {
+		t.Errorf("second read queued %d envelopes, want 0", n)
+	}
+}
+
+// AC 2: resume, then /compact twice, re-emit nothing already read and no
+// minute already emitted; only the session-starts and the new minutes ship.
+func TestReadSessionTree_ResumeAndCompactReEmitNothing(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	parent := copyFixture(t)
+	mustRegister(t, fixtureSessionID, parent)
+	mustRead(t, fixtureSessionID)
+	drainOutbox(t)
+
+	metadata := []string{
+		`{"type":"mode","mode":"default","sessionId":"fixture-forge-session"}`,
+		`{"type":"permission-mode","permissionMode":"auto","sessionId":"fixture-forge-session"}`,
+		`{"type":"atis-latch","sessionId":"fixture-forge-session"}`,
+		`{"type":"last-prompt","sessionId":"fixture-forge-session"}`,
+		`{"type":"custom-title","customTitle":"Fixture forge session","sessionId":"fixture-forge-session"}`,
+		`{"type":"agent-name","sessionId":"fixture-forge-session"}`,
+	}
+	steps := []struct {
+		name  string
+		lines []string
+		want  string
+	}{
+		{"resume", append(append([]string{}, metadata...), lineAt("user", recentMinute(3).Add(10*time.Second)), lineAt("assistant", recentMinute(3).Add(40*time.Second))), transcript.ActivityMinuteID(fixtureSessionID, recentMinute(3))},
+		{"compact 1", append(append([]string{}, metadata...), lineAt("system", recentMinute(2).Add(5*time.Second)), lineAt("user", recentMinute(3).Add(50*time.Second))), transcript.ActivityMinuteID(fixtureSessionID, recentMinute(2))},
+		{"compact 2", append(append([]string{}, metadata...), lineAt("system", recentMinute(1).Add(5*time.Second))), transcript.ActivityMinuteID(fixtureSessionID, recentMinute(1))},
+	}
+	for _, step := range steps {
+		if err := runEmit(t, "hook:session-start", fixtureSessionID, "--data", "jsonlPath="+parent, "--data", "cwd=/repo"); err != nil {
+			t.Fatalf("%s: emit session-start: %v", step.name, err)
+		}
+		appendJSONL(t, parent, step.lines...)
+		mustRead(t, fixtureSessionID)
+
+		envs := outboxEnvelopes(t)
+		got := map[string]int{}
+		for _, env := range envs {
+			got[env.Type]++
+			if env.Type == "activity:minute" && env.ULID != step.want {
+				t.Errorf("%s: unexpected heartbeat %s, want only %s", step.name, env.ULID, step.want)
+			}
+		}
+		if len(envs) != 2 || got["hook:session-start"] != 1 || got["activity:minute"] != 1 {
+			t.Errorf("%s: outbox = %v, want one hook:session-start and one activity:minute", step.name, got)
+		}
+		drainOutbox(t)
+	}
+}
+
+// An upgrade over a 0.18.1 tree (offsets at EOF) re-reads nothing.
+func TestReadSessionTree_MigratedLegacyTreeReadsNothing(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	parent := filepath.Join(dir, "cs-old.jsonl")
+	agent := filepath.Join(dir, "cs-old", "subagents", "agent-a.jsonl")
+	writeJSONL(t, parent, lineAt("user", recentMinute(10)), lineAt("assistant", recentMinute(9)))
+	writeJSONL(t, agent, lineAt("user", recentMinute(8)))
+	size := func(p string) int64 {
+		st, err := os.Stat(p)
+		if err != nil {
+			t.Fatalf("stat %s: %v", p, err)
+		}
+		return st.Size()
+	}
+	writeJSONL(t, transcript.SessionFile("cs-old"), fmt.Sprintf(
+		`{"claudeSessionId":"cs-old","jsonlPath":%q,"offset":%d,"lastMsgId":"m","lastActivityAt":%q}`,
+		parent, size(parent), time.Now().UTC().Format(time.RFC3339)))
+	writeJSONL(t, filepath.Join(transcript.SessionsDir(), "cs-old", "subagents", "agent-a.json"), fmt.Sprintf(
+		`{"claudeSessionId":"cs-old","watcherKey":"cs-old/subagents/agent-a","jsonlPath":%q,"offset":%d}`,
+		agent, size(agent)))
+
+	mustRead(t, "cs-old")
+
+	if n := len(outboxEnvelopes(t)); n != 0 {
+		t.Fatalf("first read after migration queued %d envelopes, want 0", n)
+	}
+	appendJSONL(t, agent, lineAt("assistant", recentMinute(2)))
+	mustRead(t, "cs-old")
+	if !hasEnvelope(t, transcript.ActivityMinuteID("cs-old", recentMinute(2))) || len(outboxEnvelopes(t)) != 1 {
+		t.Fatalf("new subagent line after migration: outbox = %v, want its one heartbeat", countByType(t))
+	}
+}
+
+func TestReadSessionTree_OutOfOrderMinutesAcrossFiles(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	parent := filepath.Join(t.TempDir(), "cs-1.jsonl")
+	writeJSONL(t, parent, lineAt("assistant", recentMinute(1)))
+	mustRegister(t, "cs-1", parent)
+	mustRead(t, "cs-1")
+
+	appendJSONL(t, filepath.Join(strings.TrimSuffix(parent, ".jsonl"), "subagents", "workflows", "wf_1", "agent-x.jsonl"),
+		lineAt("user", recentMinute(6)), lineAt("assistant", recentMinute(1)))
+	mustRead(t, "cs-1")
+
+	for _, m := range []int{1, 6} {
+		if !hasEnvelope(t, transcript.ActivityMinuteID("cs-1", recentMinute(m))) {
+			t.Errorf("missing heartbeat for minute -%d", m)
+		}
+	}
+	if n := len(outboxEnvelopes(t)); n != 2 {
+		t.Errorf("outbox holds %d envelopes, want 2", n)
+	}
+}
+
+func TestReadSessionTree_PartialLastLineWaitsForItsNewline(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	parent := filepath.Join(t.TempDir(), "cs-1.jsonl")
+	full := lineAt("user", recentMinute(3))
+	partial := lineAt("assistant", recentMinute(2))
+	appendRaw(t, parent, full+"\n"+partial[:20])
+	mustRegister(t, "cs-1", parent)
+
+	s := mustRead(t, "cs-1")
+	if got := s.Offset(parent); got != int64(len(full)+1) {
+		t.Fatalf("offset = %d, want %d (end of the complete line)", got, len(full)+1)
+	}
+	if hasEnvelope(t, transcript.ActivityMinuteID("cs-1", recentMinute(2))) {
+		t.Fatal("partial line derived before its newline")
+	}
+
+	appendRaw(t, parent, partial[20:]+"\n")
+	mustRead(t, "cs-1")
+	if !hasEnvelope(t, transcript.ActivityMinuteID("cs-1", recentMinute(2))) {
+		t.Fatal("completed line not derived")
+	}
+}
+
+func TestReadSessionTree_TruncatedFileRestartsWithoutRequeuingMinutes(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	parent := filepath.Join(t.TempDir(), "cs-1.jsonl")
+	agent := filepath.Join(strings.TrimSuffix(parent, ".jsonl"), "subagents", "agent-a.jsonl")
+	writeJSONL(t, parent, lineAt("user", recentMinute(5)))
+	writeJSONL(t, agent, lineAt("user", recentMinute(4)), lineAt("assistant", recentMinute(3)))
+	mustRegister(t, "cs-1", parent)
+	mustRead(t, "cs-1")
+	drainOutbox(t)
+
+	writeJSONL(t, agent, lineAt("user", recentMinute(4)))
+	s := mustRead(t, "cs-1")
+
+	if n := len(outboxEnvelopes(t)); n != 0 {
+		t.Errorf("re-read after truncation queued %d envelopes, want 0 (minutes already emitted)", n)
+	}
+	if got, want := s.Offset(agent), int64(len(lineAt("user", recentMinute(4)))+1); got != want {
+		t.Errorf("agent offset = %d, want %d", got, want)
+	}
+	if s.Offset(parent) == 0 {
+		t.Error("truncating the agent transcript reset the parent offset")
+	}
+}
+
+// A kill between the outbox write and the state save re-reads the lines; the
+// re-derived heartbeats overwrite their own queued files.
+func TestReadSessionTree_CrashBeforeStateSaveCollapsesLocally(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	parent := filepath.Join(t.TempDir(), "cs-1.jsonl")
+	writeJSONL(t, parent, lineAt("user", recentMinute(3)), lineAt("assistant", recentMinute(2)))
+	mustRegister(t, "cs-1", parent)
+	before, err := os.ReadFile(transcript.SessionFile("cs-1"))
+	if err != nil {
+		t.Fatalf("read state: %v", err)
+	}
+
+	mustRead(t, "cs-1")
+	if err := os.WriteFile(transcript.SessionFile("cs-1"), before, 0o600); err != nil {
+		t.Fatalf("restore pre-read state: %v", err)
+	}
+	mustRead(t, "cs-1")
+
+	if n := countByType(t)["activity:minute"]; n != 2 {
+		t.Errorf("activity:minute files = %d, want 2 after the replay", n)
+	}
+}
+
+func TestReadSessionTree_DropsHeartbeatsAheadOfTheClock(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	parent := filepath.Join(t.TempDir(), "cs-1.jsonl")
+	ahead := recentMinute(-10)
+	writeJSONL(t, parent, lineAt("user", ahead), lineAt("assistant", recentMinute(1)))
+	mustRegister(t, "cs-1", parent)
+
+	s := mustRead(t, "cs-1")
+
+	if hasEnvelope(t, transcript.ActivityMinuteID("cs-1", ahead)) {
+		t.Error("heartbeat 10 min ahead of the clock was queued")
+	}
+	if !hasEnvelope(t, transcript.ActivityMinuteID("cs-1", recentMinute(1))) {
+		t.Error("in-range heartbeat missing")
+	}
+	if s.EmittedMinutes[ahead.Format("200601021504")] {
+		t.Error("dropped minute recorded as emitted")
+	}
+}
+
+func TestShouldSpawnReader(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	now := time.Now().UTC()
-	jsonl := filepath.Join(t.TempDir(), "cs.jsonl")
-	writeJSONL(t, jsonl, `{"type":"user","promptId":"p","message":{"role":"user","content":"x"}}`)
-	size := int64(len(`{"type":"user","promptId":"p","message":{"role":"user","content":"x"}}`) + 1)
+	dir := t.TempDir()
+	parent := filepath.Join(dir, "cs.jsonl")
+	line := lineAt("user", recentMinute(1))
+	writeJSONL(t, parent, line)
+	consumed := map[string]int64{"cs.jsonl": int64(len(line) + 1)}
+	agentDir := filepath.Join(t.TempDir(), "cs-agent")
+	agentParent := filepath.Join(agentDir, "cs.jsonl")
+	writeJSONL(t, agentParent, line)
+	writeJSONL(t, filepath.Join(agentDir, "cs", "subagents", "workflows", "wf_1", "agent-a.jsonl"), line)
 
 	cases := []struct {
 		name  string
 		state *transcript.State
 		want  bool
 	}{
-		{"active session, jsonl absent", &transcript.State{JSONLPath: "/nonexistent.jsonl", LastActivityAt: now}, true},
-		{"dormant, jsonl absent", &transcript.State{JSONLPath: "/nonexistent.jsonl", LastActivityAt: now.Add(-time.Hour)}, false},
-		{"dormant, fully consumed", &transcript.State{JSONLPath: jsonl, Offset: size, LastActivityAt: now.Add(-time.Hour)}, false},
-		{"dormant, unconsumed bytes", &transcript.State{JSONLPath: jsonl, Offset: 0, LastActivityAt: now.Add(-time.Hour)}, true},
-		{"dormant, truncated below offset", &transcript.State{JSONLPath: jsonl, Offset: size + 100, LastActivityAt: now.Add(-time.Hour)}, true},
+		{"active, transcript absent", &transcript.State{JSONLPath: "/nonexistent.jsonl", LastActivityAt: now}, true},
+		{"dormant, transcript absent", &transcript.State{JSONLPath: "/nonexistent.jsonl", LastActivityAt: now.Add(-time.Hour)}, false},
+		{"dormant, fully consumed", &transcript.State{JSONLPath: parent, Offsets: consumed, LastActivityAt: now.Add(-time.Hour)}, false},
+		{"dormant, unconsumed parent", &transcript.State{JSONLPath: parent, LastActivityAt: now.Add(-time.Hour)}, true},
+		{"dormant, truncated below offset", &transcript.State{JSONLPath: parent, Offsets: map[string]int64{"cs.jsonl": 9999}, LastActivityAt: now.Add(-time.Hour)}, true},
+		{"dormant, unconsumed Workflow agent", &transcript.State{JSONLPath: agentParent, Offsets: consumed, LastActivityAt: now.Add(-time.Hour)}, true},
 	}
 	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := shouldSpawnWatcher(tc.state, time.Now()); got != tc.want {
-				t.Fatalf("shouldSpawnWatcher(%s) = %v, want %v", tc.name, got, tc.want)
-			}
-		})
+		if got := shouldSpawnReader(tc.state, time.Now()); got != tc.want {
+			t.Errorf("shouldSpawnReader(%s) = %v, want %v", tc.name, got, tc.want)
+		}
 	}
 }
 
-func TestSessionsManagerLoop_DoesNotSpawnForOrphanSubagent(t *testing.T) {
+func TestRunSessionReader_IdleExit(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	oldPoll, oldIdle := treePollInterval, sessionIdleTimeout
+	treePollInterval = 20 * time.Millisecond
+	sessionIdleTimeout = 80 * time.Millisecond
+	t.Cleanup(func() { treePollInterval = oldPoll; sessionIdleTimeout = oldIdle })
 
-	old, oldPre := sessionPollInterval, subagentPreAttachInterval
-	sessionPollInterval = 30 * time.Millisecond
-	subagentPreAttachInterval = 30 * time.Millisecond
-	t.Cleanup(func() { sessionPollInterval = old; subagentPreAttachInterval = oldPre })
-
-	orphan := &transcript.State{
-		ClaudeSessionID: "cs-orphan-parent",
-		WatcherKey:      transcript.SubagentWatcherKey("cs-orphan-parent", "agent-orphan"),
-		JSONLPath:       filepath.Join(t.TempDir(), "cs-orphan-parent", subagentDirName, "agent-orphan.jsonl"),
-	}
-	if err := transcript.SaveState(orphan); err != nil {
-		t.Fatalf("save orphan: %v", err)
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	parent := filepath.Join(t.TempDir(), "cs-idle.jsonl")
+	writeJSONL(t, parent, lineAt("user", recentMinute(1)))
+	mustRegister(t, "cs-idle", parent)
 
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		sessionsManagerLoop(ctx, nil)
+		runSessionReader(context.Background(), "cs-idle")
 	}()
-
-	time.Sleep(150 * time.Millisecond)
-	cancel()
 	select {
 	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("sessionsManagerLoop did not exit after ctx cancel")
-	}
-
-	files, err := outbox.List()
-	if err != nil {
-		t.Fatalf("outbox.List: %v", err)
-	}
-	if len(files) != 0 {
-		t.Errorf("orphan subagent must not produce envelopes (no parent registered), got %d files in outbox", len(files))
+	case <-time.After(3 * time.Second):
+		t.Fatal("runSessionReader did not idle-exit")
 	}
 }
 
-func TestShouldHandleSubagentEvent(t *testing.T) {
-	t.Parallel()
-	cases := []struct {
-		name string
-		ev   fsnotify.Event
-		want bool
-	}{
-		{"create on agent file", fsnotify.Event{Name: "/p/subagents/agent-1.jsonl", Op: fsnotify.Create}, true},
-		{"rename on agent file", fsnotify.Event{Name: "/p/subagents/agent-1.jsonl", Op: fsnotify.Rename}, true},
-		{"write on agent file", fsnotify.Event{Name: "/p/subagents/agent-1.jsonl", Op: fsnotify.Write}, true},
-		{"create on non-agent file", fsnotify.Event{Name: "/p/subagents/notes.jsonl", Op: fsnotify.Create}, false},
-		{"create on non-jsonl agent", fsnotify.Event{Name: "/p/subagents/agent-1.txt", Op: fsnotify.Create}, false},
-		{"chmod on agent", fsnotify.Event{Name: "/p/subagents/agent-1.jsonl", Op: fsnotify.Chmod}, false},
-		{"remove on agent", fsnotify.Event{Name: "/p/subagents/agent-1.jsonl", Op: fsnotify.Remove}, false},
-	}
-	for _, tc := range cases {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			got := shouldHandleSubagentEvent(tc.ev)
-			if got != tc.want {
-				t.Fatalf("shouldHandleSubagentEvent(%+v) = %v, want %v", tc.ev, got, tc.want)
-			}
-		})
-	}
-}
-
-// A subagent's State carries the parent's ClaudeSessionID with a distinct
-// WatcherKey; every envelope produced by consume() inherits that
-// ClaudeSessionID while preserving the subagent's actual model. This is
-// what unlocks aggregatePhaseRun on the dashboard backend folding tokens of
-// distinct models into the same phaseRun.
-func TestConsume_SubagentEnvelopesCarryParentClaudeSessionID(t *testing.T) {
+func TestRunSessionReader_StaysAliveWhileAWorkflowAgentStreams(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	oldPoll, oldIdle := treePollInterval, sessionIdleTimeout
+	treePollInterval = 20 * time.Millisecond
+	sessionIdleTimeout = 300 * time.Millisecond
+	t.Cleanup(func() { treePollInterval = oldPoll; sessionIdleTimeout = oldIdle })
 
-	jsonlRoot := t.TempDir()
-	parentJSONL := filepath.Join(jsonlRoot, "cs-parent.jsonl")
-	writeJSONL(t, parentJSONL, `{"type":"assistant","message":{"id":"msg_opus","model":"claude-opus-4-7","usage":{"input_tokens":10,"output_tokens":5,"cache_read_input_tokens":4},"content":[{"type":"text","text":"parent"}]}}`)
-
-	subagentDir := filepath.Join(strings.TrimSuffix(parentJSONL, ".jsonl"), subagentDirName)
-	subagentJSONL := filepath.Join(subagentDir, "agent-X.jsonl")
-	writeJSONL(t, subagentJSONL, `{"type":"assistant","message":{"id":"msg_haiku","model":"claude-haiku-4-5-20251001","usage":{"input_tokens":7,"output_tokens":2,"cache_read_input_tokens":1},"content":[{"type":"text","text":"sub"}]}}`)
-
-	if err := transcript.SaveState(&transcript.State{
-		ClaudeSessionID: "cs-parent",
-		JSONLPath:       parentJSONL,
-		LastActivityAt:  time.Now().UTC(),
-	}); err != nil {
-		t.Fatalf("save parent state: %v", err)
-	}
-
-	subagentKey := filepath.Join("cs-parent", subagentDirName, "agent-X")
-	if err := transcript.SaveState(&transcript.State{
-		ClaudeSessionID: "cs-parent",
-		WatcherKey:      subagentKey,
-		JSONLPath:       subagentJSONL,
-		LastActivityAt:  time.Now().UTC(),
-	}); err != nil {
-		t.Fatalf("save subagent state: %v", err)
-	}
-
-	parent, _ := transcript.LoadState("cs-parent")
-	sub, _ := transcript.LoadState(subagentKey)
-
-	ctx := context.Background()
-	consume(ctx, parent)
-	consume(ctx, sub)
-
-	byModel := collectEnvelopesByModel(t)
-	if len(byModel) != 2 {
-		t.Fatalf("want 2 distinct models in outbox, got %d (%v)", len(byModel), byModel)
-	}
-	for model, sessionID := range byModel {
-		if sessionID != "cs-parent" {
-			t.Errorf("model %q envelope ClaudeSessionID = %q, want cs-parent", model, sessionID)
-		}
-	}
-	if _, ok := byModel["claude-opus-4-7"]; !ok {
-		t.Errorf("missing parent Opus envelope")
-	}
-	if _, ok := byModel["claude-haiku-4-5-20251001"]; !ok {
-		t.Errorf("missing subagent Haiku envelope")
-	}
-}
-
-// Exercises the full dir-manager + per-file watcher path: parent registered,
-// subagent dir created lazily by Claude Code, agent file appears, manager
-// spawns its watcher, runSubagentWatcher consumes the file, envelopes carry
-// the parent's claudeSessionID. Before the subagent dir exists the manager
-// polls silently — the test waits a few ticks before creating the dir and
-// never inspects the log file.
-func TestSubagentDirManager_DiscoversAndAttributesToParent(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-
-	old, oldPre := sessionPollInterval, subagentPreAttachInterval
-	sessionPollInterval = 30 * time.Millisecond
-	subagentPreAttachInterval = 30 * time.Millisecond
-	t.Cleanup(func() { sessionPollInterval = old; subagentPreAttachInterval = oldPre })
-
-	jsonlRoot := t.TempDir()
-	parentJSONL := filepath.Join(jsonlRoot, "cs-parent.jsonl")
-	writeJSONL(t, parentJSONL, `{"type":"assistant","message":{"id":"msg_parent","model":"claude-opus-4-7","usage":{"input_tokens":1,"output_tokens":1},"content":[{"type":"text","text":"hi"}]}}`)
-
-	if err := transcript.SaveState(&transcript.State{
-		ClaudeSessionID: "cs-parent",
-		JSONLPath:       parentJSONL,
-		LastActivityAt:  time.Now().UTC(),
-	}); err != nil {
-		t.Fatalf("save parent state: %v", err)
-	}
+	parent := filepath.Join(t.TempDir(), "cs-wf.jsonl")
+	writeJSONL(t, parent, lineAt("user", recentMinute(2)))
+	mustRegister(t, "cs-wf", parent)
+	agent := filepath.Join(strings.TrimSuffix(parent, ".jsonl"), "subagents", "workflows", "wf_1", "agent-a.jsonl")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		subagentDirManager(ctx, "cs-parent", parentJSONL, newActivityTracker())
+		runSessionReader(ctx, "cs-wf")
 	}()
 
-	time.Sleep(100 * time.Millisecond)
-
-	subagentDir := filepath.Join(strings.TrimSuffix(parentJSONL, ".jsonl"), subagentDirName)
-	subagentJSONL := filepath.Join(subagentDir, "agent-Z.jsonl")
-	writeJSONL(t, subagentJSONL, `{"type":"assistant","message":{"id":"msg_z","model":"claude-haiku-4-5-20251001","usage":{"input_tokens":3,"output_tokens":4,"cache_read_input_tokens":2},"content":[{"type":"text","text":"hi-from-haiku"}]}}`)
-
-	ok := waitFor(t, 3*time.Second, func() bool {
-		byModel := collectEnvelopesByModel(t)
-		_, hasHaiku := byModel["claude-haiku-4-5-20251001"]
-		return hasHaiku
-	})
-	if !ok {
-		t.Fatalf("subagent envelopes did not appear in outbox within deadline; outbox=%v", collectEnvelopesByModel(t))
+	for i := 0; i < 8; i++ {
+		time.Sleep(100 * time.Millisecond)
+		appendJSONL(t, agent, lineAt("assistant", recentMinute(1)))
 	}
-
-	cancel()
 	select {
 	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("subagentDirManager did not exit within deadline after ctx cancel")
+		t.Fatal("reader idle-exited while its Workflow agent kept writing")
+	default:
 	}
-
-	byModel := collectEnvelopesByModel(t)
-	haikuSession, ok := byModel["claude-haiku-4-5-20251001"]
-	if !ok {
-		t.Fatalf("missing Haiku envelope: %v", byModel)
-	}
-	if haikuSession != "cs-parent" {
-		t.Errorf("Haiku envelope claudeSessionId = %q, want cs-parent (parent's id)", haikuSession)
-	}
-
-	subKey := filepath.Join("cs-parent", subagentDirName, "agent-Z")
-	got, err := transcript.LoadState(subKey)
-	if err != nil {
-		t.Fatalf("LoadState %s: %v", subKey, err)
-	}
-	if got.Offset == 0 {
-		t.Errorf("subagent state Offset = 0, want > 0 (consumed bytes should have advanced offset)")
-	}
-	if got.ClaudeSessionID != "cs-parent" {
-		t.Errorf("subagent state ClaudeSessionID = %q, want cs-parent", got.ClaudeSessionID)
-	}
-	if got.WatcherKey != subKey {
-		t.Errorf("subagent state WatcherKey = %q, want %q", got.WatcherKey, subKey)
-	}
-}
-
-// A parent session that never invokes a subagent must produce zero log noise
-// and no state files under <parent>/subagents/.
-func TestSubagentDirManager_SilentWhenSubagentDirAbsent(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-
-	old, oldPre := sessionPollInterval, subagentPreAttachInterval
-	sessionPollInterval = 20 * time.Millisecond
-	subagentPreAttachInterval = 20 * time.Millisecond
-	t.Cleanup(func() { sessionPollInterval = old; subagentPreAttachInterval = oldPre })
-
-	jsonlRoot := t.TempDir()
-	parentJSONL := filepath.Join(jsonlRoot, "cs-quiet.jsonl")
-	writeJSONL(t, parentJSONL, `{"type":"user","promptId":"p","message":{"role":"user","content":"x"}}`)
-
-	if err := transcript.SaveState(&transcript.State{
-		ClaudeSessionID: "cs-quiet",
-		JSONLPath:       parentJSONL,
-		LastActivityAt:  time.Now().UTC(),
-	}); err != nil {
-		t.Fatalf("save parent state: %v", err)
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		subagentDirManager(ctx, "cs-quiet", parentJSONL, newActivityTracker())
-	}()
-
-	time.Sleep(150 * time.Millisecond)
 	cancel()
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("subagentDirManager did not exit after ctx cancel")
-	}
-
-	subagentStateDir := filepath.Join(transcript.SessionsDir(), "cs-quiet", subagentDirName)
-	if _, err := os.Stat(subagentStateDir); err == nil {
-		t.Errorf("subagent state dir %s should not exist for a parent without subagents", subagentStateDir)
-	}
+	<-done
 }
 
-func countAssistantEnvelopes(t *testing.T) int {
-	t.Helper()
-	files, err := outbox.List()
-	if err != nil {
-		t.Fatalf("outbox.List: %v", err)
-	}
-	count := 0
-	for _, f := range files {
-		env, err := outbox.Read(f)
-		if err != nil {
-			t.Fatalf("outbox.Read: %v", err)
-		}
-		if env.Type == "hook:assistant-turn" {
-			count++
-		}
-	}
-	return count
-}
-
-// AC 1 (VAL-287): a startup over a large fleet of dormant states must watch
-// only the active sessions. Goroutine growth is the observable proxy for
-// watcher count — each spawned watcher pins several goroutines (watcher loop,
-// subagent manager, fsnotify), so 1 000 wrongly spawned dormants would blow
-// far past the threshold.
-func TestSessionsManagerLoop_StartupSpawnsOnlyActiveWatchers(t *testing.T) {
+func TestSessionsManagerLoop_StartupSpawnsOnlyActiveReaders(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-
-	old, oldPre := sessionPollInterval, subagentPreAttachInterval
+	old := sessionPollInterval
 	sessionPollInterval = 40 * time.Millisecond
-	subagentPreAttachInterval = 40 * time.Millisecond
-	t.Cleanup(func() { sessionPollInterval = old; subagentPreAttachInterval = oldPre })
+	t.Cleanup(func() { sessionPollInterval = old })
 
-	jsonlRoot := t.TempDir()
+	root := t.TempDir()
 	stale := time.Now().UTC().Add(-2 * time.Hour)
-	for i := 0; i < 1000; i++ {
+	for i := 0; i < 500; i++ {
 		id := fmt.Sprintf("cs-dormant-%04d", i)
-		if err := transcript.SaveState(&transcript.State{
-			ClaudeSessionID: id,
-			JSONLPath:       filepath.Join(jsonlRoot, id+".jsonl"),
-			LastActivityAt:  stale,
-		}); err != nil {
+		if err := transcript.SaveState(&transcript.State{ClaudeSessionID: id, JSONLPath: filepath.Join(root, id+".jsonl"), LastActivityAt: stale}); err != nil {
 			t.Fatalf("save dormant %s: %v", id, err)
 		}
 	}
-
-	activeJSONL := filepath.Join(jsonlRoot, "cs-active.jsonl")
-	writeJSONL(t, activeJSONL, `{"type":"assistant","message":{"id":"msg_a","model":"claude-active-model","usage":{"input_tokens":1,"output_tokens":1},"content":[{"type":"text","text":"hi"}]}}`)
-	if err := transcript.SaveState(&transcript.State{
-		ClaudeSessionID: "cs-active",
-		JSONLPath:       activeJSONL,
-		LastActivityAt:  time.Now().UTC(),
-	}); err != nil {
-		t.Fatalf("save active state: %v", err)
-	}
+	active := filepath.Join(root, "cs-active.jsonl")
+	writeJSONL(t, active, lineAt("user", recentMinute(1)))
+	mustRegister(t, "cs-active", active)
 
 	baseline := runtime.NumGoroutine()
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan struct{})
@@ -408,18 +507,12 @@ func TestSessionsManagerLoop_StartupSpawnsOnlyActiveWatchers(t *testing.T) {
 		sessionsManagerLoop(ctx, nil)
 	}()
 
-	ok := waitFor(t, 5*time.Second, func() bool {
-		_, has := collectEnvelopesByModel(t)["claude-active-model"]
-		return has
-	})
-	if !ok {
-		t.Fatal("active session was not consumed within deadline")
+	if !waitFor(t, 5*time.Second, func() bool { return hasEnvelope(t, transcript.ActivityMinuteID("cs-active", recentMinute(1))) }) {
+		t.Fatal("active session was not read")
 	}
-
-	if !waitFor(t, 3*time.Second, func() bool { return runtime.NumGoroutine()-baseline <= 60 }) {
-		t.Errorf("goroutine growth = %d, want <= 60 — dormant states are getting watchers", runtime.NumGoroutine()-baseline)
+	if growth := runtime.NumGoroutine() - baseline; growth > 20 {
+		t.Errorf("goroutine growth = %d, want <= 20 — dormant states are getting readers", growth)
 	}
-
 	cancel()
 	select {
 	case <-done:
@@ -428,108 +521,22 @@ func TestSessionsManagerLoop_StartupSpawnsOnlyActiveWatchers(t *testing.T) {
 	}
 }
 
-// AC 2 (VAL-287): a watcher whose session tree is idle past sessionIdleTimeout
-// returns on its own — ctx is never cancelled here.
-func TestRunSessionWatcher_IdleExit(t *testing.T) {
+// Full manager cycle: read, idle-exit, stay dormant, then revive when a
+// Workflow agent — not the parent — writes again.
+func TestSessionsManagerLoop_IdleExitThenRevivalFromAWorkflowAgent(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-
-	old, oldPre, oldIdle := sessionPollInterval, subagentPreAttachInterval, sessionIdleTimeout
+	oldDiscovery, oldPoll, oldIdle, oldDormant := sessionPollInterval, treePollInterval, sessionIdleTimeout, dormantScanInterval
 	sessionPollInterval = 20 * time.Millisecond
-	subagentPreAttachInterval = 20 * time.Millisecond
-	sessionIdleTimeout = 80 * time.Millisecond
-	t.Cleanup(func() {
-		sessionPollInterval = old
-		subagentPreAttachInterval = oldPre
-		sessionIdleTimeout = oldIdle
-	})
-
-	jsonl := filepath.Join(t.TempDir(), "cs-idle.jsonl")
-	line := `{"type":"user","promptId":"p1","message":{"role":"user","content":"x"}}`
-	writeJSONL(t, jsonl, line)
-	if err := transcript.SaveState(&transcript.State{
-		ClaudeSessionID: "cs-idle",
-		JSONLPath:       jsonl,
-		Offset:          int64(len(line) + 1),
-		LastActivityAt:  time.Now().UTC(),
-	}); err != nil {
-		t.Fatalf("save state: %v", err)
-	}
-
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		runSessionWatcher(context.Background(), "cs-idle")
-	}()
-
-	select {
-	case <-done:
-	case <-time.After(3 * time.Second):
-		t.Fatal("runSessionWatcher did not idle-exit within deadline")
-	}
-}
-
-func TestRunSubagentWatcher_IdleExit(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-
-	old, oldIdle := sessionPollInterval, sessionIdleTimeout
-	sessionPollInterval = 20 * time.Millisecond
-	sessionIdleTimeout = 80 * time.Millisecond
-	t.Cleanup(func() { sessionPollInterval = old; sessionIdleTimeout = oldIdle })
-
-	jsonl := filepath.Join(t.TempDir(), "cs-p", subagentDirName, "agent-i.jsonl")
-	line := `{"type":"user","promptId":"p1","message":{"role":"user","content":"x"}}`
-	writeJSONL(t, jsonl, line)
-	key := transcript.SubagentWatcherKey("cs-p", "agent-i")
-	if err := transcript.SaveState(&transcript.State{
-		ClaudeSessionID: "cs-p",
-		WatcherKey:      key,
-		JSONLPath:       jsonl,
-		Offset:          int64(len(line) + 1),
-		LastActivityAt:  time.Now().UTC(),
-	}); err != nil {
-		t.Fatalf("save state: %v", err)
-	}
-
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		runSubagentWatcher(context.Background(), key, newActivityTracker())
-	}()
-
-	select {
-	case <-done:
-	case <-time.After(3 * time.Second):
-		t.Fatal("runSubagentWatcher did not idle-exit within deadline")
-	}
-}
-
-// AC 2 + AC 3 (VAL-287), full manager cycle: consume, idle-exit, stay dormant
-// (no respawn), then revive from the persisted offset when new lines land —
-// exactly one envelope per line, no re-emission, no loss.
-func TestSessionsManagerLoop_IdleExitThenDormantRevival(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-
-	old, oldPre, oldIdle, oldDormant := sessionPollInterval, subagentPreAttachInterval, sessionIdleTimeout, dormantScanInterval
-	sessionPollInterval = 20 * time.Millisecond
-	subagentPreAttachInterval = 20 * time.Millisecond
+	treePollInterval = 20 * time.Millisecond
 	sessionIdleTimeout = 80 * time.Millisecond
 	dormantScanInterval = 50 * time.Millisecond
 	t.Cleanup(func() {
-		sessionPollInterval = old
-		subagentPreAttachInterval = oldPre
-		sessionIdleTimeout = oldIdle
-		dormantScanInterval = oldDormant
+		sessionPollInterval, treePollInterval, sessionIdleTimeout, dormantScanInterval = oldDiscovery, oldPoll, oldIdle, oldDormant
 	})
 
-	jsonl := filepath.Join(t.TempDir(), "cs-cycle.jsonl")
-	writeJSONL(t, jsonl, `{"type":"assistant","message":{"id":"msg_1","model":"claude-first-line","usage":{"input_tokens":1,"output_tokens":1},"content":[{"type":"text","text":"one"}]}}`)
-	if err := transcript.SaveState(&transcript.State{
-		ClaudeSessionID: "cs-cycle",
-		JSONLPath:       jsonl,
-		LastActivityAt:  time.Now().UTC(),
-	}); err != nil {
-		t.Fatalf("save state: %v", err)
-	}
+	parent := filepath.Join(t.TempDir(), "cs-cycle.jsonl")
+	writeJSONL(t, parent, lineAt("user", recentMinute(3)))
+	mustRegister(t, "cs-cycle", parent)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -539,83 +546,43 @@ func TestSessionsManagerLoop_IdleExitThenDormantRevival(t *testing.T) {
 		sessionsManagerLoop(ctx, nil)
 	}()
 
-	if !waitFor(t, 3*time.Second, func() bool {
-		_, has := collectEnvelopesByModel(t)["claude-first-line"]
-		return has
-	}) {
-		t.Fatal("first line was not consumed within deadline")
+	if !waitFor(t, 3*time.Second, func() bool { return hasEnvelope(t, transcript.ActivityMinuteID("cs-cycle", recentMinute(3))) }) {
+		t.Fatal("first line was not read")
 	}
-
 	time.Sleep(300 * time.Millisecond)
 
-	f, err := os.OpenFile(jsonl, os.O_APPEND|os.O_WRONLY, 0o600)
-	if err != nil {
-		t.Fatalf("open jsonl for append: %v", err)
+	appendJSONL(t, filepath.Join(strings.TrimSuffix(parent, ".jsonl"), "subagents", "workflows", "wf_1", "agent-a.jsonl"),
+		lineAt("assistant", recentMinute(1)))
+	if !waitFor(t, 5*time.Second, func() bool { return hasEnvelope(t, transcript.ActivityMinuteID("cs-cycle", recentMinute(1))) }) {
+		t.Fatal("dormant session was not revived by its Workflow agent")
 	}
-	if _, err := f.WriteString(`{"type":"assistant","message":{"id":"msg_2","model":"claude-second-line","usage":{"input_tokens":1,"output_tokens":1},"content":[{"type":"text","text":"two"}]}}` + "\n"); err != nil {
-		t.Fatalf("append second line: %v", err)
-	}
-	if err := f.Close(); err != nil {
-		t.Fatalf("close jsonl: %v", err)
-	}
-
-	if !waitFor(t, 5*time.Second, func() bool {
-		_, has := collectEnvelopesByModel(t)["claude-second-line"]
-		return has
-	}) {
-		t.Fatal("dormant session was not revived within deadline")
-	}
-
 	cancel()
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("sessionsManagerLoop did not exit after ctx cancel")
 	}
-
-	if got := countAssistantEnvelopes(t); got != 2 {
-		t.Errorf("assistant envelopes = %d, want exactly 2 (one per line, no re-emission)", got)
+	if n := countByType(t)["activity:minute"]; n != 2 {
+		t.Errorf("activity:minute = %d, want 2 (no re-emission)", n)
 	}
 }
 
-// AC 5 (VAL-287): the GC step removes states whose JSONL is gone and leaves
-// live states untouched, pruning emptied subagent directories. Two guards:
-// an active state survives a transiently missing JSONL, and a subagent
-// whose parent state is gone is purged even if its own JSONL still exists.
 func TestRunStateGC_RemovesOrphansKeepsLive(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	root := t.TempDir()
+	live := filepath.Join(root, "cs-live.jsonl")
+	writeJSONL(t, live, lineAt("user", recentMinute(1)))
 
-	jsonlRoot := t.TempDir()
-	liveJSONL := filepath.Join(jsonlRoot, "cs-live.jsonl")
-	writeJSONL(t, liveJSONL, `{"type":"user","promptId":"p","message":{"role":"user","content":"x"}}`)
-	headlessJSONL := filepath.Join(jsonlRoot, "cs-headless", subagentDirName, "agent-h.jsonl")
-	writeJSONL(t, headlessJSONL, `{"type":"user","promptId":"p","message":{"role":"user","content":"x"}}`)
-
-	states := []*transcript.State{
-		{ClaudeSessionID: "cs-live", JSONLPath: liveJSONL},
+	for _, s := range []*transcript.State{
+		{ClaudeSessionID: "cs-live", JSONLPath: live},
 		{ClaudeSessionID: "cs-orphan", JSONLPath: "/nonexistent/cs-orphan.jsonl"},
-		{
-			ClaudeSessionID: "cs-orphan",
-			WatcherKey:      transcript.SubagentWatcherKey("cs-orphan", "agent-1"),
-			JSONLPath:       "/nonexistent/cs-orphan/subagents/agent-1.jsonl",
-		},
 		{ClaudeSessionID: "cs-active-gone", JSONLPath: "/nonexistent/cs-active-gone.jsonl", LastActivityAt: time.Now().UTC()},
-		{
-			ClaudeSessionID: "cs-headless",
-			WatcherKey:      transcript.SubagentWatcherKey("cs-headless", "agent-h"),
-			JSONLPath:       headlessJSONL,
-		},
-		{
-			ClaudeSessionID: "cs-live",
-			WatcherKey:      transcript.SubagentWatcherKey("cs-live", "agent-gone"),
-			JSONLPath:       "/nonexistent/cs-live/subagents/agent-gone.jsonl",
-		},
-	}
-	for _, s := range states {
+	} {
 		if err := transcript.SaveState(s); err != nil {
-			t.Fatalf("save %s: %v", s.Key(), err)
+			t.Fatalf("save %s: %v", s.ClaudeSessionID, err)
 		}
 	}
+	writeJSONL(t, filepath.Join(transcript.SessionsDir(), "cs-headless", "subagents", "agent-h.json"), `{}`)
 
 	runStateGC()
 
@@ -623,232 +590,12 @@ func TestRunStateGC_RemovesOrphansKeepsLive(t *testing.T) {
 		t.Errorf("live state was removed: %v", err)
 	}
 	if _, err := transcript.LoadState("cs-orphan"); !os.IsNotExist(err) {
-		t.Errorf("orphan parent state should be gone, got err=%v", err)
-	}
-	if _, err := os.Stat(filepath.Join(transcript.SessionsDir(), "cs-orphan")); !os.IsNotExist(err) {
-		t.Errorf("orphan subagent dir tree should be pruned, got err=%v", err)
+		t.Errorf("orphan state should be gone, got err=%v", err)
 	}
 	if _, err := transcript.LoadState("cs-active-gone"); err != nil {
-		t.Errorf("active state must survive a transiently missing JSONL: %v", err)
+		t.Errorf("active state must survive a transiently missing transcript: %v", err)
 	}
-	if _, err := transcript.LoadState(transcript.SubagentWatcherKey("cs-headless", "agent-h")); !os.IsNotExist(err) {
-		t.Errorf("subagent without a parent state should be gone, got err=%v", err)
-	}
-	if _, err := transcript.LoadState(transcript.SubagentWatcherKey("cs-live", "agent-gone")); !os.IsNotExist(err) {
-		t.Errorf("subagent with a live parent but missing JSONL should be gone, got err=%v", err)
-	}
-	if _, err := transcript.LoadState("cs-live"); err != nil {
-		t.Errorf("live parent must survive its subagent's purge: %v", err)
-	}
-}
-
-// The dormant-skip branch of subagentDirManager: a subagent whose persisted
-// state is dormant and fully consumed must not get a watcher when its file
-// is rediscovered. Goroutine growth is the observable, as in the AC 1 test.
-func TestSubagentDirManager_SkipsDormantFullyConsumedStates(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-
-	old, oldPre := sessionPollInterval, subagentPreAttachInterval
-	sessionPollInterval = 30 * time.Millisecond
-	subagentPreAttachInterval = 30 * time.Millisecond
-	t.Cleanup(func() { sessionPollInterval = old; subagentPreAttachInterval = oldPre })
-
-	jsonlRoot := t.TempDir()
-	parentJSONL := filepath.Join(jsonlRoot, "cs-parent.jsonl")
-	writeJSONL(t, parentJSONL, `{"type":"user","promptId":"p","message":{"role":"user","content":"x"}}`)
-
-	subagentDir := filepath.Join(strings.TrimSuffix(parentJSONL, ".jsonl"), subagentDirName)
-	stale := time.Now().UTC().Add(-2 * time.Hour)
-	line := `{"type":"assistant","message":{"id":"msg_d","model":"claude-dormant-model","usage":{"input_tokens":1,"output_tokens":1},"content":[{"type":"text","text":"old"}]}}`
-	for i := 0; i < 50; i++ {
-		agentBase := fmt.Sprintf("agent-%02d", i)
-		jsonl := filepath.Join(subagentDir, agentBase+".jsonl")
-		writeJSONL(t, jsonl, line)
-		if err := transcript.SaveState(&transcript.State{
-			ClaudeSessionID: "cs-parent",
-			WatcherKey:      transcript.SubagentWatcherKey("cs-parent", agentBase),
-			JSONLPath:       jsonl,
-			Offset:          int64(len(line) + 1),
-			LastActivityAt:  stale,
-		}); err != nil {
-			t.Fatalf("save dormant subagent state %s: %v", agentBase, err)
-		}
-	}
-
-	baseline := runtime.NumGoroutine()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		subagentDirManager(ctx, "cs-parent", parentJSONL, newActivityTracker())
-	}()
-
-	time.Sleep(200 * time.Millisecond)
-
-	if !waitFor(t, 3*time.Second, func() bool { return runtime.NumGoroutine()-baseline <= 30 }) {
-		t.Errorf("goroutine growth = %d, want <= 30 — dormant subagent states are getting watchers", runtime.NumGoroutine()-baseline)
-	}
-	if got := countAssistantEnvelopes(t); got != 0 {
-		t.Errorf("dormant fully-consumed subagents produced %d envelopes, want 0", got)
-	}
-
-	revived := filepath.Join(subagentDir, "agent-07.jsonl")
-	f, err := os.OpenFile(revived, os.O_APPEND|os.O_WRONLY, 0o600)
-	if err != nil {
-		t.Fatalf("open %s for append: %v", revived, err)
-	}
-	if _, err := f.WriteString(`{"type":"assistant","message":{"id":"msg_r","model":"claude-revived-model","usage":{"input_tokens":1,"output_tokens":1},"content":[{"type":"text","text":"new"}]}}` + "\n"); err != nil {
-		t.Fatalf("append revival line: %v", err)
-	}
-	if err := f.Close(); err != nil {
-		t.Fatalf("close revived jsonl: %v", err)
-	}
-
-	if !waitFor(t, 5*time.Second, func() bool {
-		_, has := collectEnvelopesByModel(t)["claude-revived-model"]
-		return has
-	}) {
-		t.Fatal("dormant subagent with new bytes was not revived within deadline")
-	}
-	if got := countAssistantEnvelopes(t); got != 1 {
-		t.Errorf("revived subagent envelopes = %d, want exactly 1 (offset resume, no re-emission)", got)
-	}
-
-	cancel()
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("subagentDirManager did not exit after ctx cancel")
-	}
-}
-
-// The tree keep-alive invariant: a parent whose own JSONL is quiet must not
-// idle-exit while one of its subagents still streams — the subagent's
-// consumes touch the shared tracker. Once the subagent goes quiet too, the
-// whole tree idle-exits.
-func TestRunSessionWatcher_StaysAliveWhileSubagentStreams(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-
-	old, oldPre, oldIdle := sessionPollInterval, subagentPreAttachInterval, sessionIdleTimeout
-	sessionPollInterval = 20 * time.Millisecond
-	subagentPreAttachInterval = 20 * time.Millisecond
-	sessionIdleTimeout = 150 * time.Millisecond
-	t.Cleanup(func() {
-		sessionPollInterval = old
-		subagentPreAttachInterval = oldPre
-		sessionIdleTimeout = oldIdle
-	})
-
-	jsonlRoot := t.TempDir()
-	parentJSONL := filepath.Join(jsonlRoot, "cs-keepalive.jsonl")
-	line := `{"type":"user","promptId":"p1","message":{"role":"user","content":"x"}}`
-	writeJSONL(t, parentJSONL, line)
-	if err := transcript.SaveState(&transcript.State{
-		ClaudeSessionID: "cs-keepalive",
-		JSONLPath:       parentJSONL,
-		Offset:          int64(len(line) + 1),
-		LastActivityAt:  time.Now().UTC(),
-	}); err != nil {
-		t.Fatalf("save parent state: %v", err)
-	}
-
-	subagentJSONL := filepath.Join(strings.TrimSuffix(parentJSONL, ".jsonl"), subagentDirName, "agent-s.jsonl")
-	writeJSONL(t, subagentJSONL, `{"type":"user","promptId":"p0","message":{"role":"user","content":"start"}}`)
-
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		runSessionWatcher(context.Background(), "cs-keepalive")
-	}()
-
-	for i := 0; i < 15; i++ {
-		f, err := os.OpenFile(subagentJSONL, os.O_APPEND|os.O_WRONLY, 0o600)
-		if err != nil {
-			t.Fatalf("open subagent jsonl for append: %v", err)
-		}
-		if _, err := f.WriteString(fmt.Sprintf(`{"type":"user","promptId":"p%d","message":{"role":"user","content":"tick"}}`, i+1) + "\n"); err != nil {
-			t.Fatalf("append to subagent jsonl: %v", err)
-		}
-		if err := f.Close(); err != nil {
-			t.Fatalf("close subagent jsonl: %v", err)
-		}
-		time.Sleep(40 * time.Millisecond)
-	}
-
-	select {
-	case <-done:
-		t.Fatal("parent idle-exited while its subagent was still streaming")
-	default:
-	}
-
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("parent did not idle-exit after the subagent went quiet")
-	}
-}
-
-func TestRunSessionEndJanitor_SynthesizesEndForIdleTranscriptLessSessions(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-
-	states := []*transcript.State{
-		// Idle past sessionIdleTimeout, transcript-less → close synthesized.
-		{ClaudeSessionID: "cs-opencode-idle", LastActivityAt: time.Now().UTC().Add(-time.Hour)},
-		// Still active → untouched.
-		{ClaudeSessionID: "cs-opencode-live", LastActivityAt: time.Now().UTC()},
-		// Watcher-backed and idle → not the janitor's business.
-		{ClaudeSessionID: "cs-watched", JSONLPath: "/tmp/cs-watched.jsonl", LastActivityAt: time.Now().UTC().Add(-time.Hour)},
-	}
-	for _, s := range states {
-		if err := transcript.SaveState(s); err != nil {
-			t.Fatalf("save %s: %v", s.Key(), err)
-		}
-	}
-
-	runSessionEndJanitor()
-
-	envelopes := readOutbox(t)
-	if len(envelopes) != 1 {
-		t.Fatalf("outbox holds %d envelopes, want exactly 1 synthesized session-end", len(envelopes))
-	}
-	env := envelopes[0]
-	if env.Type != "hook:session-end" || env.ClaudeSessionID != "cs-opencode-idle" {
-		t.Errorf("envelope = %s for %s, want hook:session-end for cs-opencode-idle", env.Type, env.ClaudeSessionID)
-	}
-	if _, err := transcript.LoadState("cs-opencode-idle"); !os.IsNotExist(err) {
-		t.Errorf("closed session's state should be retired, got err=%v", err)
-	}
-	if _, err := transcript.LoadState("cs-opencode-live"); err != nil {
-		t.Errorf("active transcript-less state must survive: %v", err)
-	}
-	if _, err := transcript.LoadState("cs-watched"); err != nil {
-		t.Errorf("watcher-backed state must survive: %v", err)
-	}
-
-	// Second run: the state is gone, no duplicate close may be synthesized.
-	runSessionEndJanitor()
-	if again := readOutbox(t); len(again) != 1 {
-		t.Errorf("second run synthesized %d extra envelope(s), want none", len(again)-1)
-	}
-}
-
-func TestRunStateGC_KeepsTranscriptLessStates(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-
-	// Idle transcript-less state: os.Stat("") reads as ErrNotExist, but the
-	// session-end janitor owns this lifecycle — GC must not purge it first.
-	if err := transcript.SaveState(&transcript.State{
-		ClaudeSessionID: "cs-opencode-idle",
-		LastActivityAt:  time.Now().UTC().Add(-time.Hour),
-	}); err != nil {
-		t.Fatalf("save state: %v", err)
-	}
-
-	runStateGC()
-
-	if _, err := transcript.LoadState("cs-opencode-idle"); err != nil {
-		t.Errorf("transcript-less state should survive GC: %v", err)
+	if _, err := os.Stat(filepath.Join(transcript.SessionsDir(), "cs-headless")); !os.IsNotExist(err) {
+		t.Errorf("orphan 0.18.x subagent state dir should be pruned, got err=%v", err)
 	}
 }

@@ -58,7 +58,7 @@ func sessionStoreWatcherLoop(ctx context.Context, _ *runState) {
 		case <-tick.C:
 			addStoreWatches(watcher, storeRoot)
 			reconcileSessionStore(storeRoot)
-		case ev, ok := <-watcherEventsRaw(watcher):
+		case ev, ok := <-watcherEvents(watcher):
 			if !ok {
 				watcher = nil
 				continue

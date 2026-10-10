@@ -22,12 +22,7 @@ const (
 	ForgeWaveClose         Type = "forge:wave-close"
 	ForgeWaveOpen          Type = "forge:wave-open"
 	HookSessionStart       Type = "hook:session-start"
-	HookUserPromptSubmit   Type = "hook:user-prompt-submit"
-	HookPreToolUse         Type = "hook:pre-tool-use"
-	HookPostToolUse        Type = "hook:post-tool-use"
-	HookStop               Type = "hook:stop"
 	HookSessionEnd         Type = "hook:session-end"
-	HookAssistantTurn      Type = "hook:assistant-turn"
 	ShipCIRound            Type = "ship:ci-round"
 	ShipPRLinked           Type = "ship:pr-linked"
 	ShipRunStart           Type = "ship:run-start"
@@ -41,6 +36,12 @@ const (
 	TranscriptCustomTitle  Type = "transcript:custom-title"
 )
 
+// ActivityMinute is produced only by the transcript reader and stays out of
+// All(), the `atelierd emit` allowlist: Firestore accepts a heartbeat only
+// when its doc id is <claudeSessionId>_<UTC minute>, so a hand-emitted one
+// with a ULID id would be quarantined.
+const ActivityMinute Type = "activity:minute"
+
 func All() []Type {
 	return []Type{
 		ForgeCampaignSaved,
@@ -52,13 +53,8 @@ func All() []Type {
 		ForgeTestplanPublished,
 		ForgeWaveClose,
 		ForgeWaveOpen,
-		HookAssistantTurn,
-		HookPostToolUse,
-		HookPreToolUse,
 		HookSessionEnd,
 		HookSessionStart,
-		HookStop,
-		HookUserPromptSubmit,
 		ShipCIRound,
 		ShipPRLinked,
 		ShipRunStart,

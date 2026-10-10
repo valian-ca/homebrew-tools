@@ -1,10 +1,16 @@
 package firestore
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/valian-ca/homebrew-tools/internal/atelierd/app"
 )
 
 func TestUserHeartbeatWrites(t *testing.T) {
@@ -55,26 +61,24 @@ func TestUserHeartbeatWrites(t *testing.T) {
 	}
 }
 
-func TestIsAuthLostAndIsPermissionDenied(t *testing.T) {
+func TestErrorClassifiers(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		name           string
 		err            error
 		wantAuthLost   bool
 		wantPermDenied bool
+		wantExists     bool
 	}{
-		{"nil", nil, false, false},
-		// 401 means the bearer token was rejected — auth-lost.
-		{"401 unauthorized", &Error{Status: http.StatusUnauthorized}, true, false},
-		// 403 means the token is valid but this write is forbidden by rules
-		// (e.g. an /events doc that already exists) — permission denied, NOT
-		// auth-lost. This separation is the crux of the fix.
-		{"403 forbidden", &Error{Status: http.StatusForbidden}, false, true},
-		{"500 internal", &Error{Status: http.StatusInternalServerError}, false, false},
-		{"non-firestore error", errors.New("boom"), false, false},
+		{"nil", nil, false, false, false},
+		{"401 unauthorized", &Error{Status: http.StatusUnauthorized}, true, false, false},
+		// 403: the token is valid but the rules forbid this write — not auth-lost.
+		{"403 forbidden", &Error{Status: http.StatusForbidden}, false, true, false},
+		{"409 already exists", &Error{Status: http.StatusConflict}, false, false, true},
+		{"500 internal", &Error{Status: http.StatusInternalServerError}, false, false, false},
+		{"non-firestore error", errors.New("boom"), false, false, false},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			if got := IsAuthLost(tc.err); got != tc.wantAuthLost {
@@ -83,6 +87,52 @@ func TestIsAuthLostAndIsPermissionDenied(t *testing.T) {
 			if got := IsPermissionDenied(tc.err); got != tc.wantPermDenied {
 				t.Errorf("IsPermissionDenied(%v) = %v, want %v", tc.err, got, tc.wantPermDenied)
 			}
+			if got := IsAlreadyExists(tc.err); got != tc.wantExists {
+				t.Errorf("IsAlreadyExists(%v) = %v, want %v", tc.err, got, tc.wantExists)
+			}
 		})
+	}
+}
+
+func TestCommitEvents_CreateOnlyPreconditionAnd409(t *testing.T) {
+	var body map[string]any
+	status := http.StatusOK
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer tok" {
+			t.Errorf("Authorization = %q", got)
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+	defer app.SetCommitURLForTest(srv.URL)()
+
+	minute := time.Date(2026, 10, 10, 10, 3, 0, 0, time.UTC)
+	doc := &EventDoc{ULID: "cs-1_202610101003", Type: "activity:minute", ClaudeSessionID: "cs-1", UID: "u", Host: "h", TS: minute, Payload: map[string]any{}}
+	if err := CommitEvents(context.Background(), "tok", []*EventDoc{doc}); err != nil {
+		t.Fatalf("CommitEvents: %v", err)
+	}
+
+	writes, _ := body["writes"].([]any)
+	if len(writes) != 1 {
+		t.Fatalf("writes = %v, want 1", body["writes"])
+	}
+	w := writes[0].(map[string]any)
+	if pre, _ := w["currentDocument"].(map[string]any); pre["exists"] != false {
+		t.Errorf("currentDocument = %v, want {exists: false}", w["currentDocument"])
+	}
+	update := w["update"].(map[string]any)
+	if name, _ := update["name"].(string); !strings.HasSuffix(name, "/documents/events/cs-1_202610101003") {
+		t.Errorf("doc name = %q", name)
+	}
+	fields := update["fields"].(map[string]any)
+	if ts := fields["ts"].(map[string]any)["timestampValue"]; ts != "2026-10-10T10:03:00Z" {
+		t.Errorf("ts = %v, want 2026-10-10T10:03:00Z", ts)
+	}
+
+	status = http.StatusConflict
+	if err := CommitEvents(context.Background(), "tok", []*EventDoc{doc}); !IsAlreadyExists(err) {
+		t.Fatalf("409 response: err = %v, want IsAlreadyExists", err)
 	}
 }

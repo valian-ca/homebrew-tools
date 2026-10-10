@@ -55,6 +55,17 @@ func UserDocumentURL(uid string) string {
 	return FirestoreBaseURL + "/users/" + uid
 }
 
-// CommitURL returns the Firestore REST :commit endpoint, which supports
-// transforms (used for serverTimestamp on heartbeat).
-const CommitURL = "https://firestore.googleapis.com/v1/projects/" + FirebaseProjectID + "/databases/(default)/documents:commit"
+// commitURL is the Firestore REST :commit endpoint, which supports transforms
+// (used for serverTimestamp on heartbeat). A var so tests can point the
+// shipper at a fake Firestore.
+var commitURL = "https://firestore.googleapis.com/v1/projects/" + FirebaseProjectID + "/databases/(default)/documents:commit"
+
+func CommitURL() string { return commitURL }
+
+// SetCommitURLForTest redirects every :commit to url and returns the restore
+// function. Test-only.
+func SetCommitURLForTest(url string) (restore func()) {
+	prev := commitURL
+	commitURL = url
+	return func() { commitURL = prev }
+}

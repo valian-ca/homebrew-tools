@@ -3,6 +3,7 @@ package cmds
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -10,6 +11,7 @@ import (
 	"github.com/valian-ca/homebrew-tools/internal/atelierd/credentials"
 	"github.com/valian-ca/homebrew-tools/internal/atelierd/firestore"
 	"github.com/valian-ca/homebrew-tools/internal/atelierd/outbox"
+	"github.com/valian-ca/homebrew-tools/internal/atelierd/paths"
 	"github.com/valian-ca/homebrew-tools/internal/atelierd/status"
 )
 
@@ -284,8 +286,8 @@ func checkOutboxBacklog() checkResult {
 }
 
 // checkRejected counts *.json.rejected files — events Firestore refused with a
-// 403 (e.g. duplicates from a copied outbox). Not an auth check: the token is
-// valid, so it never advises `atelierd link`.
+// 403. Not an auth check: the token is valid, so it never advises
+// `atelierd link`; it prints the command that clears the quarantine.
 func checkRejected() checkResult {
 	count, err := outbox.CountRejected()
 	if err != nil {
@@ -297,6 +299,17 @@ func checkRejected() checkResult {
 	return checkResult{
 		name: "Rejected events",
 		tier: tierWarn,
-		note: fmt.Sprintf("%d event(s) quarantined by Firestore (permission) — see ~/.atelier/atelierd.log", count),
+		note: fmt.Sprintf("%d event(s) quarantined by Firestore (permission) — see ~/.atelier/atelierd.log; clear with: %s", count, rejectedCleanupCommand(paths.Outbox())),
 	}
+}
+
+func rejectedCleanupCommand(outboxDir string) string {
+	return "rm " + shellQuote(outboxDir) + "/*.json.rejected"
+}
+
+func shellQuote(s string) string {
+	if s != "" && !strings.ContainsAny(s, " \t\n'\"$`\\!*?[]{}()<>|&;#~") {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

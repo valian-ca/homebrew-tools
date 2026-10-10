@@ -19,19 +19,22 @@ import (
 	"github.com/valian-ca/homebrew-tools/internal/atelierd/paths"
 )
 
-// Envelope is the JSON shape `atelierd emit` writes. host/uid/ts are
-// intentionally absent — they are added by `atelierd run` at ship time
-// (host from os.Hostname, uid from credentials, ts decoded from ULID prefix).
+// Envelope is the JSON shape queued in the outbox. host and uid are absent —
+// `atelierd run` adds them at ship time. TS is set only by producers whose
+// event time is not the ULID prefix: an activity:minute heartbeat is keyed
+// <claudeSessionId>_<minute>, not by a ULID, and its ts is that minute.
 type Envelope struct {
 	ULID            string         `json:"ulid"`
 	Type            string         `json:"type"`
 	ClaudeSessionID string         `json:"claudeSessionId"`
 	Payload         map[string]any `json:"payload"`
 	CreatedAt       time.Time      `json:"createdAt"`
+	TS              *time.Time     `json:"ts,omitempty"`
 }
 
 // Write persists e atomically to ~/.atelier/outbox/<ulid>.json.
-// The directory is created (mode 0700) on first write.
+// The directory is created (mode 0700) on first write. A heartbeat derived
+// twice overwrites its own queued file, since its id is deterministic.
 func Write(e *Envelope) error {
 	if err := paths.EnsureDir(paths.Outbox()); err != nil {
 		return fmt.Errorf("ensure outbox dir: %w", err)
@@ -52,9 +55,9 @@ func Write(e *Envelope) error {
 	return nil
 }
 
-// List returns every *.json file in the outbox sorted by name (ULID
-// lexicographically increasing — chronological order). Files in the middle of
-// being written (.tmp suffix) are excluded.
+// List returns every *.json file in the outbox sorted by name: chronological
+// for ULID-keyed events, not for heartbeats, which the backend orders by ts.
+// Files in the middle of being written (.tmp suffix) are excluded.
 func List() ([]string, error) {
 	entries, err := os.ReadDir(paths.Outbox())
 	if err != nil {
@@ -99,7 +102,7 @@ func Count() (int, error) {
 }
 
 // CountRejected returns the number of *.json.rejected files — events Firestore
-// refused with a 403 (e.g. a duplicate that already exists), quarantined by the
+// refused with a 403 (permission denied by the rules), quarantined by the
 // shipper out of the active *.json queue.
 func CountRejected() (int, error) {
 	entries, err := os.ReadDir(paths.Outbox())

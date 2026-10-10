@@ -14,258 +14,319 @@ import (
 	"github.com/valian-ca/homebrew-tools/internal/atelierd/paths"
 )
 
-// State is the persisted per-session watcher state. It encodes everything
-// needed to resume from a kill -9 without duplicating events already shipped:
+// SchemaVersion marks a state that holds one record per session tree. A state
+// file without it was written by atelierd ≤ 0.18.x, one file per transcript.
+const SchemaVersion = 2
+
+// emittedMinutesWindow bounds EmittedMinutes on disk. A minute older than this
+// that a truncation makes us re-derive collides on its Firestore doc (409),
+// which the shipper counts as shipped.
+const emittedMinutesWindow = 24 * time.Hour
+
+// State is the persisted read state of one session tree (the parent
+// transcript plus its subagent and Workflow transcripts).
 //
-//   - Offset       — byte position immediately past the last \n we've fully consumed.
-//   - LastMsgID    — last assistant message.id for which we emitted hook:assistant-turn.
-//     Same id appears across consecutive JSONL lines when a single
-//     turn produces multiple content blocks; the dedup key.
-//   - LastPromptID — last promptId for which we emitted hook:user-prompt-submit.
-//     Multiple user records share a promptId (initial prompt + any
-//     auto-injected attachments / system reminders); we emit once
-//     per fresh promptId.
-//   - OpenToolUseTools — tool_use_id → tool_name for tool_use blocks whose
-//     pre fired but whose post hasn't yet. We need the
-//     tool name on the post side because toolUseResult
-//     records don't repeat it.
-//   - ClosedToolUseIDs — tool_use_ids whose post-tool-use was already
-//     emitted. Kept (not pruned) so a replay after
-//     kill -9 between outbox.Write and SaveState
-//     doesn't re-emit the pre or the post.
-//   - LastTitle / LastTitleType — the last (title, event-type) pair emitted as
-//     a transcript:ai-title / transcript:custom-title. The dedup key for
-//     titles: unlike the other records a title line carries no id, and the
-//     file is re-read from offset 0 whenever it is detected as truncated (see
-//     consume). Without this key an unchanged title re-emits on every replay,
-//     stamped at re-read time — which advances the card's lastEventAt and
-//     resurrects shipped/finished cards on the dashboard. Emit only on a real
-//     change (title or kind).
-//
-// WatcherKey distinguishes the on-disk file basis from the ClaudeSessionID
-// emitted on envelopes. Empty for parent transcripts (file basis =
-// ClaudeSessionID, layout unchanged). For subagent transcripts the key is
-// "<parentSessionID>/subagents/<agentFileBase>" — the state lives at
-// ~/.atelier/sessions/<parentSessionID>/subagents/<agentFileBase>.json
-// while envelopes still carry the parent's ClaudeSessionID, so the backend's
-// aggregatePhaseRun folds subagent tokens into the parent's phaseRun without
-// any backend-side change or new event type.
+// Offsets is keyed by the transcript path relative to the parent's directory
+// ("<id>.jsonl", "<id>/subagents/workflows/wf_x/agent-y.jsonl"); each value is
+// the byte position just past the last complete line consumed. EmittedMinutes
+// is keyed by the UTC minute ("200601021504") of every heartbeat already
+// queued, so a line re-read after a crash or a truncation never queues its
+// minute twice.
 type State struct {
-	ClaudeSessionID  string            `json:"claudeSessionId"`
-	WatcherKey       string            `json:"watcherKey,omitempty"`
-	JSONLPath        string            `json:"jsonlPath"`
-	Offset           int64             `json:"offset"`
-	LastMsgID        string            `json:"lastMsgId,omitempty"`
-	LastPromptID     string            `json:"lastPromptId,omitempty"`
-	OpenToolUseTools map[string]string `json:"openToolUseTools,omitempty"`
-	ClosedToolUseIDs map[string]bool   `json:"closedToolUseIds,omitempty"`
-	LastTitle        string            `json:"lastTitle,omitempty"`
-	LastTitleType    string            `json:"lastTitleType,omitempty"`
-	LastActivityAt   time.Time         `json:"lastActivityAt"`
+	ClaudeSessionID string           `json:"claudeSessionId"`
+	JSONLPath       string           `json:"jsonlPath"`
+	Offsets         map[string]int64 `json:"offsets"`
+	EmittedMinutes  map[string]bool  `json:"emittedMinutes"`
+	LastTitle       string           `json:"lastTitle,omitempty"`
+	LastTitleType   string           `json:"lastTitleType,omitempty"`
+	LastActivityAt  time.Time        `json:"lastActivityAt"`
+	SchemaVersion   int              `json:"schemaVersion"`
 }
 
-// Key returns the on-disk file basis: WatcherKey when non-empty, otherwise
-// ClaudeSessionID (parent). Maps directly to a path under SessionsDir() via
-// SessionFile.
-func (s *State) Key() string {
-	if s.WatcherKey != "" {
-		return s.WatcherKey
+func (s *State) ensureMaps() {
+	if s.Offsets == nil {
+		s.Offsets = map[string]int64{}
 	}
-	return s.ClaudeSessionID
-}
-
-func (s *State) IsSubagent() bool { return s.WatcherKey != "" }
-
-// ParentSessionID returns the registered parent's ClaudeSessionID — for a
-// parent state that's its own ID; for a subagent it's the first segment of
-// WatcherKey. The parent's ID is the pivot every subagent envelope and
-// orphan check anchors on.
-func (s *State) ParentSessionID() string {
-	if s.WatcherKey == "" {
-		return s.ClaudeSessionID
+	if s.EmittedMinutes == nil {
+		s.EmittedMinutes = map[string]bool{}
 	}
-	parent, _, _ := strings.Cut(s.WatcherKey, "/")
-	return parent
 }
 
-// SubagentWatcherKey returns the on-disk key for a subagent state file, of
-// the form "<parentSessionID>/subagents/<agentFileBase>". Sole construction
-// path so callers don't reach into the encoding directly.
-func SubagentWatcherKey(parentSessionID, agentFileBase string) string {
-	return filepath.Join(parentSessionID, "subagents", agentFileBase)
+func (s *State) markMinute(minute time.Time) bool {
+	s.ensureMaps()
+	key := minuteKey(minute)
+	if s.EmittedMinutes[key] {
+		return false
+	}
+	s.EmittedMinutes[key] = true
+	return true
+}
+
+// ForgetMinute undoes the record of a heartbeat the caller decided not to
+// queue, so a later line in that minute can still emit it.
+func (s *State) ForgetMinute(minute time.Time) {
+	delete(s.EmittedMinutes, minuteKey(minute))
+}
+
+func (s *State) pruneEmittedMinutes() {
+	newest := ""
+	for k := range s.EmittedMinutes {
+		if k > newest {
+			newest = k
+		}
+	}
+	if newest == "" {
+		return
+	}
+	t, err := time.Parse(minuteKeyLayout, newest)
+	if err != nil {
+		return
+	}
+	cutoff := minuteKey(t.Add(-emittedMinutesWindow))
+	for k := range s.EmittedMinutes {
+		if k < cutoff {
+			delete(s.EmittedMinutes, k)
+		}
+	}
+}
+
+// SubagentsDir is the directory Claude Code creates next to the parent
+// transcript for Task subagents and Workflow agents.
+func (s *State) SubagentsDir() string {
+	return filepath.Join(strings.TrimSuffix(s.JSONLPath, ".jsonl"), "subagents")
+}
+
+func (s *State) OffsetKey(path string) string {
+	rel, err := filepath.Rel(filepath.Dir(s.JSONLPath), path)
+	if err != nil {
+		return filepath.ToSlash(path)
+	}
+	return filepath.ToSlash(rel)
+}
+
+func (s *State) Offset(path string) int64 { return s.Offsets[s.OffsetKey(path)] }
+
+func (s *State) SetOffset(path string, offset int64) {
+	s.ensureMaps()
+	s.Offsets[s.OffsetKey(path)] = offset
+}
+
+// TreeFiles lists the transcripts of the session tree: the parent, then every
+// agent-*.jsonl at any depth under SubagentsDir. Workflow journals, meta and
+// forked-skill files share the directory and are not transcripts.
+func (s *State) TreeFiles() []string {
+	files := []string{s.JSONLPath}
+	_ = filepath.WalkDir(s.SubagentsDir(), func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !d.Type().IsRegular() {
+			return nil
+		}
+		name := d.Name()
+		if strings.HasPrefix(name, "agent-") && strings.HasSuffix(name, ".jsonl") {
+			files = append(files, path)
+		}
+		return nil
+	})
+	return files
 }
 
 // SessionsDir returns ~/.atelier/sessions. Created on first write per the
 // EnsureDir pattern used by paths.Outbox().
 func SessionsDir() string { return filepath.Join(paths.MustRoot(), "sessions") }
 
-// SessionFile returns the per-session state file path for a key. Parents
-// pass their ClaudeSessionID; subagents pass "<parentSessionID>/subagents/<agentFileBase>".
-func SessionFile(key string) string {
-	return filepath.Join(SessionsDir(), key+".json")
+func SessionFile(claudeSessionID string) string {
+	return filepath.Join(SessionsDir(), claudeSessionID+".json")
 }
 
-// validateKey rejects any key that is not a single safe segment (parent) or
-// the exact <parent>/subagents/<agentBase> shape (subagent). Defense-in-depth
-// at the trust boundary: the key flows into filepath.Join + os.MkdirAll +
-// os.Rename, so refusing "..", empty segments, NUL bytes and path separators
-// other than the one we expect prevents a malformed claudeSessionId from
-// writing state files outside ~/.atelier/sessions/.
+func legacySubagentsDir(claudeSessionID string) string {
+	return filepath.Join(SessionsDir(), claudeSessionID)
+}
+
+// validateKey rejects any session id that is not a single safe path segment.
+// The id flows into filepath.Join, os.Rename and os.RemoveAll, so "..", path
+// separators and NUL bytes would let a malformed claudeSessionId write or
+// delete outside ~/.atelier/sessions/.
 func validateKey(key string) error {
-	parts := strings.Split(key, "/")
-	if len(parts) != 1 && (len(parts) != 3 || parts[1] != "subagents") {
-		return fmt.Errorf("invalid session key shape: %q", key)
+	if key == "" || key == "." || key == ".." {
+		return fmt.Errorf("invalid session key %q", key)
 	}
-	for _, p := range parts {
-		if p == "" || p == "." || p == ".." {
-			return fmt.Errorf("invalid segment %q in key %q", p, key)
-		}
-		if strings.ContainsAny(p, `\:`+"\x00") {
-			return fmt.Errorf("invalid characters in segment %q of key %q", p, key)
-		}
+	if strings.ContainsAny(key, `/\:`+"\x00") {
+		return fmt.Errorf("invalid characters in session key %q", key)
 	}
 	return nil
 }
 
-// LoadState reads a persisted state file. Returns os.ErrNotExist when the
-// session has never been registered. Callers can probe via errors.Is.
-func LoadState(key string) (*State, error) {
-	if err := validateKey(key); err != nil {
+// LoadState reads a persisted state, migrating a 0.18.x layout on the fly.
+// Returns an error wrapping os.ErrNotExist when the session is not registered.
+func LoadState(claudeSessionID string) (*State, error) {
+	if err := validateKey(claudeSessionID); err != nil {
 		return nil, err
 	}
-	bytes, err := os.ReadFile(SessionFile(key))
+	raw, err := os.ReadFile(SessionFile(claudeSessionID))
 	if err != nil {
 		return nil, err
 	}
 	var s State
-	if err := json.Unmarshal(bytes, &s); err != nil {
-		return nil, fmt.Errorf("parse session state %s: %w", key, err)
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return nil, fmt.Errorf("parse session state %s: %w", claudeSessionID, err)
 	}
-	if s.OpenToolUseTools == nil {
-		s.OpenToolUseTools = map[string]string{}
+	if s.SchemaVersion < SchemaVersion {
+		return migrateLegacyState(claudeSessionID, raw)
 	}
-	if s.ClosedToolUseIDs == nil {
-		s.ClosedToolUseIDs = map[string]bool{}
-	}
+	s.ensureMaps()
 	return &s, nil
 }
 
-// SaveState writes s atomically to its keyed location (mode 0600). Intermediate
-// directories (e.g. ~/.atelier/sessions/<parent>/subagents/) are created on
-// first write. The .tmp + os.Rename dance keeps a partially-written state
-// file from being observed by a peer or by the daemon's own restart path.
+type legacyState struct {
+	ClaudeSessionID string    `json:"claudeSessionId"`
+	JSONLPath       string    `json:"jsonlPath"`
+	Offset          int64     `json:"offset"`
+	LastTitle       string    `json:"lastTitle,omitempty"`
+	LastTitleType   string    `json:"lastTitleType,omitempty"`
+	LastActivityAt  time.Time `json:"lastActivityAt"`
+}
+
+// migrateLegacyState folds a 0.18.x parent state and its per-subagent state
+// files into one tree state, carrying every offset over: an upgrade must not
+// re-read, and so re-emit, any transcript. A state without a transcript is the
+// retired OpenCode signature; it is deleted with no session end synthesized.
+func migrateLegacyState(claudeSessionID string, raw []byte) (*State, error) {
+	var legacy legacyState
+	if err := json.Unmarshal(raw, &legacy); err != nil {
+		return nil, fmt.Errorf("parse legacy session state %s: %w", claudeSessionID, err)
+	}
+	if legacy.JSONLPath == "" {
+		if err := DeleteState(claudeSessionID); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("delete transcript-less state %s: %w", claudeSessionID, err)
+		}
+		return nil, fmt.Errorf("transcript-less session %s retired: %w", claudeSessionID, os.ErrNotExist)
+	}
+
+	s := &State{
+		ClaudeSessionID: claudeSessionID,
+		JSONLPath:       legacy.JSONLPath,
+		LastTitle:       legacy.LastTitle,
+		LastTitleType:   legacy.LastTitleType,
+		LastActivityAt:  legacy.LastActivityAt,
+	}
+	s.SetOffset(legacy.JSONLPath, legacy.Offset)
+
+	subStates, _ := filepath.Glob(filepath.Join(legacySubagentsDir(claudeSessionID), "subagents", "*.json"))
+	for _, f := range subStates {
+		subRaw, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		var sub legacyState
+		if err := json.Unmarshal(subRaw, &sub); err != nil || sub.JSONLPath == "" {
+			continue
+		}
+		s.SetOffset(sub.JSONLPath, sub.Offset)
+	}
+
+	if err := SaveState(s); err != nil {
+		return nil, fmt.Errorf("save migrated session state %s: %w", claudeSessionID, err)
+	}
+	_ = os.RemoveAll(legacySubagentsDir(claudeSessionID))
+	return s, nil
+}
+
+// SaveState writes s atomically (mode 0600). Each writer gets its own temp
+// file: `atelierd emit` and the daemon's reader can save the same session at
+// once, and a shared .tmp interleaves their bytes into an unparseable state
+// that stops the session's reader.
 func SaveState(s *State) error {
 	if s.ClaudeSessionID == "" {
 		return errors.New("save state: claudeSessionID is empty")
 	}
-	if err := validateKey(s.Key()); err != nil {
+	if err := validateKey(s.ClaudeSessionID); err != nil {
 		return err
 	}
-	target := SessionFile(s.Key())
-	if err := paths.EnsureDir(filepath.Dir(target)); err != nil {
+	if err := paths.EnsureDir(SessionsDir()); err != nil {
 		return fmt.Errorf("ensure session state dir: %w", err)
 	}
-	if s.OpenToolUseTools == nil {
-		s.OpenToolUseTools = map[string]string{}
-	}
-	if s.ClosedToolUseIDs == nil {
-		s.ClosedToolUseIDs = map[string]bool{}
-	}
-	bytes, err := json.Marshal(s)
+	s.ensureMaps()
+	s.pruneEmittedMinutes()
+	s.SchemaVersion = SchemaVersion
+	raw, err := json.Marshal(s)
 	if err != nil {
 		return fmt.Errorf("marshal session state: %w", err)
 	}
-	tmp := target + ".tmp"
-	if err := os.WriteFile(tmp, bytes, paths.FileMode); err != nil {
-		return fmt.Errorf("write session tempfile: %w", err)
+	target := SessionFile(s.ClaudeSessionID)
+	tmp, err := os.CreateTemp(SessionsDir(), s.ClaudeSessionID+".json.*.tmp")
+	if err != nil {
+		return fmt.Errorf("create session tempfile: %w", err)
 	}
-	if err := os.Rename(tmp, target); err != nil {
-		_ = os.Remove(tmp)
+	_, werr := tmp.Write(raw)
+	cerr := tmp.Close()
+	if werr != nil || cerr != nil {
+		_ = os.Remove(tmp.Name())
+		return fmt.Errorf("write session tempfile: %w", errors.Join(werr, cerr))
+	}
+	if err := os.Rename(tmp.Name(), target); err != nil {
+		_ = os.Remove(tmp.Name())
 		return fmt.Errorf("rename session state file: %w", err)
 	}
 	return nil
 }
 
-// DeleteState removes a persisted state file. Empty directories left behind
-// by a subagent deletion (<parent>/subagents/, then <parent>/) are pruned so
-// GC leaves no skeleton tree; the prune stops at the first non-empty
-// directory and never climbs past SessionsDir().
-func DeleteState(key string) error {
-	if err := validateKey(key); err != nil {
+// DeleteState removes a session's state file and any 0.18.x subagent state
+// directory left beside it.
+func DeleteState(claudeSessionID string) error {
+	if err := validateKey(claudeSessionID); err != nil {
 		return err
 	}
-	if err := os.Remove(SessionFile(key)); err != nil {
-		return err
-	}
-	root := SessionsDir()
-	for dir := filepath.Dir(SessionFile(key)); dir != root && strings.HasPrefix(dir, root+string(filepath.Separator)); dir = filepath.Dir(dir) {
-		if err := os.Remove(dir); err != nil {
-			break
-		}
-	}
-	return nil
+	err := os.Remove(SessionFile(claudeSessionID))
+	_ = os.RemoveAll(legacySubagentsDir(claudeSessionID))
+	return err
 }
 
-// ListStates returns every persisted session state on disk, sorted by key.
-// Walks the sessions tree to depth 2 — top-level <id>.json (parents) and
-// <parentId>/subagents/<agentBase>.json (subagents). Files at any other depth
-// are skipped: the daemon does not yet support nested layouts and a future
-// Anthropic format change should not silently spawn watchers in unexpected
-// shapes.
+// ListStates returns every persisted session state, sorted by session id,
+// migrating 0.18.x states as it reads them. Unreadable states are skipped.
 func ListStates() ([]*State, error) {
-	root := SessionsDir()
-	if _, err := os.Stat(root); err != nil {
+	entries, err := os.ReadDir(SessionsDir())
+	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("stat sessions dir: %w", err)
+		return nil, fmt.Errorf("read sessions dir: %w", err)
 	}
 	var states []*State
-
-	walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".json") {
+			continue
 		}
-		if path == root {
-			return nil
-		}
-		rel, _ := filepath.Rel(root, path)
-		relSlash := filepath.ToSlash(rel)
-		parts := strings.Split(relSlash, "/")
-
-		if d.IsDir() {
-			switch {
-			case len(parts) == 1:
-				return nil
-			case len(parts) == 2 && parts[1] == "subagents":
-				return nil
-			default:
-				return fs.SkipDir
-			}
-		}
-
-		name := d.Name()
-		if !strings.HasSuffix(name, ".json") {
-			return nil
-		}
-		switch {
-		case len(parts) == 1:
-		case len(parts) == 3 && parts[1] == "subagents":
-		default:
-			return nil
-		}
-
-		key := strings.TrimSuffix(relSlash, ".json")
-		s, lerr := LoadState(key)
+		s, lerr := LoadState(strings.TrimSuffix(name, ".json"))
 		if lerr != nil {
-			return nil
+			continue
 		}
 		states = append(states, s)
-		return nil
-	})
-	if walkErr != nil {
-		return nil, fmt.Errorf("walk sessions dir: %w", walkErr)
 	}
-	sort.Slice(states, func(i, j int) bool { return states[i].Key() < states[j].Key() })
+	sort.Slice(states, func(i, j int) bool { return states[i].ClaudeSessionID < states[j].ClaudeSessionID })
 	return states, nil
+}
+
+// PruneOrphanLegacyDirs removes 0.18.x subagent state directories whose parent
+// state no longer exists; migration only cleans the ones it folds.
+func PruneOrphanLegacyDirs() (int, error) {
+	entries, err := os.ReadDir(SessionsDir())
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("read sessions dir: %w", err)
+	}
+	removed := 0
+	for _, e := range entries {
+		if !e.IsDir() || validateKey(e.Name()) != nil {
+			continue
+		}
+		if _, err := os.Stat(SessionFile(e.Name())); !errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err := os.RemoveAll(legacySubagentsDir(e.Name())); err == nil {
+			removed++
+		}
+	}
+	return removed, nil
 }

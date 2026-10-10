@@ -11,12 +11,12 @@ func TestIsValid(t *testing.T) {
 		want bool
 	}{
 		{"hook:session-start", true},
-		{"hook:user-prompt-submit", true},
-		{"hook:pre-tool-use", true},
-		{"hook:post-tool-use", true},
-		{"hook:stop", true},
+		{"hook:user-prompt-submit", false},
+		{"hook:pre-tool-use", false},
+		{"hook:post-tool-use", false},
+		{"hook:stop", false},
 		{"hook:session-end", true},
-		{"hook:assistant-turn", true},
+		{"hook:assistant-turn", false},
 		{"forge:campaign-saved", true},
 		{"forge:outcome-recorded", true},
 		{"forge:pass", true},
@@ -38,6 +38,7 @@ func TestIsValid(t *testing.T) {
 		{"transcript:ai-title", true},
 		{"transcript:custom-title", true},
 		{"hook:invented", false},
+		{"activity:minute", false},
 		{"ship:unknown", false},
 		{"", false},
 		{"skill:phase-START", false},
@@ -50,9 +51,9 @@ func TestIsValid(t *testing.T) {
 	}
 }
 
-func TestAllReturnsTwentySevenTypes(t *testing.T) {
-	if got := len(All()); got != 27 {
-		t.Errorf("All() returned %d types, want 27", got)
+func TestAllReturnsTwentyTwoTypes(t *testing.T) {
+	if got := len(All()); got != 22 {
+		t.Errorf("All() returned %d types, want 22", got)
 	}
 }
 

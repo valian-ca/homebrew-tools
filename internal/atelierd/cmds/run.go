@@ -78,10 +78,11 @@ func NewRunCmd() *cobra.Command {
 Firestore /events/{ulid}. Refreshes the idToken before expiry. Writes a
 heartbeat to /users/{uid}.lastHeartbeat every 60s. Writes a status snapshot to
 ~/.atelier/status every 30s. Watches ~/.atelier/credentials and reloads on
-re-link without requiring brew services restart. Watches ~/.atelier/sessions/
-and tails the Claude Code transcript JSONL for each registered session,
-deriving hook:user-prompt-submit, hook:pre-tool-use, hook:post-tool-use, and
-hook:assistant-turn events into the outbox (cf. VAL-201). Watches the Claude
+re-link without requiring brew services restart. Reads the Claude Code
+transcripts of each session registered in ~/.atelier/sessions/ — the parent,
+its subagents and its Workflow agents — and queues one activity:minute
+heartbeat per session and UTC minute a transcript line was written, plus
+transcript:ai-title / transcript:custom-title on a title change. Watches the Claude
 Desktop session store and derives transcript:ai-title / transcript:custom-title
 events for sessions that never write a title into the transcript (cf. VAL-243).
 Checks for a newer published version via brew at startup and every 24h, installing
@@ -157,7 +158,7 @@ func runRun(cmd *cobra.Command, _ []string) error {
 	atelierlog.Info("atelierd run started", "uid", state.snapshot().UID, "host", host, "version", Version)
 
 	var wg sync.WaitGroup
-	wg.Add(10)
+	wg.Add(9)
 	go func() { defer wg.Done(); shipperLoop(rootCtx, state) }()
 	go func() { defer wg.Done(); refresherLoop(rootCtx, state) }()
 	go func() { defer wg.Done(); heartbeatLoop(rootCtx, state) }()
@@ -168,7 +169,6 @@ func runRun(cmd *cobra.Command, _ []string) error {
 	restart := func() { restartOntoNewBinary(rootCtx, updater.NewRelauncher(), cancel, relaunchGrace) }
 	go func() { defer wg.Done(); updaterLoop(rootCtx, state, restart) }()
 	go func() { defer wg.Done(); stateGCLoop(rootCtx, state) }()
-	go func() { defer wg.Done(); sessionEndJanitorLoop(rootCtx, state) }()
 
 	wg.Wait()
 	atelierlog.Info("atelierd run stopped")
@@ -451,9 +451,9 @@ func tryShip(ctx context.Context, state *runState) {
 		files = files[batchSize:]
 
 		err := shipBatch(ctx, state, batch)
-		if err != nil && classifyShipError(err) == shipOutcomeQuarantine {
-			// A rejected atomic batch blocks every event behind it; isolate so
-			// healthy events ship and rejected ones are quarantined.
+		if err != nil && shouldIsolate(classifyShipError(err)) {
+			// An atomic batch fails whole on one rejected or already-shipped
+			// event; isolate so the rest ships behind it.
 			err = shipFilesIndividually(ctx, state, batch)
 		}
 		if err != nil {
@@ -527,10 +527,11 @@ func shipBatch(ctx context.Context, state *runState, files []string) error {
 }
 
 // buildEventDoc reads an outbox file and enriches it into a Firestore EventDoc:
-// uid from the current credentials, host from the run state, ts decoded from
-// the ULID prefix (the three fields `atelierd emit` intentionally omits). On an
-// unreadable file or a bad ULID it moves the file aside with a .corrupt suffix
-// so the shipper never loops on it, and returns the error.
+// uid from the current credentials, host from the run state, and ts — the
+// envelope's own TS when set (a heartbeat's minute), else decoded from the
+// ULID prefix. On an unreadable file, a bad ULID or a TS that is not a whole
+// minute it moves the file aside with a .corrupt suffix so the shipper never
+// loops on it, and returns the error.
 func buildEventDoc(state *runState, f string) (*firestore.EventDoc, error) {
 	env, err := outbox.Read(f)
 	if err != nil {
@@ -538,9 +539,9 @@ func buildEventDoc(state *runState, f string) (*firestore.EventDoc, error) {
 		_ = os.Rename(f, f+".corrupt")
 		return nil, err
 	}
-	ts, err := ulid.Timestamp(env.ULID)
+	ts, err := eventTimestamp(env)
 	if err != nil {
-		atelierlog.Warn("shipper: bad ULID in outbox file", "file", filepath.Base(f), "err", err.Error())
+		atelierlog.Warn("shipper: bad event time in outbox file", "file", filepath.Base(f), "err", err.Error())
 		_ = os.Rename(f, f+".corrupt")
 		return nil, err
 	}
@@ -556,12 +557,24 @@ func buildEventDoc(state *runState, f string) (*firestore.EventDoc, error) {
 	}, nil
 }
 
+func eventTimestamp(env *outbox.Envelope) (time.Time, error) {
+	if env.TS == nil {
+		return ulid.Timestamp(env.ULID)
+	}
+	ts := env.TS.UTC()
+	if !ts.Equal(ts.Truncate(time.Minute)) {
+		return time.Time{}, fmt.Errorf("ts %s is not a whole minute", ts.Format(time.RFC3339Nano))
+	}
+	return ts, nil
+}
+
 type shipOutcome int
 
 const (
-	shipOutcomeAuthLost   shipOutcome = iota // 401 — token rejected; pause everything
-	shipOutcomeQuarantine                    // 403 — permission denied; this event is permanently unshippable
-	shipOutcomeTransient                     // 5xx / network — retry later with backoff
+	shipOutcomeAuthLost      shipOutcome = iota // 401 — token rejected; pause everything
+	shipOutcomeQuarantine                       // 403 — permission denied; this event is permanently unshippable
+	shipOutcomeAlreadyExists                    // 409 — the doc was already shipped; a success
+	shipOutcomeTransient                        // 5xx / network — retry later with backoff
 )
 
 func classifyShipError(err error) shipOutcome {
@@ -570,17 +583,22 @@ func classifyShipError(err error) shipOutcome {
 		return shipOutcomeAuthLost
 	case firestore.IsPermissionDenied(err):
 		return shipOutcomeQuarantine
+	case firestore.IsAlreadyExists(err):
+		return shipOutcomeAlreadyExists
 	default:
 		return shipOutcomeTransient
 	}
 }
 
+func shouldIsolate(o shipOutcome) bool {
+	return o == shipOutcomeQuarantine || o == shipOutcomeAlreadyExists
+}
+
 // shipFilesIndividually retries each file in its own single-document commit
-// after an atomic batch was rejected with PERMISSION_DENIED. Because a batch
-// fails all-or-nothing, one event Firestore refuses (e.g. a duplicate that
-// already exists — the /events rule allows create but not update) would
-// otherwise block every event behind it forever. Isolating lets the healthy
-// events through and quarantines the rejected ones.
+// after an atomic batch failed on a 403 or a 409. Because a batch fails
+// all-or-nothing, one event Firestore refuses or already holds would
+// otherwise block every event behind it forever. An already-existing doc
+// counts as shipped; a rejected one is quarantined.
 func shipFilesIndividually(ctx context.Context, state *runState, files []string) error {
 	shipped, quarantined := 0, 0
 	// recordShipProgress (not markShipped) on every exit path: an interrupted
@@ -610,6 +628,12 @@ func shipFilesIndividually(ctx context.Context, state *runState, files []string)
 		}
 
 		switch classifyShipError(err) {
+		case shipOutcomeAlreadyExists:
+			if derr := outbox.Delete(f); derr != nil {
+				atelierlog.Warn("shipper: delete after ship failed", "file", filepath.Base(f), "err", derr.Error())
+			}
+			atelierlog.Info("shipper: event already exists in Firestore, dropped from outbox", "file", filepath.Base(f), "ulid", doc.ULID)
+			shipped++
 		case shipOutcomeQuarantine:
 			if rerr := os.Rename(f, f+".rejected"); rerr != nil {
 				atelierlog.Warn("shipper: quarantine rename failed", "file", filepath.Base(f), "err", rerr.Error())
