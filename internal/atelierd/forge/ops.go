@@ -185,12 +185,6 @@ func OpenWaveContext(ctx context.Context, runID string) (int, error) {
 		if state.WaveOpen {
 			return fmt.Errorf("%w: wave %d is already open", ErrInvalidPass, state.Wave)
 		}
-		if len(state.Waves) > 0 {
-			last := state.Waves[len(state.Waves)-1]
-			if !last.Open && last.Findings != nil && *last.Findings == 0 {
-				return fmt.Errorf("%w: most recent wave was dry", ErrInvalidPass)
-			}
-		}
 		if state.Wave >= state.Cap {
 			return fmt.Errorf("%w: cap %d", ErrWaveCap, state.Cap)
 		}
@@ -206,13 +200,13 @@ func OpenWaveContext(ctx context.Context, runID string) (int, error) {
 	return state.Wave, nil
 }
 
-func CloseWave(runID string, findings int) (string, error) {
-	return CloseWaveContext(context.Background(), runID, findings)
+func CloseWave(runID string, fixed int) (string, error) {
+	return CloseWaveContext(context.Background(), runID, fixed)
 }
 
-func CloseWaveContext(ctx context.Context, runID string, findings int) (string, error) {
-	if findings < 0 {
-		return "", fmt.Errorf("%w: findings must be non-negative", ErrInvalidPass)
+func CloseWaveContext(ctx context.Context, runID string, fixed int) (string, error) {
+	if fixed < 0 {
+		return "", fmt.Errorf("%w: fixed must be non-negative", ErrInvalidPass)
 	}
 	var state *runState
 	decision := "continue"
@@ -255,6 +249,7 @@ func CloseWaveContext(ctx context.Context, runID string, findings int) (string, 
 		if currentPass == nil {
 			return fmt.Errorf("%w: wave %d has no pass", ErrInvalidPass, state.Wave)
 		}
+		findings := 0
 		if campaign != nil {
 			var recorded *ledgerPass
 			for i := range ledger.Passes {
@@ -269,11 +264,9 @@ func CloseWaveContext(ctx context.Context, runID string, findings int) (string, 
 			if recorded.Kind != passWave || recorded.Wave != state.Wave {
 				return fmt.Errorf("%w: ledger entry %s does not belong to wave %d", ErrInvalidPass, recorded.PassID, state.Wave)
 			}
-			if findings != recorded.Counts.Finding {
-				return fmt.Errorf("%w: findings %d do not match ledger count %d", ErrInvalidPass, findings, recorded.Counts.Finding)
-			}
+			findings = recorded.Counts.Finding
 		}
-		if findings == 0 {
+		if fixed == 0 {
 			decision = "dry"
 		} else if state.Wave >= state.Cap {
 			decision = "cap"
@@ -281,8 +274,9 @@ func CloseWaveContext(ctx context.Context, runID string, findings int) (string, 
 		state.WaveOpen = false
 		state.Waves[len(state.Waves)-1].Open = false
 		state.Waves[len(state.Waves)-1].Findings = &findings
+		state.Waves[len(state.Waves)-1].Fixed = &fixed
 		queueEvent(state, events.ForgeWaveClose, map[string]any{
-			"wave": state.Wave, "findings": findings, "decision": decision,
+			"wave": state.Wave, "findings": findings, "fixed": fixed, "decision": decision,
 		})
 		return writeJSON(paths.ForgeRunState(runID), state)
 	})
@@ -530,20 +524,12 @@ func SaveCampaign(runID, stagingPath string) error {
 }
 
 func SaveCampaignContext(ctx context.Context, runID, stagingPath string) error {
-	var campaign Campaign
-	if err := readStaging(stagingPath, &campaign); err != nil {
+	campaign, err := readCampaignStaging(stagingPath)
+	if err != nil {
 		return err
 	}
-	if campaign.SchemaVersion != SchemaVersion {
-		return fmt.Errorf("%w: campaign schemaVersion must be %d", ErrInvalidStaging, SchemaVersion)
-	}
-	if err := validateCampaign(&campaign); err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalidStaging, err)
-	}
-	var state *runState
-	err := withRunLockContext(ctx, runID, func() error {
-		var err error
-		state, err = readRun(runID)
+	return withRunLockContext(ctx, runID, func() error {
+		state, err := readRun(runID)
 		if err != nil {
 			return err
 		}
@@ -551,23 +537,167 @@ func SaveCampaignContext(ctx context.Context, runID, stagingPath string) error {
 		if err != nil {
 			return err
 		}
-		if len(state.Passes) > 0 || len(ledger.Passes) > 0 {
-			return fmt.Errorf("%w: campaign is frozen after pass allocation", ErrInvalidStaging)
+		if len(ledger.Passes) > 0 {
+			return fmt.Errorf("%w: campaign is frozen after the first recorded outcome", ErrInvalidStaging)
 		}
-		if err := writeJSON(paths.ForgeCampaign(runID), &campaign); err != nil {
+		if len(state.Passes) > 0 && !state.CampaignRequired {
+			return fmt.Errorf("%w: run allocated passes without a campaign", ErrInvalidStaging)
+		}
+		if err := writeJSON(paths.ForgeCampaign(runID), campaign); err != nil {
 			return err
 		}
 		state.CampaignRequired = true
-		axes := len(campaign.Axes)
-		scenarios := 0
-		for _, axis := range campaign.Axes {
-			scenarios += len(axis.Scenarios)
-		}
-		queueEvent(state, events.ForgeCampaignSaved, map[string]any{"axes": axes, "scenarios": scenarios})
+		queueCampaignSaved(state, campaign)
 		return writeJSON(paths.ForgeRunState(runID), state)
 	})
+}
+
+func readCampaignStaging(stagingPath string) (*Campaign, error) {
+	var campaign Campaign
+	if err := readStaging(stagingPath, &campaign); err != nil {
+		return nil, err
+	}
+	if campaign.SchemaVersion != CampaignSchemaVersion {
+		return nil, fmt.Errorf("%w: campaign schemaVersion must be %d", ErrInvalidStaging, CampaignSchemaVersion)
+	}
+	for _, axis := range campaign.Axes {
+		for _, scenario := range axis.Scenarios {
+			if scenario.Wave != 0 {
+				return nil, fmt.Errorf("%w: scenario %q must not carry wave; atelierd sets it on append", ErrInvalidStaging, scenario.Title)
+			}
+		}
+	}
+	if err := validateCampaign(&campaign); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidStaging, err)
+	}
+	return &campaign, nil
+}
+
+func queueCampaignSaved(state *runState, campaign *Campaign) {
+	scenarios := 0
+	for _, axis := range campaign.Axes {
+		scenarios += len(axis.Scenarios)
+	}
+	queueEvent(state, events.ForgeCampaignSaved, map[string]any{"axes": len(campaign.Axes), "scenarios": scenarios})
+}
+
+func AppendCampaign(runID string, waveNumber int, stagingPath string) error {
+	return AppendCampaignContext(context.Background(), runID, waveNumber, stagingPath)
+}
+
+func AppendCampaignContext(ctx context.Context, runID string, waveNumber int, stagingPath string) error {
+	if waveNumber < 2 {
+		return fmt.Errorf("%w: campaign append requires wave 2 or later, got %d", ErrInvalidStaging, waveNumber)
+	}
+	additions, err := readCampaignStaging(stagingPath)
 	if err != nil {
 		return err
+	}
+	return withRunLockContext(ctx, runID, func() error {
+		state, err := readRun(runID)
+		if err != nil {
+			return err
+		}
+		campaign, err := readCampaign(runID)
+		if err != nil {
+			return err
+		}
+		ledger, err := readLedger(runID)
+		if err != nil {
+			return err
+		}
+		if err := validatePersistedData(state, campaign, ledger); err != nil {
+			return err
+		}
+		if !state.WaveOpen || state.Wave != waveNumber {
+			return fmt.Errorf("%w: wave %d is not the open wave", ErrInvalidStaging, waveNumber)
+		}
+		for _, recorded := range ledger.Passes {
+			if recorded.Kind == passWave && recorded.Wave == waveNumber {
+				return fmt.Errorf("%w: wave %d already has a recorded outcome", ErrInvalidStaging, waveNumber)
+			}
+		}
+		if err := checkAppendBudget(campaign, ledger, additions, waveNumber); err != nil {
+			return err
+		}
+		for _, addition := range additions.Axes {
+			index := -1
+			for i := range campaign.Axes {
+				if campaign.Axes[i].Title == addition.Title {
+					index = i
+					break
+				}
+			}
+			if index == -1 {
+				campaign.Axes = append(campaign.Axes, Axis{Title: addition.Title})
+				index = len(campaign.Axes) - 1
+			}
+			for _, scenario := range addition.Scenarios {
+				for _, existing := range campaign.Axes[index].Scenarios {
+					if existing.Title == scenario.Title {
+						return fmt.Errorf("%w: axis %q already has scenario %q", ErrInvalidStaging, addition.Title, scenario.Title)
+					}
+				}
+				scenario.Wave = waveNumber
+				campaign.Axes[index].Scenarios = append(campaign.Axes[index].Scenarios, scenario)
+			}
+		}
+		if err := validateCampaign(campaign); err != nil {
+			return fmt.Errorf("%w: %v", ErrInvalidStaging, err)
+		}
+		if err := writeJSON(paths.ForgeCampaign(runID), campaign); err != nil {
+			return err
+		}
+		queueCampaignSaved(state, campaign)
+		return writeJSON(paths.ForgeRunState(runID), state)
+	})
+}
+
+func checkAppendBudget(campaign *Campaign, value *ledger, additions *Campaign, waveNumber int) error {
+	appended := make(map[string]int)
+	for _, axis := range campaign.Axes {
+		for _, scenario := range axis.Scenarios {
+			if scenario.Wave == waveNumber {
+				appended[axis.Title]++
+			}
+		}
+	}
+	for _, axis := range additions.Axes {
+		appended[axis.Title] += len(axis.Scenarios)
+	}
+	if waveNumber > 2 {
+		total := 0
+		for _, count := range appended {
+			total += count
+		}
+		if total > SharedAppendBudget {
+			return fmt.Errorf("%w: wave %d accepts at most %d appended scenarios, got %d", ErrInvalidStaging, waveNumber, SharedAppendBudget, total)
+		}
+		return nil
+	}
+	bitten := make(map[string]bool)
+	for _, recorded := range value.Passes {
+		if recorded.Kind != passWave || recorded.Wave != 1 {
+			continue
+		}
+		for _, outcome := range recorded.Outcomes {
+			if outcome.Status == "finding" {
+				bitten[outcome.Axis] = true
+			}
+		}
+	}
+	shared := 0
+	for title, count := range appended {
+		if !bitten[title] {
+			shared += count
+			continue
+		}
+		if count > BittenAxisAppendBudget {
+			return fmt.Errorf("%w: bitten axis %q accepts at most %d appended scenarios in wave 2, got %d", ErrInvalidStaging, title, BittenAxisAppendBudget, count)
+		}
+	}
+	if shared > SharedAppendBudget {
+		return fmt.Errorf("%w: axes without a wave-1 finding share at most %d appended scenarios in wave 2, got %d", ErrInvalidStaging, SharedAppendBudget, shared)
 	}
 	return nil
 }
@@ -601,8 +731,8 @@ func RecordOutcomeContext(ctx context.Context, runID, passID, stagingPath string
 	if err := readStaging(stagingPath, &batch); err != nil {
 		return err
 	}
-	if batch.SchemaVersion != SchemaVersion {
-		return fmt.Errorf("%w: outcome schemaVersion must be %d", ErrInvalidStaging, SchemaVersion)
+	if batch.SchemaVersion != CampaignSchemaVersion {
+		return fmt.Errorf("%w: outcome schemaVersion must be %d", ErrInvalidStaging, CampaignSchemaVersion)
 	}
 	var state *runState
 	err := withRunLockContext(ctx, runID, func() error {
@@ -624,11 +754,11 @@ func RecordOutcomeContext(ctx context.Context, runID, passID, stagingPath string
 		if state.OpenPass != passID {
 			return fmt.Errorf("%w: pass %q is not open", ErrInvalidPass, passID)
 		}
-		ledger, err := readLedger(runID)
+		campaign, err := readCampaign(runID)
 		if err != nil {
 			return err
 		}
-		campaign, err := readCampaign(runID)
+		ledger, err := readLedger(runID)
 		if err != nil {
 			return err
 		}

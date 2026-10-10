@@ -312,8 +312,11 @@ func readCampaignIfPresent(runID string) (*Campaign, error) {
 	if err := decodeStrict(data, &campaign); err != nil {
 		return nil, fmt.Errorf("%w: parse campaign: %v", ErrCampaignInvalid, err)
 	}
-	if campaign.SchemaVersion != SchemaVersion {
-		return nil, fmt.Errorf("%w: schema version %d is unsupported; expected %d", ErrCampaignInvalid, campaign.SchemaVersion, SchemaVersion)
+	if campaign.SchemaVersion == 1 {
+		return nil, fmt.Errorf("%w: campaign predates contract 3 — restart the run", ErrCampaignInvalid)
+	}
+	if campaign.SchemaVersion != CampaignSchemaVersion {
+		return nil, fmt.Errorf("%w: schema version %d is unsupported; expected %d", ErrCampaignInvalid, campaign.SchemaVersion, CampaignSchemaVersion)
 	}
 	if err := validateCampaign(&campaign); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrCampaignInvalid, err)
@@ -325,7 +328,7 @@ func readLedger(runID string) (*ledger, error) {
 	data, err := readNoFollow(paths.ForgeLedger(runID), MaxLedgerFileBytes)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return &ledger{SchemaVersion: SchemaVersion, Passes: []ledgerPass{}}, nil
+			return &ledger{SchemaVersion: LedgerSchemaVersion, Passes: []ledgerPass{}}, nil
 		}
 		return nil, err
 	}
@@ -333,8 +336,11 @@ func readLedger(runID string) (*ledger, error) {
 	if err := decodeStrict(data, &value); err != nil {
 		return nil, fmt.Errorf("parse ledger: %w", err)
 	}
-	if value.SchemaVersion != SchemaVersion {
-		return nil, fmt.Errorf("ledger schema version %d is unsupported; expected %d", value.SchemaVersion, SchemaVersion)
+	if value.SchemaVersion == 1 {
+		return nil, fmt.Errorf("%w: ledger predates contract 3 — restart the run", ErrCampaignInvalid)
+	}
+	if value.SchemaVersion != LedgerSchemaVersion {
+		return nil, fmt.Errorf("ledger schema version %d is unsupported; expected %d", value.SchemaVersion, LedgerSchemaVersion)
 	}
 	if err := validateLedger(&value); err != nil {
 		return nil, fmt.Errorf("invalid ledger: %w", err)

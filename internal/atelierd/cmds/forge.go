@@ -12,14 +12,16 @@ func NewForgeCmd() *cobra.Command {
 	command := &cobra.Command{
 		Use:   "forge",
 		Short: "Manage autonomous forge run state",
-		Example: `  atelierd forge run start VAL-306 --session session-abc123 --cap 4
+		Example: `  atelierd forge run start VAL-306 --session session-abc123 --cap 10
   atelierd forge run find --ticket VAL-306
   atelierd forge campaign save --run 01J00000000000000000000000 --from /tmp/campaign.json
   atelierd forge wave open --run 01J00000000000000000000000
   atelierd forge pass next --run 01J00000000000000000000000 --kind wave
   atelierd forge pass show --run 01J00000000000000000000000 --kind wave --wave 1
   atelierd forge outcome record --run 01J00000000000000000000000 --pass wave-1 --from /tmp/outcome.json
-  atelierd forge wave close --run 01J00000000000000000000000 --findings 0
+  atelierd forge wave close --run 01J00000000000000000000000 --fixed 3
+  atelierd forge wave open --run 01J00000000000000000000000
+  atelierd forge campaign append --run 01J00000000000000000000000 --wave 2 --from /tmp/exploration.json
   atelierd forge summary --run 01J00000000000000000000000
 
   atelierd forge pass next --run 01J00000000000000000000000 --kind review
@@ -116,13 +118,16 @@ func newForgeWaveCmd() *cobra.Command {
 	open.Flags().StringVar(&openRun, "run", "", "forge run ULID (required)")
 	_ = open.MarkFlagRequired("run")
 	var closeRun string
-	var findings int
+	var fixed int
 	close := &cobra.Command{
-		Use:   "close --run <id> --findings <n>",
+		Use:   "close --run <id> --fixed <n>",
 		Short: "Close the open wave and print continue, dry, or cap",
-		Args:  cobra.NoArgs,
+		Long: `Close the open wave and print the decision:
+dry when --fixed is 0, otherwise cap at the run's wave cap, otherwise continue.
+The wave's recorded findings stay as evidence on the forge:wave-close event.`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			decision, err := forge.CloseWaveContext(cmd.Context(), closeRun, findings)
+			decision, err := forge.CloseWaveContext(cmd.Context(), closeRun, fixed)
 			if err != nil {
 				return err
 			}
@@ -131,9 +136,9 @@ func newForgeWaveCmd() *cobra.Command {
 		},
 	}
 	close.Flags().StringVar(&closeRun, "run", "", "forge run ULID (required)")
-	close.Flags().IntVar(&findings, "findings", 0, "number of findings in the wave (required)")
+	close.Flags().IntVar(&fixed, "fixed", 0, "number of corrections made during the wave (required)")
 	_ = close.MarkFlagRequired("run")
-	_ = close.MarkFlagRequired("findings")
+	_ = close.MarkFlagRequired("fixed")
 	group.AddCommand(open, close)
 	return group
 }
@@ -189,7 +194,10 @@ func newForgeCampaignCmd() *cobra.Command {
 		Use:   "save --run <id> --from <staging.json>",
 		Short: "Validate and atomically store a campaign",
 		Long: `Validate and atomically store this JSON shape:
-{"schemaVersion":1,"axes":[{"title":"Axis","scenarios":[{"title":"Scenario","steps":["Step"],"expected":"Result"}]}]}`,
+{"schemaVersion":2,"axes":[{"title":"Axis","scenarios":[{"title":"Scenario","steps":["Step"],"expected":"Result","rank":9,"access":"readonly|mutating"}]}]}
+
+rank is an integer from 1 to 9 (severity 1-3 × likelihood 1-3). The campaign
+can be replaced until the first outcome record; it is then frozen.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return forge.SaveCampaignContext(cmd.Context(), saveRun, staging)
@@ -215,7 +223,30 @@ func newForgeCampaignCmd() *cobra.Command {
 	}
 	load.Flags().StringVar(&loadRun, "run", "", "forge run ULID (required)")
 	_ = load.MarkFlagRequired("run")
-	group.AddCommand(save, load)
+	var appendRun, appendStaging string
+	var appendWave int
+	appendCmd := &cobra.Command{
+		Use:   "append --run <id> --wave <n> --from <staging.json>",
+		Short: "Append scenarios to the frozen campaign for the open wave",
+		Long: `Append scenarios, in the campaign JSON shape, to existing or new axes:
+{"schemaVersion":2,"axes":[{"title":"Axis","scenarios":[{"title":"Scenario","steps":["Step"],"expected":"Result","rank":6,"access":"readonly"}]}]}
+
+The wave must be the open wave, 2 or later, with no outcome recorded yet.
+Wave 2 accepts up to 6 scenarios per axis that had a finding in wave 1, and 2
+shared by every other axis; later waves accept 2 in total. Budgets add up
+across calls. Existing scenarios are never edited.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return forge.AppendCampaignContext(cmd.Context(), appendRun, appendWave, appendStaging)
+		},
+	}
+	appendCmd.Flags().StringVar(&appendRun, "run", "", "forge run ULID (required)")
+	appendCmd.Flags().IntVar(&appendWave, "wave", 0, "open wave the scenarios are played in (required)")
+	appendCmd.Flags().StringVar(&appendStaging, "from", "", "campaign staging JSON file (required)")
+	_ = appendCmd.MarkFlagRequired("run")
+	_ = appendCmd.MarkFlagRequired("wave")
+	_ = appendCmd.MarkFlagRequired("from")
+	group.AddCommand(save, load, appendCmd)
 	return group
 }
 
@@ -226,8 +257,10 @@ func newForgeOutcomeCmd() *cobra.Command {
 		Use:   "record --run <id> --pass <pass-id> --from <staging.json>",
 		Short: "Validate outcomes and append computed per-pass counts",
 		Long: `Validate and append this JSON shape:
-{"schemaVersion":1,"outcomes":[{"axis":"Axis","scenario":"Scenario","status":"pass|finding|not_exercised","reason":"optional"}]}
+{"schemaVersion":2,"outcomes":[{"axis":"Axis","scenario":"Scenario","status":"pass|finding|not_exercised","severity":"blocking|degraded|cosmetic","reason":"text"}]}
 
+severity is required on a finding and refused on other statuses; reason is
+required on not_exercised and optional elsewhere.
 The command computes and persists pass, finding, and not_exercised counts; staging files never supply counts.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
