@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -162,8 +163,6 @@ func recentMinute(ago int) time.Time {
 	return testMinute.Add(-time.Duration(ago) * time.Minute)
 }
 
-// AC 1: replaying a reference forge tree queues exactly one activity:minute
-// per active minute, the title once, and nothing of a detailed type.
 func TestReadSessionTree_FixtureReplayEmitsOneHeartbeatPerMinute(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	parent := copyFixture(t)
@@ -199,8 +198,6 @@ func TestReadSessionTree_FixtureReplayEmitsOneHeartbeatPerMinute(t *testing.T) {
 	}
 }
 
-// AC 2: resume, then /compact twice, re-emit nothing already read and no
-// minute already emitted; only the session-starts and the new minutes ship.
 func TestReadSessionTree_ResumeAndCompactReEmitNothing(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	parent := copyFixture(t)
@@ -392,7 +389,7 @@ func TestReadSessionTree_DropsHeartbeatsAheadOfTheClock(t *testing.T) {
 	}
 }
 
-func TestShouldSpawnReader(t *testing.T) {
+func TestHasUnconsumedBytes(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	now := time.Now().UTC()
 	dir := t.TempDir()
@@ -410,16 +407,15 @@ func TestShouldSpawnReader(t *testing.T) {
 		state *transcript.State
 		want  bool
 	}{
-		{"active, transcript absent", &transcript.State{JSONLPath: "/nonexistent.jsonl", LastActivityAt: now}, true},
-		{"dormant, transcript absent", &transcript.State{JSONLPath: "/nonexistent.jsonl", LastActivityAt: now.Add(-time.Hour)}, false},
+		{"transcript absent", &transcript.State{JSONLPath: "/nonexistent.jsonl", LastActivityAt: now}, false},
 		{"dormant, fully consumed", &transcript.State{JSONLPath: parent, Offsets: consumed, LastActivityAt: now.Add(-time.Hour)}, false},
 		{"dormant, unconsumed parent", &transcript.State{JSONLPath: parent, LastActivityAt: now.Add(-time.Hour)}, true},
 		{"dormant, truncated below offset", &transcript.State{JSONLPath: parent, Offsets: map[string]int64{"cs.jsonl": 9999}, LastActivityAt: now.Add(-time.Hour)}, true},
 		{"dormant, unconsumed Workflow agent", &transcript.State{JSONLPath: agentParent, Offsets: consumed, LastActivityAt: now.Add(-time.Hour)}, true},
 	}
 	for _, tc := range cases {
-		if got := shouldSpawnReader(tc.state, time.Now()); got != tc.want {
-			t.Errorf("shouldSpawnReader(%s) = %v, want %v", tc.name, got, tc.want)
+		if got := hasUnconsumedBytes(tc.state); got != tc.want {
+			t.Errorf("hasUnconsumedBytes(%s) = %v, want %v", tc.name, got, tc.want)
 		}
 	}
 }
@@ -612,15 +608,15 @@ func TestReadSessionTree_DoesNotUndoAConcurrentReRegistration(t *testing.T) {
 	mustRegister(t, "cs-1", oldPath)
 
 	reRegistered := false
-	readHook = func() {
+	testHookBeforeSave = func() {
 		if !reRegistered {
 			reRegistered = true
 			mustRegister(t, "cs-1", newPath)
 		}
 	}
-	t.Cleanup(func() { readHook = nil })
+	t.Cleanup(func() { testHookBeforeSave = nil })
 	mustRead(t, "cs-1")
-	readHook = nil
+	testHookBeforeSave = nil
 
 	s, err := transcript.LoadState("cs-1")
 	if err != nil {
@@ -633,4 +629,149 @@ func TestReadSessionTree_DoesNotUndoAConcurrentReRegistration(t *testing.T) {
 	if !hasEnvelope(t, transcript.ActivityMinuteID("cs-1", recentMinute(2))) {
 		t.Error("the new transcript was not read after the re-registration")
 	}
+}
+
+func TestReadSessionTree_DoesNotResurrectADeletedState(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	parent := filepath.Join(t.TempDir(), "cs-1.jsonl")
+	writeJSONL(t, parent, lineAt("user", recentMinute(1)))
+	mustRegister(t, "cs-1", parent)
+	testHookBeforeSave = func() { _ = transcript.DeleteState("cs-1") }
+	t.Cleanup(func() { testHookBeforeSave = nil })
+
+	mustRead(t, "cs-1")
+
+	if _, err := transcript.LoadState("cs-1"); !os.IsNotExist(err) {
+		t.Fatalf("state deleted mid-read was saved back: err=%v", err)
+	}
+}
+
+func TestRunSessionReader_StopsWhenItsStateDisappears(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	oldPoll, oldIdle := treePollInterval, sessionIdleTimeout
+	treePollInterval = 20 * time.Millisecond
+	sessionIdleTimeout = time.Hour
+	t.Cleanup(func() { treePollInterval = oldPoll; sessionIdleTimeout = oldIdle })
+	parent := filepath.Join(t.TempDir(), "cs-gone.jsonl")
+	writeJSONL(t, parent, lineAt("user", recentMinute(1)))
+	mustRegister(t, "cs-gone", parent)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runSessionReader(context.Background(), "cs-gone")
+	}()
+	time.Sleep(60 * time.Millisecond)
+	if err := transcript.DeleteState("cs-gone"); err != nil {
+		t.Fatalf("DeleteState: %v", err)
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("reader kept running after its state was deleted")
+	}
+}
+
+func TestReadSessionTree_OutboxWriteFailureKeepsLinesForReRead(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	parent := filepath.Join(t.TempDir(), "cs-1.jsonl")
+	writeJSONL(t, parent, lineAt("user", recentMinute(3)), lineAt("assistant", recentMinute(2)))
+	mustRegister(t, "cs-1", parent)
+	dir := filepath.Join(home, ".atelier", "outbox")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+
+	mustRead(t, "cs-1")
+
+	s, err := transcript.LoadState("cs-1")
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	if s.Offset(parent) != 0 || len(s.EmittedMinutes) != 0 {
+		t.Fatalf("failed write saved progress: offset %d, minutes %v", s.Offset(parent), s.EmittedMinutes)
+	}
+
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	mustRead(t, "cs-1")
+	for _, m := range []int{2, 3} {
+		if !hasEnvelope(t, transcript.ActivityMinuteID("cs-1", recentMinute(m))) {
+			t.Errorf("minute -%d not queued after the outbox recovered", m)
+		}
+	}
+}
+
+func TestReadSessionTree_TranscriptNotYetCreated(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	parent := filepath.Join(t.TempDir(), "cs-1.jsonl")
+	mustRegister(t, "cs-1", parent)
+
+	mustRead(t, "cs-1")
+	if n := len(outboxEnvelopes(t)); n != 0 {
+		t.Fatalf("outbox holds %d envelopes before the transcript exists", n)
+	}
+
+	writeJSONL(t, parent, lineAt("user", recentMinute(1)))
+	mustRead(t, "cs-1")
+	if !hasEnvelope(t, transcript.ActivityMinuteID("cs-1", recentMinute(1))) {
+		t.Fatal("transcript created after registration was not read")
+	}
+}
+
+func TestSessionsManagerLoop_DoesNotReviveAStuckTreeEveryScan(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	oldDiscovery, oldPoll, oldIdle, oldDormant := sessionPollInterval, treePollInterval, sessionIdleTimeout, dormantScanInterval
+	sessionPollInterval = 20 * time.Millisecond
+	treePollInterval = 20 * time.Millisecond
+	sessionIdleTimeout = 80 * time.Millisecond
+	dormantScanInterval = 30 * time.Millisecond
+	t.Cleanup(func() {
+		sessionPollInterval, treePollInterval, sessionIdleTimeout, dormantScanInterval = oldDiscovery, oldPoll, oldIdle, oldDormant
+	})
+
+	parent := filepath.Join(t.TempDir(), "cs-stuck.jsonl")
+	full := lineAt("user", recentMinute(3))
+	cut := lineAt("assistant", recentMinute(2))
+	appendRaw(t, parent, full+"\n"+cut[:20])
+	if err := transcript.SaveState(&transcript.State{
+		ClaudeSessionID: "cs-stuck",
+		JSONLPath:       parent,
+		Offsets:         map[string]int64{"cs-stuck.jsonl": int64(len(full) + 1)},
+		LastActivityAt:  time.Now().UTC().Add(-time.Hour),
+	}); err != nil {
+		t.Fatalf("SaveState: %v", err)
+	}
+
+	var mu sync.Mutex
+	starts := 0
+	testHookReaderStarted = func(string) { mu.Lock(); starts++; mu.Unlock() }
+	t.Cleanup(func() { testHookReaderStarted = nil })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		sessionsManagerLoop(ctx, nil)
+	}()
+	time.Sleep(400 * time.Millisecond)
+	mu.Lock()
+	stuckStarts := starts
+	mu.Unlock()
+	if stuckStarts != 1 {
+		t.Errorf("stuck tree got %d readers over ~13 dormant scans, want 1 (once per size)", stuckStarts)
+	}
+
+	appendRaw(t, parent, cut[20:]+"\n")
+	if !waitFor(t, 3*time.Second, func() bool { return hasEnvelope(t, transcript.ActivityMinuteID("cs-stuck", recentMinute(2))) }) {
+		t.Fatal("tree not revived once its last line completed")
+	}
+	cancel()
+	<-done
 }

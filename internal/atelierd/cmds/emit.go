@@ -71,9 +71,6 @@ Examples:
 			// and the session reader inside atelierd run.
 			if eventType == string(events.HookSessionStart) {
 				if raw, present := payload["jsonlPath"]; present {
-					// A malformed value (a --data-json number, object, null…)
-					// used to skip registration silently and exit 0 — the
-					// session then never got a reader and nobody knew why.
 					jsonlPath, ok := raw.(string)
 					if !ok || jsonlPath == "" {
 						return fmt.Errorf("jsonlPath must be a non-empty string, got %T (%v)", raw, raw)
@@ -95,7 +92,7 @@ Examples:
 				return err
 			}
 			// Every emit renews the session's device leases; session-end
-			// releases them (VAL-268). Best-effort by design — a lease-state
+			// releases them. Best-effort by design — a lease-state
 			// failure never fails the emit.
 			devicebank.OnEmit(claudeSessionID, eventType == string(events.HookSessionEnd))
 			return nil

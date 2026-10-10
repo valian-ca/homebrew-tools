@@ -1,9 +1,3 @@
-// Package outbox handles the local atomic write queue at ~/.atelier/outbox/.
-//
-// Producers (`atelierd emit`) call Write(envelope) to drop an event JSON file
-// without any network. The consumer (`atelierd run`) calls List + Read +
-// Delete to ship those events to Firestore. The atomic-rename pattern (.tmp
-// then os.Rename) ensures fsnotify never sees a partial JSON payload.
 package outbox
 
 import (
@@ -32,9 +26,6 @@ type Envelope struct {
 	TS              *time.Time     `json:"ts,omitempty"`
 }
 
-// Write persists e atomically to ~/.atelier/outbox/<ulid>.json.
-// The directory is created (mode 0700) on first write. A heartbeat derived
-// twice overwrites its own queued file, since its id is deterministic.
 func Write(e *Envelope) error {
 	if err := paths.EnsureDir(paths.Outbox()); err != nil {
 		return fmt.Errorf("ensure outbox dir: %w", err)
@@ -55,9 +46,7 @@ func Write(e *Envelope) error {
 	return nil
 }
 
-// List returns every *.json file in the outbox sorted by name: chronological
-// for ULID-keyed events, not for heartbeats, which the backend orders by ts.
-// Files in the middle of being written (.tmp suffix) are excluded.
+// Name order is chronological for ULID-keyed events only; the backend orders heartbeats by ts.
 func List() ([]string, error) {
 	entries, err := os.ReadDir(paths.Outbox())
 	if err != nil {
@@ -101,9 +90,6 @@ func Count() (int, error) {
 	return n, nil
 }
 
-// CountRejected returns the number of *.json.rejected files — events Firestore
-// refused with a 403 (permission denied by the rules), quarantined by the
-// shipper out of the active *.json queue.
 func CountRejected() (int, error) {
 	entries, err := os.ReadDir(paths.Outbox())
 	if err != nil {

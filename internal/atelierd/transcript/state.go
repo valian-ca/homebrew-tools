@@ -25,15 +25,6 @@ const SchemaVersion = 2
 // which the shipper counts as shipped.
 const emittedMinutesWindow = 24 * time.Hour
 
-// State is the persisted read state of one session tree (the parent
-// transcript plus its subagent and Workflow transcripts).
-//
-// Offsets is keyed by the transcript path relative to the parent's directory
-// ("<id>.jsonl", "<id>/subagents/workflows/wf_x/agent-y.jsonl"); each value is
-// the byte position just past the last complete line consumed. EmittedMinutes
-// is keyed by the UTC minute ("200601021504") of every heartbeat already
-// queued, so a line re-read after a crash or a truncation never queues its
-// minute twice.
 type State struct {
 	ClaudeSessionID string           `json:"claudeSessionId"`
 	JSONLPath       string           `json:"jsonlPath"`
@@ -69,8 +60,6 @@ func (s *State) markMinute(minute time.Time) bool {
 	return true
 }
 
-// ForgetMinute undoes the record of a heartbeat the caller decided not to
-// queue, so a later line in that minute can still emit it.
 func (s *State) ForgetMinute(minute time.Time) {
 	delete(s.EmittedMinutes, minuteKey(minute))
 }
@@ -118,9 +107,6 @@ func (s *State) SetOffset(path string, offset int64) {
 	s.Offsets[s.OffsetKey(path)] = offset
 }
 
-// TreeFiles lists the transcripts of the session tree: the parent, then every
-// agent-*.jsonl at any depth under SubagentsDir. Workflow journals, meta and
-// forked-skill files share the directory and are not transcripts.
 func (s *State) TreeFiles() []string {
 	files := []string{s.JSONLPath}
 	_ = filepath.WalkDir(s.SubagentsDir(), func(path string, d fs.DirEntry, err error) error {
@@ -128,6 +114,7 @@ func (s *State) TreeFiles() []string {
 			return nil
 		}
 		name := d.Name()
+		// Workflow journals, meta and forked-skill files share this directory but are not transcripts.
 		if strings.HasPrefix(name, "agent-") && strings.HasSuffix(name, ".jsonl") {
 			files = append(files, path)
 		}
@@ -188,8 +175,6 @@ func withSessionsLock(fn func() error) error {
 	return fn()
 }
 
-// LoadState reads a persisted state, migrating a 0.18.x layout on the fly.
-// Returns an error wrapping os.ErrNotExist when the session is not registered.
 func LoadState(claudeSessionID string) (*State, error) {
 	if err := validateKey(claudeSessionID); err != nil {
 		return nil, err
@@ -208,9 +193,6 @@ func LoadState(claudeSessionID string) (*State, error) {
 	return s, loadErr
 }
 
-// UpdateState runs fn on the current state of a session under the sessions
-// lock and saves the state fn returns; a nil state saves nothing. fn receives
-// the load error, os.ErrNotExist included, so it decides how to register.
 func UpdateState(claudeSessionID string, fn func(current *State, loadErr error) *State) error {
 	if err := validateKey(claudeSessionID); err != nil {
 		return err
@@ -305,7 +287,6 @@ func migrateLegacyState(claudeSessionID string) (*State, error) {
 	return s, nil
 }
 
-// SaveState writes s atomically (mode 0600) under the sessions lock.
 func SaveState(s *State) error {
 	if s.ClaudeSessionID == "" {
 		return errors.New("save state: claudeSessionID is empty")
@@ -316,9 +297,6 @@ func SaveState(s *State) error {
 	return withSessionsLock(func() error { return saveStateLocked(s) })
 }
 
-// saveStateLocked gives each write its own temp file: a shared .tmp let
-// concurrent writers interleave their bytes into an unparseable state, which
-// stops the session's reader.
 func saveStateLocked(s *State) error {
 	if s.ClaudeSessionID == "" {
 		return errors.New("save state: claudeSessionID is empty")
@@ -349,8 +327,6 @@ func saveStateLocked(s *State) error {
 	return nil
 }
 
-// DeleteState removes a session's state file and any 0.18.x subagent state
-// directory left beside it.
 func DeleteState(claudeSessionID string) error {
 	if err := validateKey(claudeSessionID); err != nil {
 		return err
@@ -364,8 +340,6 @@ func deleteStateLocked(claudeSessionID string) error {
 	return err
 }
 
-// ListStates returns every persisted session state, sorted by session id,
-// migrating 0.18.x states as it reads them. Unreadable states are skipped.
 func ListStates() ([]*State, error) {
 	entries, err := os.ReadDir(SessionsDir())
 	if err != nil {
@@ -390,9 +364,6 @@ func ListStates() ([]*State, error) {
 	return states, nil
 }
 
-// PruneLegacyDirs removes the 0.18.x subagent state directories that no
-// longer serve: their parent state is gone or already migrated. A directory
-// whose parent is still in the 0.18.x layout waits for its migration.
 func PruneLegacyDirs() (int, error) {
 	removed := 0
 	err := withSessionsLock(func() error {

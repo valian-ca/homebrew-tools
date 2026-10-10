@@ -271,8 +271,6 @@ func TestBuildEventDoc_TimeSource(t *testing.T) {
 	}
 }
 
-// AC 3: a line written to the parent, a subagent or a Workflow agent reaches
-// Firestore as its activity:minute within 10 s, with production intervals.
 func TestHeartbeatReachesFirestoreWithinTenSeconds(t *testing.T) {
 	if testing.Short() {
 		t.Skip("runs the daemon loops with production intervals")

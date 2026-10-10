@@ -24,7 +24,6 @@ const (
 	pingTimeout         = 5 * time.Second
 )
 
-// checkResult is one row of `atelierd status` output.
 type checkResult struct {
 	name string
 	tier checkTier
@@ -50,7 +49,6 @@ func (t checkTier) label() string {
 	}
 }
 
-// NewStatusCmd builds the `atelierd status` sub-command.
 func NewStatusCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "status",
@@ -106,8 +104,6 @@ func runStatus(cmd *cobra.Command, _ []string) error {
 // without printing a stack trace.
 var errStatusFail = fmt.Errorf("atelierd status: at least one check failed")
 
-// IsStatusFail reports whether err is the sentinel returned by status when at
-// least one check is FAIL.
 func IsStatusFail(err error) bool { return err != nil && err.Error() == errStatusFail.Error() }
 
 func checkVersion(s *status.File) checkResult {

@@ -16,9 +16,6 @@ import (
 	"github.com/valian-ca/homebrew-tools/internal/atelierd/ulid"
 )
 
-// sessionPollInterval paces the discovery of freshly registered sessions.
-// Var rather than const so integration tests can drive it with a sub-second
-// tick.
 var sessionPollInterval = 5 * time.Second
 
 // treePollInterval paces the read of an active session tree. A poll rather
@@ -26,9 +23,6 @@ var sessionPollInterval = 5 * time.Second
 // files inside it, and Workflow agents write three directories down.
 var treePollInterval = 2 * time.Second
 
-// sessionIdleTimeout bounds reading to active sessions: a session tree with
-// no consumed line for this long releases its reader, and dormant states on
-// disk don't get one at startup. Var so tests can shrink it.
 var sessionIdleTimeout = 30 * time.Minute
 
 // dormantScanInterval paces the revival check of dormant sessions — a stat of
@@ -44,31 +38,36 @@ var stateGCInterval = 24 * time.Hour
 // quarantined.
 const maxHeartbeatSkew = 5 * time.Minute
 
-// readHook runs between a tree read and its state save. Test-only seam for
-// interleaving a concurrent `atelierd emit` registration.
-var readHook func()
+var (
+	testHookBeforeSave    func()
+	testHookReaderStarted func(claudeSessionID string)
+)
 
 func isSessionActive(s *transcript.State, now time.Time) bool {
 	return now.Sub(s.LastActivityAt) < sessionIdleTimeout
 }
 
-// hasUnconsumedBytes reports whether any transcript of the tree holds bytes
-// its offset hasn't consumed. Size below the offset (truncation) counts too.
 func hasUnconsumedBytes(s *transcript.State) bool {
+	_, unconsumed := treeSize(s)
+	return unconsumed
+}
+
+func treeSize(s *transcript.State) (int64, bool) {
+	var total int64
+	unconsumed := false
 	for _, f := range s.TreeFiles() {
 		stat, err := os.Stat(f)
 		if err != nil {
 			continue
 		}
+		total += stat.Size()
+		// != rather than >: a truncated transcript (size below its offset)
+		// needs a read too.
 		if stat.Size() != s.Offset(f) {
-			return true
+			unconsumed = true
 		}
 	}
-	return false
-}
-
-func shouldSpawnReader(s *transcript.State, now time.Time) bool {
-	return isSessionActive(s, now) || hasUnconsumedBytes(s)
+	return total, unconsumed
 }
 
 func sessionsManagerLoop(ctx context.Context, _ *runState) {
@@ -104,17 +103,22 @@ func sessionsManagerLoop(ctx context.Context, _ *runState) {
 		return true
 	}
 
-	// Initial scan: rehydrate only the sessions worth reading — active ones,
-	// plus dormant ones whose tree grew while the daemon was down. The rest
-	// stay on disk for the dormant scan.
 	states, err := transcript.ListStates()
 	if err != nil {
 		atelierlog.Warn("sessions-manager: initial scan failed", "err", err.Error())
 	}
+	// A tree whose bytes can never be consumed (a last line cut mid-write, an
+	// unreadable file) stays "unconsumed" forever, and its reader exits on its
+	// first idle check: revive a dormant tree only once per size it reaches.
+	revivedAtSize := map[string]int64{}
 	now := time.Now()
 	for _, s := range states {
-		if shouldSpawnReader(s, now) {
+		if isSessionActive(s, now) {
 			spawn(s)
+			continue
+		}
+		if size, unconsumed := treeSize(s); unconsumed && spawn(s) {
+			revivedAtSize[s.ClaudeSessionID] = size
 		}
 	}
 
@@ -156,10 +160,18 @@ func sessionsManagerLoop(ctx context.Context, _ *runState) {
 			}
 			now := time.Now()
 			for _, s := range states {
-				if isSessionActive(s, now) || !hasUnconsumedBytes(s) {
+				if isSessionActive(s, now) {
+					continue
+				}
+				size, unconsumed := treeSize(s)
+				if !unconsumed {
+					continue
+				}
+				if last, seen := revivedAtSize[s.ClaudeSessionID]; seen && last == size {
 					continue
 				}
 				if spawn(s) {
+					revivedAtSize[s.ClaudeSessionID] = size
 					atelierlog.Info("sessions-manager: dormant session revived", "session", s.ClaudeSessionID)
 				}
 			}
@@ -167,12 +179,11 @@ func sessionsManagerLoop(ctx context.Context, _ *runState) {
 	}
 }
 
-// runSessionReader reads one session tree every treePollInterval until ctx is
-// cancelled, the state disappears, or the whole tree has been quiet for
-// sessionIdleTimeout; the manager's spawn filter then keeps the session
-// dormant until new bytes appear.
 func runSessionReader(ctx context.Context, claudeSessionID string) {
 	atelierlog.Info("session-reader: started", "session", claudeSessionID)
+	if testHookReaderStarted != nil {
+		testHookReaderStarted(claudeSessionID)
+	}
 
 	tick := time.NewTicker(treePollInterval)
 	defer tick.Stop()
@@ -196,8 +207,6 @@ func runSessionReader(ctx context.Context, claudeSessionID string) {
 	}
 }
 
-// readSessionTree consumes every complete line newly available in the tree,
-// writes the derived envelopes to the outbox, then saves the state once.
 // Envelopes go first: a crash in between re-reads the lines, and the
 // re-derived heartbeats collapse on their queued file and, once shipped, on
 // their Firestore doc (409). The state is reloaded on every poll so a
@@ -223,8 +232,8 @@ func readSessionTree(ctx context.Context, claudeSessionID string) (*transcript.S
 		return state, nil
 	}
 
-	if readHook != nil {
-		readHook()
+	if testHookBeforeSave != nil {
+		testHookBeforeSave()
 	}
 	now := time.Now().UTC()
 	for _, env := range envs {
@@ -264,9 +273,6 @@ func readSessionTree(ctx context.Context, claudeSessionID string) (*transcript.S
 	return state, nil
 }
 
-// consumeTranscript derives every complete line of path past its offset and
-// advances the offset in state. A trailing line without its newline waits for
-// the next poll. Truncation (size below the offset) restarts the file at 0.
 func consumeTranscript(state *transcript.State, path string) ([]*outbox.Envelope, bool) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -299,6 +305,8 @@ func consumeTranscript(state *transcript.State, path string) ([]*outbox.Envelope
 	r := bufio.NewReaderSize(f, 64*1024)
 	for {
 		line, err := r.ReadBytes('\n')
+		// A trailing line without its newline is still being written; the
+		// next poll reads it whole.
 		if err != nil {
 			break
 		}
@@ -312,10 +320,6 @@ func consumeTranscript(state *transcript.State, path string) ([]*outbox.Envelope
 	return envs, true
 }
 
-// stateGCLoop purges session states whose transcript no longer exists (Claude
-// Code deletes transcripts after ~30 days) so ~/.atelier/sessions/ stops
-// growing without bound. Startup run + daily ticker, same shape as
-// updaterLoop.
 func stateGCLoop(ctx context.Context, _ *runState) {
 	runStateGC()
 	tick := time.NewTicker(stateGCInterval)

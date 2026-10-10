@@ -1,8 +1,3 @@
-// Package app holds build-time configuration for the atelierd daemon.
-//
-// All values here are public — same as those shipped in the valian-dashboards
-// frontend bundle. They live as Go consts (rather than ldflags-stamped vars)
-// because they don't need per-build override; only the version is stamped.
 package app
 
 const (
@@ -62,8 +57,6 @@ var commitURL = "https://firestore.googleapis.com/v1/projects/" + FirebaseProjec
 
 func CommitURL() string { return commitURL }
 
-// SetCommitURLForTest redirects every :commit to url and returns the restore
-// function. Test-only.
 func SetCommitURLForTest(url string) (restore func()) {
 	prev := commitURL
 	commitURL = url

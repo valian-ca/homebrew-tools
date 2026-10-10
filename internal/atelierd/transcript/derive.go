@@ -10,9 +10,6 @@ import (
 	"github.com/valian-ca/homebrew-tools/internal/atelierd/ulid"
 )
 
-// Clock and ULIDFn are injection points so tests can drive the derivation
-// deterministically. In production the session reader passes time.Now() and
-// ulid.New().
 type Clock func() time.Time
 type ULIDFn func() string
 
@@ -30,10 +27,6 @@ func minuteKey(minute time.Time) string {
 	return minute.UTC().Format(minuteKeyLayout)
 }
 
-// Derive consumes one JSONL line, records in state what it emitted, and
-// returns the envelopes to append to the outbox. Malformed lines and lines
-// without a timestamp yield nothing and no error: returning an error would
-// stall the reader on a line Anthropic wrote mid-flush or in an unknown shape.
 func Derive(state *State, line []byte, now Clock, newULID ULIDFn) []*outbox.Envelope {
 	if newULID == nil {
 		newULID = ulid.New
@@ -47,6 +40,8 @@ func Derive(state *State, line []byte, now Clock, newULID ULIDFn) []*outbox.Enve
 		return nil
 	}
 	var rec Record
+	// Returning this error would stall the reader on a line Anthropic wrote
+	// mid-flush or in an unknown shape.
 	if err := json.Unmarshal(trimmed, &rec); err != nil {
 		return nil
 	}

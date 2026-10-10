@@ -1,9 +1,3 @@
-// Package firestore is a thin REST + Bearer-idToken client for the Firestore
-// writes the daemon performs as the authenticated end user.
-//
-// We use REST rather than the Firestore Go SDK because the SDK assumes
-// Application Default Credentials and fights any attempt to authenticate as a
-// user; REST gives us total control with stdlib only.
 package firestore
 
 import (
@@ -20,8 +14,6 @@ import (
 	"github.com/valian-ca/homebrew-tools/internal/atelierd/app"
 )
 
-// Error wraps an HTTP error from Firestore REST, carrying the status so the
-// caller can distinguish auth-lost (401/403) from transient (5xx, network).
 type Error struct {
 	Status  int
 	Message string
@@ -52,8 +44,6 @@ func IsPermissionDenied(err error) bool {
 	return fe.Status == http.StatusForbidden
 }
 
-// IsAlreadyExists reports whether err is a Firestore 409 ALREADY_EXISTS: the
-// create-only precondition of CommitEvents found the doc already written.
 func IsAlreadyExists(err error) bool {
 	var fe *Error
 	if !errors.As(err, &fe) {
@@ -147,6 +137,7 @@ func PingUser(ctx context.Context, idToken, uid string) error {
 	return &Error{Status: resp.StatusCode, Message: string(raw)}
 }
 
+// REST rather than the Firestore Go SDK: the SDK assumes Application Default Credentials and fights authenticating as an end user.
 func commit(ctx context.Context, idToken string, writes []map[string]any) error {
 	body, err := json.Marshal(map[string]any{"writes": writes})
 	if err != nil {
