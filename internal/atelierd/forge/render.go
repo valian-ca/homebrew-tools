@@ -33,20 +33,23 @@ type labels struct {
 	unrecorded string
 	colon      string
 	statuses   map[string]string
+	severities map[string]string
 }
 
 var testplanLabels = map[string]labels{
 	"en": {
 		title: "Test plan", steps: "Steps", expected: "Expected", latest: "Latest outcome",
 		pass: "Pass", reason: "Reason", unrecorded: "Not recorded",
-		colon:    ":",
-		statuses: map[string]string{"pass": "Passed", "finding": "Finding", "not_exercised": "Not exercised"},
+		colon:      ":",
+		statuses:   map[string]string{"pass": "Passed", "finding": "Finding", "not_exercised": "Not exercised"},
+		severities: map[string]string{"blocking": "Blocking", "degraded": "Degraded", "cosmetic": "Cosmetic"},
 	},
 	"fr": {
 		title: "Plan de tests", steps: "Étapes", expected: "Résultat attendu", latest: "Dernier résultat",
 		pass: "Passe", reason: "Motif", unrecorded: "Non enregistré",
-		colon:    " :",
-		statuses: map[string]string{"pass": "Réussi", "finding": "Problème", "not_exercised": "Non exercé"},
+		colon:      " :",
+		statuses:   map[string]string{"pass": "Réussi", "finding": "Problème", "not_exercised": "Non exercé"},
+		severities: map[string]string{"blocking": "Bloquant", "degraded": "Dégradé", "cosmetic": "Cosmétique"},
 	},
 }
 
@@ -189,7 +192,11 @@ func RenderTestplanContext(ctx context.Context, runID, language, outputPath stri
 					fmt.Fprintf(&builder, "- %s%s %s\n", label.latest, label.colon, label.unrecorded)
 					continue
 				}
-				fmt.Fprintf(&builder, "- %s%s %s\n", label.latest, label.colon, label.statuses[outcome.Status])
+				status := label.statuses[outcome.Status]
+				if outcome.Severity != "" {
+					status += " (" + label.severities[outcome.Severity] + ")"
+				}
+				fmt.Fprintf(&builder, "- %s%s %s\n", label.latest, label.colon, status)
 				fmt.Fprintf(&builder, "- %s%s %s\n", label.pass, label.colon, outcome.PassID)
 				if outcome.Reason != "" {
 					fmt.Fprintf(&builder, "- %s%s %s\n", label.reason, label.colon, outcome.Reason)

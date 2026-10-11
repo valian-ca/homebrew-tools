@@ -52,7 +52,7 @@ func TestForgeContractCommand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("contract: %v", err)
 	}
-	if stdout != "2\n" || stderr != "" {
+	if stdout != "3\n" || stderr != "" {
 		t.Fatalf("contract stdout=%q stderr=%q", stdout, stderr)
 	}
 }
@@ -132,7 +132,7 @@ func TestForgeCommandExitCodes(t *testing.T) {
 	if ExitCode(err) != ExitForgeCampaign {
 		t.Fatalf("campaign exit = %d, error %v", ExitCode(err), err)
 	}
-	if err := os.WriteFile(paths.ForgeCampaign(runID), []byte(`{"schemaVersion":2,"axes":[{"title":"A","scenarios":[{"title":"S","steps":["Do"],"expected":"Done"}]}]}`), 0o600); err != nil {
+	if err := os.WriteFile(paths.ForgeCampaign(runID), []byte(`{"schemaVersion":1,"axes":[{"title":"A","scenarios":[{"title":"S","steps":["Do"],"expected":"Done"}]}]}`), 0o600); err != nil {
 		t.Fatalf("write mismatched campaign: %v", err)
 	}
 	_, _, err = executeForge("campaign", "load", "--run", runID)
@@ -142,15 +142,15 @@ func TestForgeCommandExitCodes(t *testing.T) {
 	if err := os.Remove(paths.ForgeCampaign(runID)); err != nil {
 		t.Fatalf("remove mismatched campaign: %v", err)
 	}
-	campaign := commandTestFile(t, "campaign.json", `{"schemaVersion":1,"axes":[{"title":"A","scenarios":[{"title":"S","steps":["Do"],"expected":"Done"}]}]}`)
-	outcome := commandTestFile(t, "outcome.json", `{"schemaVersion":1,"outcomes":[{"axis":"A","scenario":"S","status":"finding"}]}`)
+	campaign := commandTestFile(t, "campaign.json", `{"schemaVersion":2,"axes":[{"title":"A","scenarios":[{"title":"S","steps":["Do"],"expected":"Done","rank":5,"access":"readonly"}]}]}`)
+	outcome := commandTestFile(t, "outcome.json", `{"schemaVersion":2,"outcomes":[{"axis":"A","scenario":"S","status":"finding","severity":"degraded"}]}`)
 	if _, _, err := executeForge("campaign", "save", "--run", runID, "--from", campaign); err != nil {
 		t.Fatalf("campaign save: %v", err)
 	}
 	if _, _, err := executeForge("wave", "open", "--run", runID); err != nil {
 		t.Fatalf("wave open: %v", err)
 	}
-	_, _, err = executeForge("wave", "close", "--run", runID, "--findings", "0")
+	_, _, err = executeForge("wave", "close", "--run", runID, "--fixed", "0")
 	if ExitCode(err) != ExitForgeInvalidPass {
 		t.Fatalf("close without pass exit = %d, error %v", ExitCode(err), err)
 	}
@@ -160,7 +160,7 @@ func TestForgeCommandExitCodes(t *testing.T) {
 	if _, _, err := executeForge("outcome", "record", "--run", runID, "--pass", "wave-1", "--from", outcome); err != nil {
 		t.Fatalf("outcome record: %v", err)
 	}
-	if _, _, err := executeForge("wave", "close", "--run", runID, "--findings", "1"); err != nil {
+	if _, _, err := executeForge("wave", "close", "--run", runID, "--fixed", "1"); err != nil {
 		t.Fatalf("wave close: %v", err)
 	}
 	_, _, err = executeForge("wave", "open", "--run", runID)
@@ -168,8 +168,8 @@ func TestForgeCommandExitCodes(t *testing.T) {
 		t.Fatalf("wave cap exit = %d, error %v", ExitCode(err), err)
 	}
 	dryRun := startCommandRun(t, 2)
-	dryCampaign := commandTestFile(t, "dry-campaign.json", `{"schemaVersion":1,"axes":[{"title":"A","scenarios":[{"title":"S","steps":["Do"],"expected":"Done"}]}]}`)
-	dryOutcome := commandTestFile(t, "dry-outcome.json", `{"schemaVersion":1,"outcomes":[{"axis":"A","scenario":"S","status":"pass"}]}`)
+	dryCampaign := commandTestFile(t, "dry-campaign.json", `{"schemaVersion":2,"axes":[{"title":"A","scenarios":[{"title":"S","steps":["Do"],"expected":"Done","rank":5,"access":"readonly"}]}]}`)
+	dryOutcome := commandTestFile(t, "dry-outcome.json", `{"schemaVersion":2,"outcomes":[{"axis":"A","scenario":"S","status":"pass"}]}`)
 	if _, _, err := executeForge("campaign", "save", "--run", dryRun, "--from", dryCampaign); err != nil {
 		t.Fatalf("dry campaign save: %v", err)
 	}
@@ -182,22 +182,65 @@ func TestForgeCommandExitCodes(t *testing.T) {
 	if _, _, err := executeForge("outcome", "record", "--run", dryRun, "--pass", "wave-1", "--from", dryOutcome); err != nil {
 		t.Fatalf("dry outcome record: %v", err)
 	}
-	if _, _, err := executeForge("wave", "close", "--run", dryRun, "--findings", "0"); err != nil {
+	if _, _, err := executeForge("wave", "close", "--run", dryRun, "--fixed", "0"); err != nil {
 		t.Fatalf("dry wave close: %v", err)
 	}
-	_, _, err = executeForge("wave", "open", "--run", dryRun)
-	if ExitCode(err) != ExitForgeInvalidPass {
-		t.Fatalf("dry terminal wave open exit = %d, error %v", ExitCode(err), err)
+	if stdout, _, err := executeForge("wave", "open", "--run", dryRun); err != nil || stdout != "2\n" {
+		t.Fatalf("wave open after dry stdout=%q error=%v", stdout, err)
 	}
-	invalid := commandTestFile(t, "invalid.json", `{"schemaVersion":1,"axes":[]}`)
+	invalid := commandTestFile(t, "invalid.json", `{"schemaVersion":2,"axes":[]}`)
 	_, _, err = executeForge("campaign", "save", "--run", runID, "--from", invalid)
 	if ExitCode(err) != ExitForgeStaging {
 		t.Fatalf("staging exit = %d, error %v", ExitCode(err), err)
 	}
 }
 
+func TestForgeCampaignAppendCommand(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	runID := startCommandRun(t, 3)
+	campaign := commandTestFile(t, "campaign.json", `{"schemaVersion":2,"axes":[{"title":"A","scenarios":[{"title":"S","steps":["Do"],"expected":"Done","rank":5,"access":"readonly"}]}]}`)
+	outcome := commandTestFile(t, "outcome.json", `{"schemaVersion":2,"outcomes":[{"axis":"A","scenario":"S","status":"finding","severity":"blocking"}]}`)
+	exploration := commandTestFile(t, "exploration.json", `{"schemaVersion":2,"axes":[{"title":"A","scenarios":[{"title":"E","steps":["Probe"],"expected":"Holds","rank":7,"access":"mutating"}]}]}`)
+	for _, args := range [][]string{
+		{"campaign", "save", "--run", runID, "--from", campaign},
+		{"wave", "open", "--run", runID},
+		{"pass", "next", "--run", runID, "--kind", "wave"},
+		{"outcome", "record", "--run", runID, "--pass", "wave-1", "--from", outcome},
+	} {
+		if _, _, err := executeForge(args...); err != nil {
+			t.Fatalf("%v: %v", args, err)
+		}
+	}
+	_, _, err := executeForge("campaign", "append", "--run", runID, "--wave", "1", "--from", exploration)
+	if ExitCode(err) != ExitForgeStaging {
+		t.Fatalf("append in wave 1 exit = %d, error %v", ExitCode(err), err)
+	}
+	if stdout, _, err := executeForge("wave", "close", "--run", runID, "--fixed", "1"); err != nil || stdout != "continue\n" {
+		t.Fatalf("wave close stdout=%q error=%v", stdout, err)
+	}
+	if _, _, err := executeForge("wave", "open", "--run", runID); err != nil {
+		t.Fatalf("wave open: %v", err)
+	}
+	if stdout, stderr, err := executeForge("campaign", "append", "--run", runID, "--wave", "2", "--from", exploration); err != nil || stdout != "" || stderr != "" {
+		t.Fatalf("append stdout=%q stderr=%q error=%v", stdout, stderr, err)
+	}
+	stdout, _, err := executeForge("campaign", "load", "--run", runID)
+	if err != nil || !strings.Contains(stdout, `"title": "E"`) || !strings.Contains(stdout, `"wave": 2`) {
+		t.Fatalf("campaign load stdout=%q error=%v", stdout, err)
+	}
+	if _, _, err := executeForge("campaign", "append", "--run", runID, "--from", exploration); err == nil {
+		t.Fatal("append without --wave unexpectedly succeeded")
+	}
+	if _, _, err := executeForge("wave", "close", "--run", runID); err == nil {
+		t.Fatal("wave close without --fixed unexpectedly succeeded")
+	}
+	if _, _, err := executeForge("wave", "close", "--run", runID, "--findings", "0"); err == nil {
+		t.Fatal("removed --findings flag unexpectedly accepted")
+	}
+}
+
 func TestForgePassCommandWithoutCampaign(t *testing.T) {
-	validCampaign := `{"schemaVersion":1,"axes":[{"title":"A","scenarios":[{"title":"S","steps":["Do"],"expected":"Done"}]}]}`
+	validCampaign := `{"schemaVersion":2,"axes":[{"title":"A","scenarios":[{"title":"S","steps":["Do"],"expected":"Done","rank":5,"access":"readonly"}]}]}`
 	for _, kind := range []string{"wave", "review", "repair"} {
 		t.Run(kind, func(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())
@@ -231,7 +274,7 @@ func TestForgeCommandsRejectInvalidCampaignWithoutMutation(t *testing.T) {
 		if _, _, err := executeForge("wave", "open", "--run", runID); err != nil {
 			t.Fatalf("wave open: %v", err)
 		}
-		if err := os.WriteFile(paths.ForgeCampaign(runID), []byte(`{"schemaVersion":1,"axes":[]}`), 0o600); err != nil {
+		if err := os.WriteFile(paths.ForgeCampaign(runID), []byte(`{"schemaVersion":2,"axes":[]}`), 0o600); err != nil {
 			t.Fatalf("write invalid campaign: %v", err)
 		}
 		before, err := os.ReadFile(paths.ForgeRunState(runID))
@@ -263,14 +306,14 @@ func TestForgeCommandsRejectInvalidCampaignWithoutMutation(t *testing.T) {
 		if _, _, err := executeForge("pass", "next", "--run", runID, "--kind", "wave"); err != nil {
 			t.Fatalf("pass next: %v", err)
 		}
-		if err := os.WriteFile(paths.ForgeCampaign(runID), []byte(`{"schemaVersion":1,"axes":[]}`), 0o600); err != nil {
+		if err := os.WriteFile(paths.ForgeCampaign(runID), []byte(`{"schemaVersion":2,"axes":[]}`), 0o600); err != nil {
 			t.Fatalf("write invalid campaign: %v", err)
 		}
 		before, err := os.ReadFile(paths.ForgeRunState(runID))
 		if err != nil {
 			t.Fatalf("read state before: %v", err)
 		}
-		_, _, err = executeForge("wave", "close", "--run", runID, "--findings", "0")
+		_, _, err = executeForge("wave", "close", "--run", runID, "--fixed", "0")
 		if ExitCode(err) != ExitForgeCampaign {
 			t.Fatalf("wave close exit = %d, error %v", ExitCode(err), err)
 		}
@@ -296,9 +339,9 @@ func TestForgeCommandsWithSaturatedOutboxAndNoAuth(t *testing.T) {
 			t.Fatalf("write backlog: %v", err)
 		}
 	}
-	campaign := commandTestFile(t, "campaign.json", `{"schemaVersion":1,"axes":[{"title":"Navigation","scenarios":[{"title":"Open","steps":["Tap"],"expected":"Opened"}]}]}`)
-	outcome := commandTestFile(t, "outcome.json", `{"schemaVersion":1,"outcomes":[{"axis":"Navigation","scenario":"Open","status":"pass"}]}`)
-	if stdout, _, err := executeForge("contract"); err != nil || stdout != "2\n" {
+	campaign := commandTestFile(t, "campaign.json", `{"schemaVersion":2,"axes":[{"title":"Navigation","scenarios":[{"title":"Open","steps":["Tap"],"expected":"Opened","rank":9,"access":"mutating"}]}]}`)
+	outcome := commandTestFile(t, "outcome.json", `{"schemaVersion":2,"outcomes":[{"axis":"Navigation","scenario":"Open","status":"pass"}]}`)
+	if stdout, _, err := executeForge("contract"); err != nil || stdout != "3\n" {
 		t.Fatalf("contract stdout=%q error=%v", stdout, err)
 	}
 	runID := startCommandRun(t, 2)
@@ -310,7 +353,7 @@ func TestForgeCommandsWithSaturatedOutboxAndNoAuth(t *testing.T) {
 		t.Fatalf("campaign save: %v", err)
 	}
 	stdout, _, err = executeForge("campaign", "load", "--run", runID)
-	if err != nil || !strings.Contains(stdout, `"schemaVersion": 1`) || strings.Count(stdout, "\n") < 2 {
+	if err != nil || !strings.Contains(stdout, `"schemaVersion": 2`) || strings.Count(stdout, "\n") < 2 {
 		t.Fatalf("campaign load stdout=%q error=%v", stdout, err)
 	}
 	if stdout, _, err = executeForge("wave", "open", "--run", runID); err != nil || stdout != "1\n" {
@@ -323,7 +366,7 @@ func TestForgeCommandsWithSaturatedOutboxAndNoAuth(t *testing.T) {
 	if _, _, err = executeForge("outcome", "record", "--run", runID, "--pass", "wave-1", "--from", outcome); err != nil {
 		t.Fatalf("outcome record: %v", err)
 	}
-	if stdout, _, err = executeForge("wave", "close", "--run", runID, "--findings", "0"); err != nil || stdout != "dry\n" {
+	if stdout, _, err = executeForge("wave", "close", "--run", runID, "--fixed", "0"); err != nil || stdout != "dry\n" {
 		t.Fatalf("wave close stdout=%q error=%v", stdout, err)
 	}
 	stdout, _, err = executeForge("summary", "--run", runID)
@@ -431,6 +474,21 @@ func TestForgeHelpDocumentsStagingAndPositionalRef(t *testing.T) {
 	stdout, _, err := executeForge("outcome", "record", "--help")
 	if err != nil || !strings.Contains(stdout, `"status":"pass|finding|not_exercised"`) || !strings.Contains(stdout, "staging files never supply counts") {
 		t.Fatalf("outcome help=%q error=%v", stdout, err)
+	}
+	if !strings.Contains(stdout, `"severity":"blocking|degraded|cosmetic"`) {
+		t.Fatalf("outcome help lacks severity: %q", stdout)
+	}
+	stdout, _, err = executeForge("wave", "close", "--help")
+	if err != nil || !strings.Contains(stdout, "--fixed") || strings.Contains(stdout, "--findings") {
+		t.Fatalf("wave close help=%q error=%v", stdout, err)
+	}
+	stdout, _, err = executeForge("campaign", "save", "--help")
+	if err != nil || !strings.Contains(stdout, `"rank":9,"access":"readonly|mutating"`) {
+		t.Fatalf("campaign save help=%q error=%v", stdout, err)
+	}
+	stdout, _, err = executeForge("campaign", "append", "--help")
+	if err != nil || !strings.Contains(stdout, `"rank":6,"access":"readonly"`) || !strings.Contains(stdout, "Wave 2 accepts up to 6 scenarios") {
+		t.Fatalf("campaign append help=%q error=%v", stdout, err)
 	}
 	stdout, _, err = executeForge("ref", "set", "--help")
 	if err != nil || !strings.Contains(stdout, "set <value> --run <id> --key report|testplan") {

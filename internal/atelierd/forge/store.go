@@ -312,8 +312,11 @@ func readCampaignIfPresent(runID string) (*Campaign, error) {
 	if err := decodeStrict(data, &campaign); err != nil {
 		return nil, fmt.Errorf("%w: parse campaign: %v", ErrCampaignInvalid, err)
 	}
-	if campaign.SchemaVersion != SchemaVersion {
-		return nil, fmt.Errorf("%w: schema version %d is unsupported; expected %d", ErrCampaignInvalid, campaign.SchemaVersion, SchemaVersion)
+	if campaign.SchemaVersion == 1 {
+		return nil, fmt.Errorf("%w: campaign predates contract 3 — restart the run", ErrCampaignInvalid)
+	}
+	if campaign.SchemaVersion != CampaignSchemaVersion {
+		return nil, fmt.Errorf("%w: schema version %d is unsupported; expected %d", ErrCampaignInvalid, campaign.SchemaVersion, CampaignSchemaVersion)
 	}
 	if err := validateCampaign(&campaign); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrCampaignInvalid, err)
@@ -325,7 +328,7 @@ func readLedger(runID string) (*ledger, error) {
 	data, err := readNoFollow(paths.ForgeLedger(runID), MaxLedgerFileBytes)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return &ledger{SchemaVersion: SchemaVersion, Passes: []ledgerPass{}}, nil
+			return &ledger{SchemaVersion: LedgerSchemaVersion, Passes: []ledgerPass{}}, nil
 		}
 		return nil, err
 	}
@@ -333,8 +336,11 @@ func readLedger(runID string) (*ledger, error) {
 	if err := decodeStrict(data, &value); err != nil {
 		return nil, fmt.Errorf("parse ledger: %w", err)
 	}
-	if value.SchemaVersion != SchemaVersion {
-		return nil, fmt.Errorf("ledger schema version %d is unsupported; expected %d", value.SchemaVersion, SchemaVersion)
+	if value.SchemaVersion == 1 {
+		return nil, fmt.Errorf("%w: ledger predates contract 3 — restart the run", ErrCampaignInvalid)
+	}
+	if value.SchemaVersion != LedgerSchemaVersion {
+		return nil, fmt.Errorf("ledger schema version %d is unsupported; expected %d", value.SchemaVersion, LedgerSchemaVersion)
 	}
 	if err := validateLedger(&value); err != nil {
 		return nil, fmt.Errorf("invalid ledger: %w", err)
@@ -381,12 +387,52 @@ func validateCampaignAndLedger(state *runState, campaign *Campaign, value *ledge
 }
 
 func writeJSON(path string, value any) error {
-	data, err := json.MarshalIndent(value, "", "  ")
+	data, err := marshalJSON(value)
 	if err != nil {
 		return err
 	}
-	data = append(data, '\n')
 	return writeBytes(path, data)
+}
+
+func writeCampaign(runID string, campaign *Campaign) error {
+	data, err := marshalJSON(campaign)
+	if err != nil {
+		return err
+	}
+	if len(data) > MaxCampaignFileBytes {
+		return fmt.Errorf("%w: campaign would exceed %d bytes", ErrInvalidStaging, MaxCampaignFileBytes)
+	}
+	return writeBytes(paths.ForgeCampaign(runID), data)
+}
+
+func marshalJSON(value any) ([]byte, error) {
+	data, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return append(data, '\n'), nil
+}
+
+func predatesContract3(runID string) bool {
+	for _, file := range []struct {
+		path     string
+		maxBytes int64
+	}{
+		{paths.ForgeCampaign(runID), MaxCampaignFileBytes},
+		{paths.ForgeLedger(runID), MaxLedgerFileBytes},
+	} {
+		data, err := readNoFollow(file.path, file.maxBytes)
+		if err != nil {
+			continue
+		}
+		var header struct {
+			SchemaVersion int `json:"schemaVersion"`
+		}
+		if json.Unmarshal(data, &header) == nil && header.SchemaVersion == 1 {
+			return true
+		}
+	}
+	return false
 }
 
 func writeBytes(path string, data []byte) error {

@@ -2,6 +2,7 @@ package forge
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"github.com/gofrs/flock"
 	"golang.org/x/sys/unix"
 
+	"github.com/valian-ca/homebrew-tools/internal/atelierd/events"
 	"github.com/valian-ca/homebrew-tools/internal/atelierd/outbox"
 	"github.com/valian-ca/homebrew-tools/internal/atelierd/paths"
 )
@@ -139,11 +141,55 @@ func copyFixture(t *testing.T, name, target string) {
 	}
 }
 
+const oneScenarioCampaign = `{"schemaVersion":2,"axes":[{"title":"A","scenarios":[{"title":"S","steps":["Do"],"expected":"Done","rank":5,"access":"readonly"}]}]}`
+
+func stagedScenarios(prefix string, count int) []Scenario {
+	result := make([]Scenario, count)
+	for i := range result {
+		result[i] = Scenario{Title: fmt.Sprintf("%s-%d", prefix, i+1), Steps: []string{"Do"}, Expected: "Done", Rank: 5, Access: "readonly"}
+	}
+	return result
+}
+
+func writeCampaignStaging(t *testing.T, axes ...Axis) string {
+	t.Helper()
+	data, err := json.Marshal(Campaign{SchemaVersion: CampaignSchemaVersion, Axes: axes})
+	if err != nil {
+		t.Fatalf("marshal campaign staging: %v", err)
+	}
+	return writeTestFile(t, "campaign.json", string(data))
+}
+
+func writeOutcomes(t *testing.T, outcomes ...Outcome) string {
+	t.Helper()
+	data, err := json.Marshal(OutcomeBatch{SchemaVersion: CampaignSchemaVersion, Outcomes: outcomes})
+	if err != nil {
+		t.Fatalf("marshal outcomes: %v", err)
+	}
+	return writeTestFile(t, "outcome.json", string(data))
+}
+
+func playWave(t *testing.T, runID string, fixed int, outcomes ...Outcome) string {
+	t.Helper()
+	path, err := NextPass(runID, "wave")
+	if err != nil {
+		t.Fatalf("NextPass: %v", err)
+	}
+	if err := RecordOutcome(runID, filepath.Base(path), writeOutcomes(t, outcomes...)); err != nil {
+		t.Fatalf("RecordOutcome: %v", err)
+	}
+	decision, err := CloseWave(runID, fixed)
+	if err != nil {
+		t.Fatalf("CloseWave: %v", err)
+	}
+	return decision
+}
+
 func TestRunIsolationStateAndModes(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	first := startTestRun(t, DefaultCap)
-	campaign := writeTestFile(t, "campaign.json", `{"schemaVersion":1,"axes":[{"title":"A","scenarios":[{"title":"S","steps":["Do"],"expected":"Done"}]}]}`)
+	campaign := writeTestFile(t, "campaign.json", `{"schemaVersion":2,"axes":[{"title":"A","scenarios":[{"title":"S","steps":["Do"],"expected":"Done","rank":5,"access":"readonly"}]}]}`)
 	if err := SaveCampaign(first, campaign); err != nil {
 		t.Fatalf("SaveCampaign: %v", err)
 	}
@@ -390,7 +436,7 @@ func TestShowPassCampaignlessSelectors(t *testing.T) {
 func TestShowPassStrictCompletionAndCaptureIntegrity(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	runID := startTestRun(t, DefaultCap)
-	campaign := writeTestFile(t, "campaign.json", `{"schemaVersion":1,"axes":[{"title":"A","scenarios":[{"title":"S","steps":["Do"],"expected":"Done"}]}]}`)
+	campaign := writeTestFile(t, "campaign.json", `{"schemaVersion":2,"axes":[{"title":"A","scenarios":[{"title":"S","steps":["Do"],"expected":"Done","rank":5,"access":"readonly"}]}]}`)
 	if err := SaveCampaign(runID, campaign); err != nil {
 		t.Fatalf("SaveCampaign: %v", err)
 	}
@@ -416,7 +462,7 @@ func TestShowPassStrictCompletionAndCaptureIntegrity(t *testing.T) {
 	if !open.CampaignRequired || open.Complete {
 		t.Fatalf("strict open pass status = %+v", open)
 	}
-	outcome := writeTestFile(t, "outcome.json", `{"schemaVersion":1,"outcomes":[{"axis":"A","scenario":"S","status":"pass"}]}`)
+	outcome := writeTestFile(t, "outcome.json", `{"schemaVersion":2,"outcomes":[{"axis":"A","scenario":"S","status":"pass"}]}`)
 	if err := RecordOutcome(runID, "wave-1", outcome); err != nil {
 		t.Fatalf("RecordOutcome: %v", err)
 	}
@@ -432,7 +478,7 @@ func TestShowPassStrictCompletionAndCaptureIntegrity(t *testing.T) {
 	if err != nil || !complete.Complete {
 		t.Fatalf("completed strict pass = %+v, %v", complete, err)
 	}
-	if err := writeJSON(paths.ForgeLedger(runID), &ledger{SchemaVersion: SchemaVersion, Passes: []ledgerPass{}}); err != nil {
+	if err := writeJSON(paths.ForgeLedger(runID), &ledger{SchemaVersion: LedgerSchemaVersion, Passes: []ledgerPass{}}); err != nil {
 		t.Fatalf("clear ledger: %v", err)
 	}
 	state.OpenPass = ""
@@ -460,7 +506,7 @@ func TestShowPassStrictCompletionAndCaptureIntegrity(t *testing.T) {
 }
 
 func validScenario(number int) Scenario {
-	return Scenario{Title: fmt.Sprintf("scenario-%d", number), Steps: []string{"step"}, Expected: "done"}
+	return Scenario{Title: fmt.Sprintf("scenario-%d", number), Steps: []string{"step"}, Expected: "done", Rank: 1, Access: "readonly"}
 }
 
 func TestV1CampaignAndOutcomeBoundaries(t *testing.T) {
@@ -498,10 +544,10 @@ func TestV1CampaignAndOutcomeBoundaries(t *testing.T) {
 			for i := range steps {
 				steps[i] = "step"
 			}
-			return Campaign{Axes: []Axis{{Title: "axis", Scenarios: []Scenario{{Title: "scenario", Steps: steps, Expected: "done"}}}}}
+			return Campaign{Axes: []Axis{{Title: "axis", Scenarios: []Scenario{{Title: "scenario", Steps: steps, Expected: "done", Rank: MaxRank, Access: "mutating"}}}}}
 		}, ""},
 		{"text", func() Campaign {
-			return Campaign{Axes: []Axis{{Title: strings.Repeat("a", MaxTextBytes), Scenarios: []Scenario{{Title: "scenario", Steps: []string{"step"}, Expected: "done"}}}}}
+			return Campaign{Axes: []Axis{{Title: strings.Repeat("a", MaxTextBytes), Scenarios: []Scenario{{Title: "scenario", Steps: []string{"step"}, Expected: "done", Rank: MinRank, Access: "readonly"}}}}}
 		}, ""},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -555,7 +601,7 @@ func TestV1OversizedStagingAndCampaign(t *testing.T) {
 	if _, err := LoadCampaign(runID); !errors.Is(err, ErrCampaignInvalid) {
 		t.Fatalf("oversized persisted campaign error = %v", err)
 	}
-	if err := os.WriteFile(paths.ForgeCampaign(runID), []byte(`{"schemaVersion":1,"axes":[{"title":"A","scenarios":[{"title":"S","steps":["Do"],"expected":"Done"}]}]}`), 0o600); err != nil {
+	if err := os.WriteFile(paths.ForgeCampaign(runID), []byte(`{"schemaVersion":2,"axes":[{"title":"A","scenarios":[{"title":"S","steps":["Do"],"expected":"Done","rank":5,"access":"readonly"}]}]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	for _, test := range []struct {
@@ -610,7 +656,7 @@ func TestStartPrunesOldRuns(t *testing.T) {
 func TestWaveAndPassConcurrency(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	runID := startTestRun(t, 1)
-	campaign := writeTestFile(t, "campaign.json", `{"schemaVersion":1,"axes":[{"title":"A","scenarios":[{"title":"S","steps":["Do"],"expected":"Done"}]}]}`)
+	campaign := writeTestFile(t, "campaign.json", `{"schemaVersion":2,"axes":[{"title":"A","scenarios":[{"title":"S","steps":["Do"],"expected":"Done","rank":5,"access":"readonly"}]}]}`)
 	if err := SaveCampaign(runID, campaign); err != nil {
 		t.Fatalf("SaveCampaign: %v", err)
 	}
@@ -666,7 +712,7 @@ func TestWaveAndPassConcurrency(t *testing.T) {
 	if len(pathsSeen) != 1 {
 		t.Fatalf("unique successful wave pass dirs = %d, want 1", len(pathsSeen))
 	}
-	outcome := writeTestFile(t, "outcome.json", `{"schemaVersion":1,"outcomes":[{"axis":"A","scenario":"S","status":"finding"}]}`)
+	outcome := writeTestFile(t, "outcome.json", `{"schemaVersion":2,"outcomes":[{"axis":"A","scenario":"S","status":"finding","severity":"degraded"}]}`)
 	if err := RecordOutcome(runID, "wave-1", outcome); err != nil {
 		t.Fatalf("RecordOutcome: %v", err)
 	}
@@ -781,7 +827,7 @@ func TestNextPassWithoutCampaign(t *testing.T) {
 }
 
 func TestNextPassRejectsInvalidCampaignBeforeMutation(t *testing.T) {
-	validCampaign := `{"schemaVersion":1,"axes":[{"title":"A","scenarios":[{"title":"S","steps":["Do"],"expected":"Done"}]}]}`
+	validCampaign := `{"schemaVersion":2,"axes":[{"title":"A","scenarios":[{"title":"S","steps":["Do"],"expected":"Done","rank":5,"access":"readonly"}]}]}`
 	for _, kind := range []passKind{passWave, passReview, passRepair} {
 		t.Run(string(kind), func(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())
@@ -791,7 +837,7 @@ func TestNextPassRejectsInvalidCampaignBeforeMutation(t *testing.T) {
 					t.Fatalf("OpenWave: %v", err)
 				}
 			}
-			if err := os.WriteFile(paths.ForgeCampaign(runID), []byte(`{"schemaVersion":1,"axes":[]}`), 0o600); err != nil {
+			if err := os.WriteFile(paths.ForgeCampaign(runID), []byte(`{"schemaVersion":2,"axes":[]}`), 0o600); err != nil {
 				t.Fatalf("write invalid campaign: %v", err)
 			}
 			before, err := os.ReadFile(paths.ForgeRunState(runID))
@@ -898,7 +944,7 @@ func TestCloseWaveRejectsInvalidCampaignBeforeMutation(t *testing.T) {
 	if _, err := NextPass(runID, "wave"); err != nil {
 		t.Fatalf("NextPass: %v", err)
 	}
-	if err := os.WriteFile(paths.ForgeCampaign(runID), []byte(`{"schemaVersion":1,"axes":[]}`), 0o600); err != nil {
+	if err := os.WriteFile(paths.ForgeCampaign(runID), []byte(`{"schemaVersion":2,"axes":[]}`), 0o600); err != nil {
 		t.Fatalf("write invalid campaign: %v", err)
 	}
 	before, err := os.ReadFile(paths.ForgeRunState(runID))
@@ -918,8 +964,8 @@ func TestCloseWaveRejectsInvalidCampaignBeforeMutation(t *testing.T) {
 }
 
 func TestCampaignDeletionDoesNotDowngradeRun(t *testing.T) {
-	validCampaign := `{"schemaVersion":1,"axes":[{"title":"A","scenarios":[{"title":"S","steps":["Do"],"expected":"Done"}]}]}`
-	outcome := `{"schemaVersion":1,"outcomes":[{"axis":"A","scenario":"S","status":"finding"}]}`
+	validCampaign := `{"schemaVersion":2,"axes":[{"title":"A","scenarios":[{"title":"S","steps":["Do"],"expected":"Done","rank":5,"access":"readonly"}]}]}`
+	outcome := `{"schemaVersion":2,"outcomes":[{"axis":"A","scenario":"S","status":"finding","severity":"degraded"}]}`
 	for _, test := range []struct {
 		name  string
 		setup func(t *testing.T, runID string)
@@ -999,13 +1045,13 @@ func TestCampaignDeletionDoesNotDowngradeRun(t *testing.T) {
 func TestCampaignlessPassOperationsReadLedger(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	runID := startTestRun(t, 2)
-	if err := os.WriteFile(paths.ForgeLedger(runID), []byte(`{"schemaVersion":1,"passes":`), 0o600); err != nil {
+	if err := os.WriteFile(paths.ForgeLedger(runID), []byte(`{"schemaVersion":2,"passes":`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := NextPass(runID, "review"); err == nil {
 		t.Fatal("malformed ledger was ignored")
 	}
-	if err := os.WriteFile(paths.ForgeLedger(runID), []byte(`{"schemaVersion":1,"passes":[{"passId":"review-1","kind":"review","outcomes":[{"axis":"A","scenario":"S","status":"pass"}],"counts":{"pass":1}}]}`), 0o600); err != nil {
+	if err := os.WriteFile(paths.ForgeLedger(runID), []byte(`{"schemaVersion":2,"passes":[{"passId":"review-1","kind":"review","outcomes":[{"axis":"A","scenario":"S","status":"pass"}],"counts":{"pass":1}}]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	before, err := os.ReadFile(paths.ForgeRunState(runID))
@@ -1029,13 +1075,13 @@ func TestCampaignlessPassOperationsReadLedger(t *testing.T) {
 	if _, err := NextPass(closeRun, "wave"); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(paths.ForgeLedger(closeRun), []byte(`{"schemaVersion":1,"passes":`), 0o600); err != nil {
+	if err := os.WriteFile(paths.ForgeLedger(closeRun), []byte(`{"schemaVersion":2,"passes":`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := CloseWave(closeRun, 0); err == nil {
 		t.Fatal("CloseWave ignored malformed ledger")
 	}
-	if err := os.WriteFile(paths.ForgeLedger(closeRun), []byte(`{"schemaVersion":1,"passes":[{"passId":"wave-1","kind":"wave","wave":1,"outcomes":[{"axis":"A","scenario":"S","status":"pass"}],"counts":{"pass":1}}]}`), 0o600); err != nil {
+	if err := os.WriteFile(paths.ForgeLedger(closeRun), []byte(`{"schemaVersion":2,"passes":[{"passId":"wave-1","kind":"wave","wave":1,"outcomes":[{"axis":"A","scenario":"S","status":"pass"}],"counts":{"pass":1}}]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := CloseWave(closeRun, 0); !errors.Is(err, ErrCampaignInvalid) {
@@ -1046,7 +1092,7 @@ func TestCampaignlessPassOperationsReadLedger(t *testing.T) {
 func TestCloseWaveCampaignErrorPrecedesPassStructure(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	runID := startTestRun(t, 1)
-	if err := os.WriteFile(paths.ForgeCampaign(runID), []byte(`{"schemaVersion":1,"axes":[]}`), 0o600); err != nil {
+	if err := os.WriteFile(paths.ForgeCampaign(runID), []byte(`{"schemaVersion":2,"axes":[]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := CloseWave(runID, 0); !errors.Is(err, ErrCampaignInvalid) {
@@ -1057,7 +1103,7 @@ func TestCloseWaveCampaignErrorPrecedesPassStructure(t *testing.T) {
 func TestExistingRunWithCampaignBecomesStrictWhenObserved(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	runID := startTestRun(t, 1)
-	if err := os.WriteFile(paths.ForgeCampaign(runID), []byte(`{"schemaVersion":1,"axes":[{"title":"A","scenarios":[{"title":"S","steps":["Do"],"expected":"Done"}]}]}`), 0o600); err != nil {
+	if err := os.WriteFile(paths.ForgeCampaign(runID), []byte(`{"schemaVersion":2,"axes":[{"title":"A","scenarios":[{"title":"S","steps":["Do"],"expected":"Done","rank":5,"access":"readonly"}]}]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := OpenWave(runID); err != nil {
@@ -1081,36 +1127,31 @@ func TestExistingRunWithCampaignBecomesStrictWhenObserved(t *testing.T) {
 	}
 }
 
-func TestOpenWaveRejectsAfterDryWave(t *testing.T) {
+func TestOpenWaveAfterDry(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	runID := startTestRun(t, 2)
-	campaign := writeTestFile(t, "campaign.json", `{"schemaVersion":1,"axes":[{"title":"A","scenarios":[{"title":"S","steps":["Do"],"expected":"Done"}]}]}`)
-	outcome := writeTestFile(t, "outcome.json", `{"schemaVersion":1,"outcomes":[{"axis":"A","scenario":"S","status":"pass"}]}`)
-	if err := SaveCampaign(runID, campaign); err != nil {
+	if err := SaveCampaign(runID, writeTestFile(t, "campaign.json", oneScenarioCampaign)); err != nil {
 		t.Fatalf("SaveCampaign: %v", err)
 	}
-	if _, err := OpenWave(runID); err != nil {
-		t.Fatalf("OpenWave: %v", err)
+	passed := Outcome{Axis: "A", Scenario: "S", Status: "pass"}
+	for wave := 1; wave <= 2; wave++ {
+		if got, err := OpenWave(runID); err != nil || got != wave {
+			t.Fatalf("OpenWave = %d, %v; want %d", got, err, wave)
+		}
+		if decision := playWave(t, runID, 0, passed); decision != "dry" {
+			t.Fatalf("wave %d decision = %q; want dry", wave, decision)
+		}
 	}
-	if _, err := NextPass(runID, "wave"); err != nil {
-		t.Fatalf("NextPass: %v", err)
-	}
-	if err := RecordOutcome(runID, "wave-1", outcome); err != nil {
-		t.Fatalf("RecordOutcome: %v", err)
-	}
-	if decision, err := CloseWave(runID, 0); err != nil || decision != "dry" {
-		t.Fatalf("CloseWave = %q, %v; want dry", decision, err)
-	}
-	if _, err := OpenWave(runID); !errors.Is(err, ErrInvalidPass) {
-		t.Fatalf("OpenWave after dry wave error = %v; want ErrInvalidPass", err)
+	if _, err := OpenWave(runID); !errors.Is(err, ErrWaveCap) {
+		t.Fatalf("OpenWave at cap after dry wave error = %v; want ErrWaveCap", err)
 	}
 }
 
 func TestPassSequencesAndOutcomeCounts(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	runID := startTestRun(t, 2)
-	campaign := writeTestFile(t, "campaign.json", `{"schemaVersion":1,"axes":[{"title":"A","scenarios":[{"title":"S","steps":["Do"],"expected":"Done"}]}]}`)
-	outcome := writeTestFile(t, "outcome.json", `{"schemaVersion":1,"outcomes":[{"axis":"A","scenario":"S","status":"finding","reason":"broken"}]}`)
+	campaign := writeTestFile(t, "campaign.json", `{"schemaVersion":2,"axes":[{"title":"A","scenarios":[{"title":"S","steps":["Do"],"expected":"Done","rank":5,"access":"readonly"}]}]}`)
+	outcome := writeTestFile(t, "outcome.json", `{"schemaVersion":2,"outcomes":[{"axis":"A","scenario":"S","status":"finding","severity":"degraded","reason":"broken"}]}`)
 	if err := SaveCampaign(runID, campaign); err != nil {
 		t.Fatalf("SaveCampaign: %v", err)
 	}
@@ -1187,8 +1228,8 @@ func TestPassSequencesAndOutcomeCounts(t *testing.T) {
 func TestAuxiliaryPassCaps(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	runID := startTestRun(t, 1)
-	campaign := writeTestFile(t, "campaign.json", `{"schemaVersion":1,"axes":[{"title":"A","scenarios":[{"title":"S","steps":["Do"],"expected":"Done"}]}]}`)
-	outcome := writeTestFile(t, "outcome.json", `{"schemaVersion":1,"outcomes":[{"axis":"A","scenario":"S","status":"pass"}]}`)
+	campaign := writeTestFile(t, "campaign.json", `{"schemaVersion":2,"axes":[{"title":"A","scenarios":[{"title":"S","steps":["Do"],"expected":"Done","rank":5,"access":"readonly"}]}]}`)
+	outcome := writeTestFile(t, "outcome.json", `{"schemaVersion":2,"outcomes":[{"axis":"A","scenario":"S","status":"pass"}]}`)
 	if err := SaveCampaign(runID, campaign); err != nil {
 		t.Fatal(err)
 	}
@@ -1218,19 +1259,19 @@ func TestAuxiliaryPassCaps(t *testing.T) {
 	}
 }
 
-func TestCloseWaveRequiresRecordedPassAndMatchingFindings(t *testing.T) {
+func TestCloseWaveRequiresRecordedPass(t *testing.T) {
 	setup := func(t *testing.T) (string, string) {
 		t.Helper()
 		t.Setenv("HOME", t.TempDir())
 		runID := startTestRun(t, 1)
-		campaign := writeTestFile(t, "campaign.json", `{"schemaVersion":1,"axes":[{"title":"A","scenarios":[{"title":"S","steps":["Do"],"expected":"Done"}]}]}`)
+		campaign := writeTestFile(t, "campaign.json", `{"schemaVersion":2,"axes":[{"title":"A","scenarios":[{"title":"S","steps":["Do"],"expected":"Done","rank":5,"access":"readonly"}]}]}`)
 		if err := SaveCampaign(runID, campaign); err != nil {
 			t.Fatalf("SaveCampaign: %v", err)
 		}
 		if _, err := OpenWave(runID); err != nil {
 			t.Fatalf("OpenWave: %v", err)
 		}
-		outcome := writeTestFile(t, "outcome.json", `{"schemaVersion":1,"outcomes":[{"axis":"A","scenario":"S","status":"finding"}]}`)
+		outcome := writeTestFile(t, "outcome.json", `{"schemaVersion":2,"outcomes":[{"axis":"A","scenario":"S","status":"finding","severity":"degraded"}]}`)
 		return runID, outcome
 	}
 
@@ -1251,7 +1292,7 @@ func TestCloseWaveRequiresRecordedPassAndMatchingFindings(t *testing.T) {
 		}
 	})
 
-	t.Run("finding mismatch", func(t *testing.T) {
+	t.Run("negative fixed", func(t *testing.T) {
 		runID, outcome := setup(t)
 		if _, err := NextPass(runID, "wave"); err != nil {
 			t.Fatalf("NextPass: %v", err)
@@ -1259,7 +1300,7 @@ func TestCloseWaveRequiresRecordedPassAndMatchingFindings(t *testing.T) {
 		if err := RecordOutcome(runID, "wave-1", outcome); err != nil {
 			t.Fatalf("RecordOutcome: %v", err)
 		}
-		if _, err := CloseWave(runID, 0); !errors.Is(err, ErrInvalidPass) {
+		if _, err := CloseWave(runID, -1); !errors.Is(err, ErrInvalidPass) {
 			t.Fatalf("CloseWave error = %v", err)
 		}
 		state, err := readRun(runID)
@@ -1267,7 +1308,7 @@ func TestCloseWaveRequiresRecordedPassAndMatchingFindings(t *testing.T) {
 			t.Fatalf("readRun: %v", err)
 		}
 		if !state.WaveOpen {
-			t.Fatal("finding mismatch closed the wave")
+			t.Fatal("negative fixed closed the wave")
 		}
 	})
 
@@ -1285,11 +1326,455 @@ func TestCloseWaveRequiresRecordedPassAndMatchingFindings(t *testing.T) {
 	})
 }
 
+func TestCloseWaveRoutesOnFixed(t *testing.T) {
+	finding := Outcome{Axis: "A", Scenario: "S", Status: "finding", Severity: "blocking"}
+	passed := Outcome{Axis: "A", Scenario: "S", Status: "pass"}
+	for _, test := range []struct {
+		name     string
+		cap      int
+		outcome  Outcome
+		fixed    int
+		findings int
+		decision string
+	}{
+		{name: "nothing fixed despite findings is dry", cap: 3, outcome: finding, fixed: 0, findings: 1, decision: "dry"},
+		{name: "one fix without findings continues", cap: 3, outcome: passed, fixed: 1, findings: 0, decision: "continue"},
+		{name: "five fixes without findings continue", cap: 3, outcome: passed, fixed: 5, findings: 0, decision: "continue"},
+		{name: "fix at cap", cap: 1, outcome: finding, fixed: 2, findings: 1, decision: "cap"},
+		{name: "nothing fixed at cap is dry", cap: 1, outcome: finding, fixed: 0, findings: 1, decision: "dry"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			runID := startTestRun(t, test.cap)
+			if err := SaveCampaign(runID, writeTestFile(t, "campaign.json", oneScenarioCampaign)); err != nil {
+				t.Fatalf("SaveCampaign: %v", err)
+			}
+			if _, err := OpenWave(runID); err != nil {
+				t.Fatalf("OpenWave: %v", err)
+			}
+			if decision := playWave(t, runID, test.fixed, test.outcome); decision != test.decision {
+				t.Fatalf("decision = %q; want %q", decision, test.decision)
+			}
+			state, err := readRun(runID)
+			if err != nil {
+				t.Fatalf("readRun: %v", err)
+			}
+			closed := state.Waves[0]
+			if closed.Fixed == nil || *closed.Fixed != test.fixed || closed.Findings == nil || *closed.Findings != test.findings {
+				t.Fatalf("persisted wave = %+v; want fixed %d, findings %d", closed, test.fixed, test.findings)
+			}
+		})
+	}
+
+	t.Run("campaign-less run records zero findings", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		runID := startTestRun(t, 3)
+		if _, err := OpenWave(runID); err != nil {
+			t.Fatalf("OpenWave: %v", err)
+		}
+		if _, err := NextPass(runID, "wave"); err != nil {
+			t.Fatalf("NextPass: %v", err)
+		}
+		if decision, err := CloseWave(runID, 2); err != nil || decision != "continue" {
+			t.Fatalf("CloseWave = %q, %v; want continue", decision, err)
+		}
+		state, err := readRun(runID)
+		if err != nil {
+			t.Fatalf("readRun: %v", err)
+		}
+		if *state.Waves[0].Findings != 0 || *state.Waves[0].Fixed != 2 {
+			t.Fatalf("persisted wave = %+v", state.Waves[0])
+		}
+	})
+}
+
+func TestOutcomeRequiresSeverityAndReason(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	runID := startTestRun(t, DefaultCap)
+	if err := SaveCampaign(runID, writeTestFile(t, "campaign.json", oneScenarioCampaign)); err != nil {
+		t.Fatalf("SaveCampaign: %v", err)
+	}
+	if _, err := OpenWave(runID); err != nil {
+		t.Fatalf("OpenWave: %v", err)
+	}
+	if _, err := NextPass(runID, "wave"); err != nil {
+		t.Fatalf("NextPass: %v", err)
+	}
+	for _, test := range []struct {
+		name    string
+		outcome Outcome
+	}{
+		{"finding without severity", Outcome{Axis: "A", Scenario: "S", Status: "finding"}},
+		{"finding with unknown severity", Outcome{Axis: "A", Scenario: "S", Status: "finding", Severity: "major"}},
+		{"pass with severity", Outcome{Axis: "A", Scenario: "S", Status: "pass", Severity: "cosmetic"}},
+		{"not_exercised with severity", Outcome{Axis: "A", Scenario: "S", Status: "not_exercised", Severity: "blocking", Reason: "no device"}},
+		{"not_exercised without reason", Outcome{Axis: "A", Scenario: "S", Status: "not_exercised"}},
+		{"not_exercised with blank reason", Outcome{Axis: "A", Scenario: "S", Status: "not_exercised", Reason: "  "}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if err := RecordOutcome(runID, "wave-1", writeOutcomes(t, test.outcome)); !errors.Is(err, ErrInvalidStaging) {
+				t.Fatalf("RecordOutcome error = %v; want ErrInvalidStaging", err)
+			}
+			state, err := readRun(runID)
+			if err != nil {
+				t.Fatalf("readRun: %v", err)
+			}
+			if state.OpenPass != "wave-1" {
+				t.Fatalf("OpenPass = %q; want wave-1", state.OpenPass)
+			}
+		})
+	}
+	if err := RecordOutcome(runID, "wave-1", writeOutcomes(t, Outcome{Axis: "A", Scenario: "S", Status: "finding", Severity: "blocking"})); err != nil {
+		t.Fatalf("RecordOutcome valid finding: %v", err)
+	}
+	if err := withRunLock(runID, func() error {
+		value, err := readLedger(runID)
+		if err != nil {
+			return err
+		}
+		if value.Passes[0].Outcomes[0].Severity != "blocking" {
+			return fmt.Errorf("persisted severity = %q", value.Passes[0].Outcomes[0].Severity)
+		}
+		value.Passes[0].Outcomes[0].Severity = ""
+		return writeJSON(paths.ForgeLedger(runID), value)
+	}); err != nil {
+		t.Fatalf("strip ledger severity: %v", err)
+	}
+	if _, err := Summary(runID); err == nil || !strings.Contains(err.Error(), "severity") {
+		t.Fatalf("ledger finding without severity error = %v", err)
+	}
+	if err := withRunLock(runID, func() error {
+		return writeJSON(paths.ForgeLedger(runID), &ledger{SchemaVersion: LedgerSchemaVersion, Passes: []ledgerPass{{
+			PassID: "wave-1", Kind: passWave, Wave: 1,
+			Outcomes: []Outcome{{Axis: "A", Scenario: "S", Status: "not_exercised"}},
+			Counts:   counts{NotExercised: 1},
+		}}})
+	}); err != nil {
+		t.Fatalf("write ledger without reason: %v", err)
+	}
+	if _, err := Summary(runID); err == nil || !strings.Contains(err.Error(), "reason") {
+		t.Fatalf("ledger not_exercised without reason error = %v", err)
+	}
+}
+
+func TestCampaignRequiresRankAndAccess(t *testing.T) {
+	scenario := func(fields string) string {
+		return `{"schemaVersion":2,"axes":[{"title":"A","scenarios":[{"title":"S","steps":["Do"],"expected":"Done"` + fields + `}]}]}`
+	}
+	for _, test := range []struct {
+		name string
+		body string
+	}{
+		{"missing access", scenario(`,"rank":5`)},
+		{"missing rank", scenario(`,"access":"readonly"`)},
+		{"unknown access", scenario(`,"rank":5,"access":"write"`)},
+		{"rank zero", scenario(`,"rank":0,"access":"readonly"`)},
+		{"rank ten", scenario(`,"rank":10,"access":"readonly"`)},
+		{"fractional rank", scenario(`,"rank":4.5,"access":"readonly"`)},
+		{"staging carries wave", scenario(`,"rank":5,"access":"readonly","wave":2`)},
+		{"schema 1 staging", `{"schemaVersion":1,"axes":[{"title":"A","scenarios":[{"title":"S","steps":["Do"],"expected":"Done","rank":5,"access":"readonly"}]}]}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			runID := startTestRun(t, DefaultCap)
+			if err := SaveCampaign(runID, writeTestFile(t, "campaign.json", test.body)); !errors.Is(err, ErrInvalidStaging) {
+				t.Fatalf("SaveCampaign error = %v; want ErrInvalidStaging", err)
+			}
+			if _, err := os.Stat(paths.ForgeCampaign(runID)); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("refused campaign was stored: %v", err)
+			}
+		})
+	}
+
+	t.Run("boundaries accepted", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		runID := startTestRun(t, DefaultCap)
+		body := `{"schemaVersion":2,"axes":[{"title":"A","scenarios":[` +
+			`{"title":"S1","steps":["Do"],"expected":"Done","rank":1,"access":"readonly"},` +
+			`{"title":"S9","steps":["Do"],"expected":"Done","rank":9,"access":"mutating"}]}]}`
+		if err := SaveCampaign(runID, writeTestFile(t, "campaign.json", body)); err != nil {
+			t.Fatalf("SaveCampaign: %v", err)
+		}
+	})
+
+	t.Run("persisted scenario wave out of range", func(t *testing.T) {
+		for _, wave := range []int{1, MaxWaves + 1} {
+			t.Setenv("HOME", t.TempDir())
+			runID := startTestRun(t, DefaultCap)
+			stored := fmt.Sprintf(`{"schemaVersion":2,"axes":[{"title":"A","scenarios":[{"title":"S","steps":["Do"],"expected":"Done","rank":5,"access":"readonly","wave":%d}]}]}`, wave)
+			if err := os.WriteFile(paths.ForgeCampaign(runID), []byte(stored), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := LoadCampaign(runID); !errors.Is(err, ErrCampaignInvalid) || !strings.Contains(err.Error(), "invalid append wave") {
+				t.Fatalf("wave %d LoadCampaign error = %v; want ErrCampaignInvalid", wave, err)
+			}
+		}
+	})
+
+	t.Run("schema 1 campaign refused on read", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		runID := startTestRun(t, DefaultCap)
+		legacy := `{"schemaVersion":1,"axes":[{"title":"A","scenarios":[{"title":"S","steps":["Do"],"expected":"Done"}]}]}`
+		if err := os.WriteFile(paths.ForgeCampaign(runID), []byte(legacy), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := OpenWave(runID); err != nil {
+			t.Fatalf("OpenWave: %v", err)
+		}
+		for name, op := range map[string]func() error{
+			"load":      func() error { _, err := LoadCampaign(runID); return err },
+			"pass next": func() error { _, err := NextPass(runID, "wave"); return err },
+		} {
+			if err := op(); !errors.Is(err, ErrCampaignInvalid) || !strings.Contains(err.Error(), "campaign predates contract 3 — restart the run") {
+				t.Fatalf("%s error = %v; want ErrCampaignInvalid predating contract 3", name, err)
+			}
+		}
+	})
+}
+
+func TestContractTwoLedgerRefusedAsRestart(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	runID := startTestRun(t, DefaultCap)
+	legacy := `{"schemaVersion":1,"passes":[{"passId":"wave-1","kind":"wave","wave":1,"outcomes":[{"axis":"A","scenario":"S","status":"finding"}],"counts":{"finding":1}}]}`
+	if err := os.WriteFile(paths.ForgeLedger(runID), []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for name, op := range map[string]func() error{
+		"campaign save": func() error { return SaveCampaign(runID, writeTestFile(t, "campaign.json", oneScenarioCampaign)) },
+		"pass next":     func() error { _, err := NextPass(runID, "review"); return err },
+	} {
+		if err := op(); !errors.Is(err, ErrCampaignInvalid) || !strings.Contains(err.Error(), "predates contract 3 — restart the run") {
+			t.Fatalf("%s error = %v; want ErrCampaignInvalid predating contract 3", name, err)
+		}
+	}
+	if _, err := os.Stat(paths.ForgeCampaign(runID)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("campaign stored over a contract-2 ledger: %v", err)
+	}
+}
+
+func TestAppendCampaignRefusesUnreadableSize(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	runID := startTestRun(t, DefaultCap)
+	bulky := func(title string, steps int) Scenario {
+		scenario := Scenario{Title: title, Expected: "Done", Rank: 5, Access: "readonly"}
+		for range steps {
+			scenario.Steps = append(scenario.Steps, strings.Repeat("x", 4000))
+		}
+		return scenario
+	}
+	if err := SaveCampaign(runID, writeCampaignStaging(t, Axis{Title: "A", Scenarios: []Scenario{bulky("A-1", MaxSteps), bulky("A-2", 28)}})); err != nil {
+		t.Fatalf("SaveCampaign: %v", err)
+	}
+	if _, err := OpenWave(runID); err != nil {
+		t.Fatalf("OpenWave 1: %v", err)
+	}
+	playWave(t, runID, 1, Outcome{Axis: "A", Scenario: "A-1", Status: "finding", Severity: "degraded"})
+	if _, err := OpenWave(runID); err != nil {
+		t.Fatalf("OpenWave 2: %v", err)
+	}
+	before, err := os.ReadFile(paths.ForgeCampaign(runID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = AppendCampaign(runID, 2, writeCampaignStaging(t, Axis{Title: "A", Scenarios: []Scenario{bulky("A-3", 6)}}))
+	if !errors.Is(err, ErrInvalidStaging) || !strings.Contains(err.Error(), "campaign would exceed") {
+		t.Fatalf("oversized append error = %v; want ErrInvalidStaging", err)
+	}
+	after, err := os.ReadFile(paths.ForgeCampaign(runID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(before, after) {
+		t.Fatal("refused append changed campaign.json")
+	}
+	if err := AppendCampaign(runID, 2, writeCampaignStaging(t, Axis{Title: "A", Scenarios: stagedScenarios("small", 1)})); err != nil {
+		t.Fatalf("small append after refusal: %v", err)
+	}
+	if _, err := LoadCampaign(runID); err != nil {
+		t.Fatalf("LoadCampaign after append: %v", err)
+	}
+}
+
+func TestFindRunSkipsRunsPredatingContract3(t *testing.T) {
+	for _, legacy := range []struct {
+		name string
+		path func(string) string
+		body string
+	}{
+		{"campaign", paths.ForgeCampaign, `{"schemaVersion":1,"axes":[{"title":"A","scenarios":[{"title":"S","steps":["Do"],"expected":"Done"}]}]}`},
+		{"ledger", paths.ForgeLedger, `{"schemaVersion":1,"passes":[]}`},
+	} {
+		t.Run(legacy.name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			stale := startTestRun(t, DefaultCap)
+			if err := os.WriteFile(legacy.path(stale), []byte(legacy.body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := FindRun("VAL-306", ""); !errors.Is(err, ErrUnknownRun) {
+				t.Fatalf("FindRun with only a contract-2 run error = %v; want ErrUnknownRun", err)
+			}
+			restarted := startTestRun(t, DefaultCap)
+			if got, err := FindRun("VAL-306", ""); err != nil || got != restarted {
+				t.Fatalf("FindRun after restart = %q, %v; want %q", got, err, restarted)
+			}
+			if got, err := FindRun("", "session-306"); err != nil || got != restarted {
+				t.Fatalf("FindRun by session after restart = %q, %v; want %q", got, err, restarted)
+			}
+		})
+	}
+}
+
+func TestAppendCampaignWaveBudget(t *testing.T) {
+	setup := func(t *testing.T) string {
+		t.Helper()
+		t.Setenv("HOME", t.TempDir())
+		runID := startTestRun(t, DefaultCap)
+		staging := writeCampaignStaging(t,
+			Axis{Title: "Bitten", Scenarios: stagedScenarios("B", 1)},
+			Axis{Title: "Quiet", Scenarios: stagedScenarios("Q", 1)},
+		)
+		if err := SaveCampaign(runID, staging); err != nil {
+			t.Fatalf("SaveCampaign: %v", err)
+		}
+		if _, err := OpenWave(runID); err != nil {
+			t.Fatalf("OpenWave 1: %v", err)
+		}
+		decision := playWave(t, runID, 1,
+			Outcome{Axis: "Bitten", Scenario: "B-1", Status: "finding", Severity: "degraded"},
+			Outcome{Axis: "Quiet", Scenario: "Q-1", Status: "pass"},
+		)
+		if decision != "continue" {
+			t.Fatalf("wave 1 decision = %q", decision)
+		}
+		if _, err := OpenWave(runID); err != nil {
+			t.Fatalf("OpenWave 2: %v", err)
+		}
+		return runID
+	}
+	appendAxes := func(t *testing.T, runID string, wave int, axes ...Axis) error {
+		t.Helper()
+		return AppendCampaign(runID, wave, writeCampaignStaging(t, axes...))
+	}
+	accept := func(t *testing.T, err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatalf("AppendCampaign: %v", err)
+		}
+	}
+	refuse := func(t *testing.T, err error) {
+		t.Helper()
+		if !errors.Is(err, ErrInvalidStaging) {
+			t.Fatalf("AppendCampaign error = %v; want ErrInvalidStaging", err)
+		}
+	}
+
+	t.Run("wave 2 bitten axis takes six across calls", func(t *testing.T) {
+		runID := setup(t)
+		accept(t, appendAxes(t, runID, 2, Axis{Title: "Bitten", Scenarios: stagedScenarios("B2a", 4)}))
+		accept(t, appendAxes(t, runID, 2, Axis{Title: "Bitten", Scenarios: stagedScenarios("B2b", 2)}))
+		refuse(t, appendAxes(t, runID, 2, Axis{Title: "Bitten", Scenarios: stagedScenarios("B2c", 1)}))
+	})
+
+	t.Run("wave 2 bitten axis does not consume the shared budget", func(t *testing.T) {
+		runID := setup(t)
+		accept(t, appendAxes(t, runID, 2,
+			Axis{Title: "Bitten", Scenarios: stagedScenarios("B2", 6)},
+			Axis{Title: "Quiet", Scenarios: stagedScenarios("Q2", 2)},
+		))
+		campaign, err := readCampaign(runID)
+		if err != nil {
+			t.Fatalf("readCampaign: %v", err)
+		}
+		for _, axis := range campaign.Axes {
+			for _, scenario := range axis.Scenarios {
+				wantWave := 2
+				if scenario.Title == "B-1" || scenario.Title == "Q-1" {
+					wantWave = 0
+				}
+				if scenario.Wave != wantWave {
+					t.Fatalf("scenario %s wave = %d; want %d", scenario.Title, scenario.Wave, wantWave)
+				}
+			}
+		}
+	})
+
+	t.Run("wave 2 other axes share two, new axes included", func(t *testing.T) {
+		runID := setup(t)
+		accept(t, appendAxes(t, runID, 2,
+			Axis{Title: "Quiet", Scenarios: stagedScenarios("Q2", 1)},
+			Axis{Title: "New", Scenarios: stagedScenarios("N2", 1)},
+		))
+		refuse(t, appendAxes(t, runID, 2, Axis{Title: "New", Scenarios: stagedScenarios("N2b", 1)}))
+		campaign, err := readCampaign(runID)
+		if err != nil {
+			t.Fatalf("readCampaign: %v", err)
+		}
+		if len(campaign.Axes) != 3 || campaign.Axes[2].Title != "New" {
+			t.Fatalf("axes = %+v; want the new axis appended last", campaign.Axes)
+		}
+	})
+
+	t.Run("wave 3 refuses a third scenario", func(t *testing.T) {
+		runID := setup(t)
+		if decision := playWave(t, runID, 1, Outcome{Axis: "Quiet", Scenario: "Q-1", Status: "pass"}); decision != "continue" {
+			t.Fatalf("wave 2 decision = %q", decision)
+		}
+		if _, err := OpenWave(runID); err != nil {
+			t.Fatalf("OpenWave 3: %v", err)
+		}
+		refuse(t, appendAxes(t, runID, 3, Axis{Title: "Bitten", Scenarios: stagedScenarios("B3a", 3)}))
+		accept(t, appendAxes(t, runID, 3, Axis{Title: "Bitten", Scenarios: stagedScenarios("B3b", 1)}))
+		accept(t, appendAxes(t, runID, 3, Axis{Title: "Quiet", Scenarios: stagedScenarios("Q3", 1)}))
+		refuse(t, appendAxes(t, runID, 3, Axis{Title: "Bitten", Scenarios: stagedScenarios("B3c", 1)}))
+	})
+
+	t.Run("window", func(t *testing.T) {
+		runID := setup(t)
+		refuse(t, appendAxes(t, runID, 1, Axis{Title: "Bitten", Scenarios: stagedScenarios("W1", 1)}))
+		refuse(t, appendAxes(t, runID, 3, Axis{Title: "Bitten", Scenarios: stagedScenarios("W3", 1)}))
+		refuse(t, appendAxes(t, runID, 2, Axis{Title: "Bitten", Scenarios: stagedScenarios("B", 1)}))
+		if _, err := NextPass(runID, "wave"); err != nil {
+			t.Fatalf("NextPass: %v", err)
+		}
+		accept(t, appendAxes(t, runID, 2, Axis{Title: "Bitten", Scenarios: stagedScenarios("B2", 1)}))
+		if err := RecordOutcome(runID, "wave-2", writeOutcomes(t, Outcome{Axis: "Bitten", Scenario: "B2-1", Status: "pass"})); err != nil {
+			t.Fatalf("RecordOutcome on appended scenario: %v", err)
+		}
+		refuse(t, appendAxes(t, runID, 2, Axis{Title: "Bitten", Scenarios: stagedScenarios("B2late", 1)}))
+		if _, err := CloseWave(runID, 0); err != nil {
+			t.Fatalf("CloseWave: %v", err)
+		}
+		refuse(t, appendAxes(t, runID, 2, Axis{Title: "Bitten", Scenarios: stagedScenarios("B2closed", 1)}))
+	})
+
+	t.Run("campaign required", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		runID := startTestRun(t, DefaultCap)
+		for range 2 {
+			if _, err := OpenWave(runID); err != nil {
+				t.Fatalf("OpenWave: %v", err)
+			}
+			if _, err := NextPass(runID, "wave"); err != nil {
+				t.Fatalf("NextPass: %v", err)
+			}
+			if _, err := CloseWave(runID, 1); err != nil {
+				t.Fatalf("CloseWave: %v", err)
+			}
+		}
+		if _, err := OpenWave(runID); err != nil {
+			t.Fatalf("OpenWave: %v", err)
+		}
+		if err := appendAxes(t, runID, 3, Axis{Title: "A", Scenarios: stagedScenarios("A", 1)}); !errors.Is(err, ErrCampaignInvalid) {
+			t.Fatalf("campaign-less append error = %v; want ErrCampaignInvalid", err)
+		}
+	})
+}
+
 func TestRecordOutcomeRecoversStaleOpenPass(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	runID := startTestRun(t, DefaultCap)
-	campaign := writeTestFile(t, "campaign.json", `{"schemaVersion":1,"axes":[{"title":"A","scenarios":[{"title":"S","steps":["Do"],"expected":"Done"}]}]}`)
-	outcome := writeTestFile(t, "outcome.json", `{"schemaVersion":1,"outcomes":[{"axis":"A","scenario":"S","status":"pass"}]}`)
+	campaign := writeTestFile(t, "campaign.json", `{"schemaVersion":2,"axes":[{"title":"A","scenarios":[{"title":"S","steps":["Do"],"expected":"Done","rank":5,"access":"readonly"}]}]}`)
+	outcome := writeTestFile(t, "outcome.json", `{"schemaVersion":2,"outcomes":[{"axis":"A","scenario":"S","status":"pass"}]}`)
 	if err := SaveCampaign(runID, campaign); err != nil {
 		t.Fatalf("SaveCampaign: %v", err)
 	}
@@ -1301,7 +1786,7 @@ func TestRecordOutcomeRecoversStaleOpenPass(t *testing.T) {
 	}
 	if err := withRunLock(runID, func() error {
 		return writeJSON(paths.ForgeLedger(runID), &ledger{
-			SchemaVersion: SchemaVersion,
+			SchemaVersion: LedgerSchemaVersion,
 			Passes: []ledgerPass{{
 				PassID: "wave-1",
 				Kind:   passWave,
@@ -1351,23 +1836,23 @@ func TestRecordOutcomeRejectsMismatchedStaleOpenPass(t *testing.T) {
 	}{
 		{
 			name:    "status",
-			outcome: `{"schemaVersion":1,"outcomes":[{"axis":"A","scenario":"S1","status":"finding"},{"axis":"A","scenario":"S2","status":"pass"}]}`,
+			outcome: `{"schemaVersion":2,"outcomes":[{"axis":"A","scenario":"S1","status":"finding","severity":"degraded"},{"axis":"A","scenario":"S2","status":"pass"}]}`,
 		},
 		{
 			name:    "reason",
-			outcome: `{"schemaVersion":1,"outcomes":[{"axis":"A","scenario":"S1","status":"pass","reason":"changed"},{"axis":"A","scenario":"S2","status":"pass"}]}`,
+			outcome: `{"schemaVersion":2,"outcomes":[{"axis":"A","scenario":"S1","status":"pass","reason":"changed"},{"axis":"A","scenario":"S2","status":"pass"}]}`,
 		},
 		{
 			name:    "scenario",
-			outcome: `{"schemaVersion":1,"outcomes":[{"axis":"A","scenario":"S3","status":"pass"},{"axis":"A","scenario":"S2","status":"pass"}]}`,
+			outcome: `{"schemaVersion":2,"outcomes":[{"axis":"A","scenario":"S3","status":"pass"},{"axis":"A","scenario":"S2","status":"pass"}]}`,
 		},
 		{
 			name:    "ordering",
-			outcome: `{"schemaVersion":1,"outcomes":[{"axis":"A","scenario":"S2","status":"pass"},{"axis":"A","scenario":"S1","status":"pass"}]}`,
+			outcome: `{"schemaVersion":2,"outcomes":[{"axis":"A","scenario":"S2","status":"pass"},{"axis":"A","scenario":"S1","status":"pass"}]}`,
 		},
 		{
 			name:    "invalid data",
-			outcome: `{"schemaVersion":1,"outcomes":[{"axis":"A","scenario":"S1","status":"invalid"},{"axis":"A","scenario":"S2","status":"pass"}]}`,
+			outcome: `{"schemaVersion":2,"outcomes":[{"axis":"A","scenario":"S1","status":"invalid"},{"axis":"A","scenario":"S2","status":"pass"}]}`,
 		},
 	}
 
@@ -1375,7 +1860,7 @@ func TestRecordOutcomeRejectsMismatchedStaleOpenPass(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())
 			runID := startTestRun(t, DefaultCap)
-			campaign := writeTestFile(t, "campaign.json", `{"schemaVersion":1,"axes":[{"title":"A","scenarios":[{"title":"S1","steps":["Do"],"expected":"Done"},{"title":"S2","steps":["Do"],"expected":"Done"},{"title":"S3","steps":["Do"],"expected":"Done"}]}]}`)
+			campaign := writeTestFile(t, "campaign.json", `{"schemaVersion":2,"axes":[{"title":"A","scenarios":[{"title":"S1","steps":["Do"],"expected":"Done","rank":5,"access":"readonly"},{"title":"S2","steps":["Do"],"expected":"Done","rank":5,"access":"readonly"},{"title":"S3","steps":["Do"],"expected":"Done","rank":5,"access":"readonly"}]}]}`)
 			if err := SaveCampaign(runID, campaign); err != nil {
 				t.Fatalf("SaveCampaign: %v", err)
 			}
@@ -1387,7 +1872,7 @@ func TestRecordOutcomeRejectsMismatchedStaleOpenPass(t *testing.T) {
 			}
 			if err := withRunLock(runID, func() error {
 				return writeJSON(paths.ForgeLedger(runID), &ledger{
-					SchemaVersion: SchemaVersion,
+					SchemaVersion: LedgerSchemaVersion,
 					Passes: []ledgerPass{{
 						PassID: "wave-1",
 						Kind:   passWave,
@@ -1417,10 +1902,10 @@ func TestRecordOutcomeRejectsMismatchedStaleOpenPass(t *testing.T) {
 	}
 }
 
-func TestCampaignFreezesAfterPassAllocation(t *testing.T) {
+func TestCampaignFreezesAtFirstOutcome(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	runID := startTestRun(t, DefaultCap)
-	initial := writeTestFile(t, "initial.json", `{"schemaVersion":1,"axes":[{"title":"A","scenarios":[{"title":"S","steps":["Do"],"expected":"Done"}]}]}`)
+	initial := writeTestFile(t, "initial.json", oneScenarioCampaign)
 	if err := SaveCampaign(runID, initial); err != nil {
 		t.Fatalf("SaveCampaign: %v", err)
 	}
@@ -1430,17 +1915,34 @@ func TestCampaignFreezesAfterPassAllocation(t *testing.T) {
 	if _, err := NextPass(runID, "wave"); err != nil {
 		t.Fatalf("NextPass: %v", err)
 	}
+	if _, err := NextPass(runID, "review"); !errors.Is(err, ErrInvalidPass) {
+		t.Fatalf("second pass while wave-1 is open error = %v", err)
+	}
 	tests := []struct {
 		name string
 		body string
 	}{
-		{"scenario deletion", `{"schemaVersion":1,"axes":[{"title":"A","scenarios":[{"title":"T","steps":["Do"],"expected":"Done"}]}]}`},
-		{"expected rewrite", `{"schemaVersion":1,"axes":[{"title":"A","scenarios":[{"title":"S","steps":["Do"],"expected":"Changed"}]}]}`},
+		{"scenario deletion", `{"schemaVersion":2,"axes":[{"title":"A","scenarios":[{"title":"T","steps":["Do"],"expected":"Done","rank":5,"access":"readonly"}]}]}`},
+		{"expected rewrite", `{"schemaVersion":2,"axes":[{"title":"A","scenarios":[{"title":"S","steps":["Do"],"expected":"Changed","rank":5,"access":"readonly"}]}]}`},
 	}
 	for _, test := range tests {
-		replacement := writeTestFile(t, test.name+".json", test.body)
-		if err := SaveCampaign(runID, replacement); !errors.Is(err, ErrInvalidStaging) {
-			t.Fatalf("%s error = %v", test.name, err)
+		if err := SaveCampaign(runID, writeTestFile(t, test.name+".json", test.body)); err != nil {
+			t.Fatalf("%s before the first outcome: %v", test.name, err)
+		}
+	}
+	state, err := readRun(runID)
+	if err != nil {
+		t.Fatalf("readRun: %v", err)
+	}
+	if state.OpenPass != "wave-1" {
+		t.Fatalf("OpenPass = %q; want wave-1 kept across campaign saves", state.OpenPass)
+	}
+	if err := RecordOutcome(runID, "wave-1", writeOutcomes(t, Outcome{Axis: "A", Scenario: "S", Status: "pass"})); err != nil {
+		t.Fatalf("RecordOutcome: %v", err)
+	}
+	for _, test := range tests {
+		if err := SaveCampaign(runID, writeTestFile(t, test.name+".json", test.body)); !errors.Is(err, ErrInvalidStaging) {
+			t.Fatalf("%s after the first outcome error = %v", test.name, err)
 		}
 	}
 
@@ -1499,6 +2001,69 @@ func TestGoldenSummaryAndFrenchTestplan(t *testing.T) {
 	}
 }
 
+func TestNotExercisedNeverCountsAsPass(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	runID := startTestRun(t, DefaultCap)
+	if err := SaveCampaign(runID, writeCampaignStaging(t, Axis{Title: "A", Scenarios: stagedScenarios("S", 3)})); err != nil {
+		t.Fatalf("SaveCampaign: %v", err)
+	}
+	if _, err := OpenWave(runID); err != nil {
+		t.Fatalf("OpenWave: %v", err)
+	}
+	playWave(t, runID, 0,
+		Outcome{Axis: "A", Scenario: "S-1", Status: "pass"},
+		Outcome{Axis: "A", Scenario: "S-2", Status: "not_exercised", Reason: "no device"},
+		Outcome{Axis: "A", Scenario: "S-3", Status: "not_exercised", Reason: "no account"},
+	)
+	summary, err := Summary(runID)
+	if err != nil {
+		t.Fatalf("Summary: %v", err)
+	}
+	for _, want := range []string{
+		"- Latest normal wave: wave-1 — pass: 1, finding: 0, not_exercised: 2\n",
+		"- Campaign rollup: pass: 1, finding: 0, not_exercised: 2, unrecorded: 0\n",
+	} {
+		if !strings.Contains(summary, want) {
+			t.Fatalf("summary %q lacks %q", summary, want)
+		}
+	}
+	testplan, _, err := RenderTestplan(runID, "fr", "")
+	if err != nil {
+		t.Fatalf("RenderTestplan: %v", err)
+	}
+	if got := strings.Count(testplan, "- Dernier résultat : Non exercé\n"); got != 2 {
+		t.Fatalf("Non exercé count = %d; want 2\n%s", got, testplan)
+	}
+	if got := strings.Count(testplan, "- Dernier résultat : Réussi\n"); got != 1 {
+		t.Fatalf("Réussi count = %d; want 1\n%s", got, testplan)
+	}
+}
+
+func TestEnglishTestplanShowsSeverity(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	runID := startTestRun(t, DefaultCap)
+	if err := SaveCampaign(runID, writeCampaignStaging(t, Axis{Title: "A", Scenarios: stagedScenarios("S", 3)})); err != nil {
+		t.Fatalf("SaveCampaign: %v", err)
+	}
+	if _, err := OpenWave(runID); err != nil {
+		t.Fatalf("OpenWave: %v", err)
+	}
+	playWave(t, runID, 1,
+		Outcome{Axis: "A", Scenario: "S-1", Status: "finding", Severity: "blocking"},
+		Outcome{Axis: "A", Scenario: "S-2", Status: "finding", Severity: "degraded"},
+		Outcome{Axis: "A", Scenario: "S-3", Status: "finding", Severity: "cosmetic"},
+	)
+	testplan, _, err := RenderTestplan(runID, "en", "")
+	if err != nil {
+		t.Fatalf("RenderTestplan: %v", err)
+	}
+	for _, want := range []string{"Finding (Blocking)", "Finding (Degraded)", "Finding (Cosmetic)"} {
+		if !strings.Contains(testplan, "- Latest outcome: "+want+"\n") {
+			t.Fatalf("testplan lacks %q:\n%s", want, testplan)
+		}
+	}
+}
+
 func TestRenderRejectsForgeOutputPaths(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	runID := startTestRun(t, DefaultCap)
@@ -1549,20 +2114,24 @@ func TestSchemaMismatchClassification(t *testing.T) {
 	tests := []struct {
 		name             string
 		path             string
+		version          string
 		load             func() error
 		campaignSentinel bool
 	}{
-		{"run", paths.ForgeRunState(runID), func() error { _, err := Status(runID); return err }, false},
-		{"campaign", paths.ForgeCampaign(runID), func() error { _, err := LoadCampaign(runID); return err }, true},
-		{"ledger", paths.ForgeLedger(runID), func() error { _, err := Summary(runID); return err }, false},
+		{"run", paths.ForgeRunState(runID), `"schemaVersion": 1`, func() error { _, err := Status(runID); return err }, false},
+		{"campaign", paths.ForgeCampaign(runID), `"schemaVersion": 2`, func() error { _, err := LoadCampaign(runID); return err }, true},
+		{"ledger", paths.ForgeLedger(runID), `"schemaVersion": 2`, func() error { _, err := Summary(runID); return err }, false},
 	}
 	for _, test := range tests {
 		data, err := os.ReadFile(test.path)
 		if err != nil {
 			t.Fatalf("read %s: %v", test.name, err)
 		}
-		data = []byte(strings.Replace(string(data), `"schemaVersion": 1`, `"schemaVersion": 2`, 1))
-		if err := os.WriteFile(test.path, data, 0o600); err != nil {
+		mutated := strings.Replace(string(data), test.version, `"schemaVersion": 99`, 1)
+		if mutated == string(data) {
+			t.Fatalf("%s fixture lacks %s", test.name, test.version)
+		}
+		if err := os.WriteFile(test.path, []byte(mutated), 0o600); err != nil {
 			t.Fatalf("write %s: %v", test.name, err)
 		}
 		err = test.load()
@@ -1575,7 +2144,6 @@ func TestSchemaMismatchClassification(t *testing.T) {
 		if errors.Is(err, ErrUnknownRun) || errors.Is(err, ErrInvalidPass) || errors.Is(err, ErrWaveCap) || errors.Is(err, ErrInvalidStaging) {
 			t.Fatalf("%s schema mismatch used wrong sentinel: %v", test.name, err)
 		}
-		data = []byte(strings.Replace(string(data), `"schemaVersion": 2`, `"schemaVersion": 1`, 1))
 		if err := os.WriteFile(test.path, data, 0o600); err != nil {
 			t.Fatalf("restore %s: %v", test.name, err)
 		}
@@ -1584,23 +2152,24 @@ func TestSchemaMismatchClassification(t *testing.T) {
 
 func TestEventPayloadsAndPersistedSession(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	runID := startTestRun(t, 1)
-	campaign := writeTestFile(t, "campaign.json", `{"schemaVersion":1,"axes":[{"title":"A","scenarios":[{"title":"S","steps":["Do"],"expected":"Done"}]}]}`)
-	if err := SaveCampaign(runID, campaign); err != nil {
+	runID := startTestRun(t, 2)
+	if err := SaveCampaign(runID, writeTestFile(t, "campaign.json", oneScenarioCampaign)); err != nil {
 		t.Fatalf("SaveCampaign: %v", err)
 	}
 	if _, err := OpenWave(runID); err != nil {
 		t.Fatalf("OpenWave: %v", err)
 	}
-	if _, err := NextPass(runID, "wave"); err != nil {
-		t.Fatalf("NextPass: %v", err)
+	if decision := playWave(t, runID, 1, Outcome{Axis: "A", Scenario: "S", Status: "finding", Severity: "blocking"}); decision != "continue" {
+		t.Fatalf("wave 1 decision = %q", decision)
 	}
-	outcome := writeTestFile(t, "outcome.json", `{"schemaVersion":1,"outcomes":[{"axis":"A","scenario":"S","status":"pass"}]}`)
-	if err := RecordOutcome(runID, "wave-1", outcome); err != nil {
-		t.Fatalf("RecordOutcome: %v", err)
+	if _, err := OpenWave(runID); err != nil {
+		t.Fatalf("OpenWave 2: %v", err)
 	}
-	if _, err := CloseWave(runID, 0); err != nil {
-		t.Fatalf("CloseWave: %v", err)
+	if err := AppendCampaign(runID, 2, writeCampaignStaging(t, Axis{Title: "A", Scenarios: stagedScenarios("S2", 1)})); err != nil {
+		t.Fatalf("AppendCampaign: %v", err)
+	}
+	if decision := playWave(t, runID, 0, Outcome{Axis: "A", Scenario: "S2-1", Status: "pass"}); decision != "dry" {
+		t.Fatalf("wave 2 decision = %q", decision)
 	}
 	if err := SetRef(runID, "report", "comment-42"); err != nil {
 		t.Fatalf("SetRef: %v", err)
@@ -1626,18 +2195,28 @@ func TestEventPayloadsAndPersistedSession(t *testing.T) {
 		"forge:pass",
 		"forge:outcome-recorded",
 		"forge:wave-close",
+		"forge:wave-open",
+		"forge:campaign-saved",
+		"forge:pass",
+		"forge:outcome-recorded",
+		"forge:wave-close",
 		"forge:report-linked",
 		"forge:testplan-linked",
 		"forge:testplan-published",
 		"forge:testplan-published",
 	}
 	wantPayloads := []map[string]any{
-		{"runId": runID, "ticket": "VAL-306", "cap": float64(1)},
+		{"runId": runID, "ticket": "VAL-306", "cap": float64(2)},
 		{"runId": runID, "axes": float64(1), "scenarios": float64(1)},
 		{"runId": runID, "wave": float64(1)},
 		{"runId": runID, "passId": "wave-1", "kind": "wave", "wave": float64(1)},
-		{"runId": runID, "passId": "wave-1", "kind": "wave", "wave": float64(1), "pass": float64(1), "finding": float64(0), "notExercised": float64(0)},
-		{"runId": runID, "wave": float64(1), "findings": float64(0), "decision": "dry"},
+		{"runId": runID, "passId": "wave-1", "kind": "wave", "wave": float64(1), "pass": float64(0), "finding": float64(1), "notExercised": float64(0)},
+		{"runId": runID, "wave": float64(1), "findings": float64(1), "fixed": float64(1), "decision": "continue"},
+		{"runId": runID, "wave": float64(2)},
+		{"runId": runID, "axes": float64(1), "scenarios": float64(2)},
+		{"runId": runID, "passId": "wave-2", "kind": "wave", "wave": float64(2)},
+		{"runId": runID, "passId": "wave-2", "kind": "wave", "wave": float64(2), "pass": float64(1), "finding": float64(0), "notExercised": float64(0)},
+		{"runId": runID, "wave": float64(2), "findings": float64(0), "fixed": float64(0), "decision": "dry"},
 		{"runId": runID, "report": "comment-42"},
 		{"runId": runID, "testplan": "document-42"},
 		{"runId": runID, "language": "en", "path": ""},
@@ -1653,6 +2232,62 @@ func TestEventPayloadsAndPersistedSession(t *testing.T) {
 		}
 		if envelope.Type != wantTypes[i] || envelope.ClaudeSessionID != "session-306" || !reflect.DeepEqual(envelope.Payload, wantPayloads[i]) {
 			t.Fatalf("event %d = %+v", i, envelope)
+		}
+	}
+}
+
+func TestForgeEmitsOnlyKnownTypes(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	runID := startTestRun(t, 3)
+	if err := SaveCampaign(runID, writeCampaignStaging(t, Axis{Title: "A", Scenarios: stagedScenarios("S", 2)})); err != nil {
+		t.Fatalf("SaveCampaign: %v", err)
+	}
+	if _, err := OpenWave(runID); err != nil {
+		t.Fatalf("OpenWave 1: %v", err)
+	}
+	playWave(t, runID, 1,
+		Outcome{Axis: "A", Scenario: "S-1", Status: "finding", Severity: "degraded"},
+		Outcome{Axis: "A", Scenario: "S-2", Status: "not_exercised", Reason: "no device"},
+	)
+	if _, err := OpenWave(runID); err != nil {
+		t.Fatalf("OpenWave 2: %v", err)
+	}
+	if err := AppendCampaign(runID, 2, writeCampaignStaging(t, Axis{Title: "A", Scenarios: stagedScenarios("E", 3)})); err != nil {
+		t.Fatalf("AppendCampaign: %v", err)
+	}
+	playWave(t, runID, 0, Outcome{Axis: "A", Scenario: "E-1", Status: "pass"})
+	for _, kind := range []string{"review", "repair"} {
+		path, err := NextPass(runID, kind)
+		if err != nil {
+			t.Fatalf("NextPass %s: %v", kind, err)
+		}
+		if err := RecordOutcome(runID, filepath.Base(path), writeOutcomes(t, Outcome{Axis: "A", Scenario: "S-1", Status: "pass"})); err != nil {
+			t.Fatalf("RecordOutcome %s: %v", kind, err)
+		}
+	}
+	if err := SetRef(runID, "report", "report-1"); err != nil {
+		t.Fatalf("SetRef report: %v", err)
+	}
+	if err := SetRef(runID, "testplan", "testplan-1"); err != nil {
+		t.Fatalf("SetRef testplan: %v", err)
+	}
+	if _, _, err := RenderTestplan(runID, "fr", ""); err != nil {
+		t.Fatalf("RenderTestplan: %v", err)
+	}
+	files, err := outbox.List()
+	if err != nil {
+		t.Fatalf("outbox.List: %v", err)
+	}
+	if len(files) == 0 {
+		t.Fatal("no events emitted")
+	}
+	for _, file := range files {
+		envelope, err := outbox.Read(file)
+		if err != nil {
+			t.Fatalf("read event: %v", err)
+		}
+		if !events.IsValid(envelope.Type) || !strings.HasPrefix(envelope.Type, "forge:") {
+			t.Fatalf("event type %q is outside the forge taxonomy of events.All()", envelope.Type)
 		}
 	}
 }
@@ -1754,7 +2389,7 @@ func TestInvalidStagingAndCampaignErrors(t *testing.T) {
 	if _, err := LoadCampaign(runID); !errors.Is(err, ErrCampaignInvalid) {
 		t.Fatalf("absent campaign error = %v", err)
 	}
-	invalid := writeTestFile(t, "invalid.json", `{"schemaVersion":1,"axes":[]}`)
+	invalid := writeTestFile(t, "invalid.json", `{"schemaVersion":2,"axes":[]}`)
 	if err := SaveCampaign(runID, invalid); !errors.Is(err, ErrInvalidStaging) {
 		t.Fatalf("invalid staging error = %v", err)
 	}
@@ -1804,7 +2439,7 @@ func TestConsumersRejectCrossFileLedgerForgery(t *testing.T) {
 			t.Run(scenario.name+"/"+consumer, func(t *testing.T) {
 				t.Setenv("HOME", t.TempDir())
 				runID := startTestRun(t, DefaultCap)
-				campaign := writeTestFile(t, "campaign.json", `{"schemaVersion":1,"axes":[{"title":"A","scenarios":[{"title":"S","steps":["Do"],"expected":"Done"}]}]}`)
+				campaign := writeTestFile(t, "campaign.json", `{"schemaVersion":2,"axes":[{"title":"A","scenarios":[{"title":"S","steps":["Do"],"expected":"Done","rank":5,"access":"readonly"}]}]}`)
 				if err := SaveCampaign(runID, campaign); err != nil {
 					t.Fatalf("SaveCampaign: %v", err)
 				}
@@ -1814,7 +2449,7 @@ func TestConsumersRejectCrossFileLedgerForgery(t *testing.T) {
 				if _, err := NextPass(runID, "wave"); err != nil {
 					t.Fatalf("NextPass: %v", err)
 				}
-				outcome := writeTestFile(t, "outcome.json", `{"schemaVersion":1,"outcomes":[{"axis":"A","scenario":"S","status":"pass"}]}`)
+				outcome := writeTestFile(t, "outcome.json", `{"schemaVersion":2,"outcomes":[{"axis":"A","scenario":"S","status":"pass"}]}`)
 				if err := RecordOutcome(runID, "wave-1", outcome); err != nil {
 					t.Fatalf("RecordOutcome: %v", err)
 				}

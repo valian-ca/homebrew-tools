@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "passes": [
     {
       "passId": "wave-1",
@@ -15,6 +15,7 @@
           "axis": "Navigation",
           "scenario": "Retourner à la liste",
           "status": "finding",
+          "severity": "degraded",
           "reason": "La liste revient en haut"
         },
         {
@@ -54,6 +55,7 @@
           "axis": "Navigation",
           "scenario": "Ouvrir le détail",
           "status": "finding",
+          "severity": "cosmetic",
           "reason": "Contraste insuffisant"
         }
       ],

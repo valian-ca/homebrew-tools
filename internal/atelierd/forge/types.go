@@ -10,16 +10,15 @@ import (
 )
 
 const (
-	SchemaVersion   = 1
-	ContractVersion = 2
-	DefaultCap      = 4
-	// Normal waves remain controlled by the run's --cap value. Each auxiliary
-	// stream has its own v1 bound so review/repair cannot grow without limit.
-	MaxAuxiliaryPasses = 32
+	SchemaVersion         = 1
+	CampaignSchemaVersion = 2
+	LedgerSchemaVersion   = 2
+	ContractVersion       = 3
+	DefaultCap            = 10
+	MaxAuxiliaryPasses    = 32
 
-	// V1 limits are deliberately conservative: forge state is local, small,
-	// and is written synchronously. They also bound the amount of JSON a
-	// command will accept before decoding it.
+	// Forge state is local, small and written synchronously; these caps also
+	// bound how much JSON a command reads before decoding it.
 	MaxRunFileBytes      = 256 * 1024
 	MaxCampaignFileBytes = 256 * 1024
 	MaxLedgerFileBytes   = 512 * 1024
@@ -34,6 +33,12 @@ const (
 	MaxWaves             = 64
 	MaxPasses            = MaxWaves + 2*MaxAuxiliaryPasses
 	MaxPendingEvents     = 256
+
+	MinRank = 1
+	MaxRank = 9
+
+	BittenAxisAppendBudget = 6
+	SharedAppendBudget     = 2
 )
 
 var (
@@ -63,6 +68,7 @@ type wave struct {
 	Number   int  `json:"number"`
 	Open     bool `json:"open"`
 	Findings *int `json:"findings,omitempty"`
+	Fixed    *int `json:"fixed,omitempty"`
 }
 
 type pass struct {
@@ -117,6 +123,9 @@ type Scenario struct {
 	Title    string   `json:"title"`
 	Steps    []string `json:"steps"`
 	Expected string   `json:"expected"`
+	Rank     int      `json:"rank"`
+	Access   string   `json:"access"`
+	Wave     int      `json:"wave,omitempty"`
 }
 
 type Axis struct {
@@ -133,6 +142,7 @@ type Outcome struct {
 	Axis     string `json:"axis"`
 	Scenario string `json:"scenario"`
 	Status   string `json:"status"`
+	Severity string `json:"severity,omitempty"`
 	Reason   string `json:"reason,omitempty"`
 }
 
@@ -229,7 +239,44 @@ func validateCampaign(c *Campaign) error {
 			if strings.TrimSpace(scenario.Expected) == "" {
 				return fmt.Errorf("scenario %q expected result must be non-empty", scenario.Title)
 			}
+			if scenario.Rank < MinRank || scenario.Rank > MaxRank {
+				return fmt.Errorf("scenario %q rank must be an integer from %d to %d", scenario.Title, MinRank, MaxRank)
+			}
+			if scenario.Access != "readonly" && scenario.Access != "mutating" {
+				return fmt.Errorf("scenario %q access must be readonly or mutating", scenario.Title)
+			}
+			if scenario.Wave != 0 && (scenario.Wave < 2 || scenario.Wave > MaxWaves) {
+				return fmt.Errorf("scenario %q has invalid append wave %d", scenario.Title, scenario.Wave)
+			}
 		}
+	}
+	return nil
+}
+
+func countOutcome(total *counts, outcome Outcome) error {
+	switch outcome.Status {
+	case "pass":
+		total.Pass++
+	case "finding":
+		total.Finding++
+	case "not_exercised":
+		total.NotExercised++
+	default:
+		return fmt.Errorf("invalid outcome status %q", outcome.Status)
+	}
+	if outcome.Status == "finding" {
+		switch outcome.Severity {
+		case "blocking", "degraded", "cosmetic":
+		case "":
+			return fmt.Errorf("finding %q / %q must carry a severity", outcome.Axis, outcome.Scenario)
+		default:
+			return fmt.Errorf("finding %q / %q has invalid severity %q", outcome.Axis, outcome.Scenario, outcome.Severity)
+		}
+	} else if outcome.Severity != "" {
+		return fmt.Errorf("%s outcome %q / %q must not carry a severity", outcome.Status, outcome.Axis, outcome.Scenario)
+	}
+	if outcome.Status == "not_exercised" && strings.TrimSpace(outcome.Reason) == "" {
+		return fmt.Errorf("not_exercised outcome %q / %q must carry a reason", outcome.Axis, outcome.Scenario)
 	}
 	return nil
 }
@@ -250,7 +297,7 @@ func validateOutcomes(batch *OutcomeBatch, campaign *Campaign) (counts, error) {
 	seen := make(map[string]struct{}, len(batch.Outcomes))
 	var total counts
 	for _, outcome := range batch.Outcomes {
-		if len(outcome.Axis) > MaxTextBytes || len(outcome.Scenario) > MaxTextBytes || len(outcome.Status) > MaxTextBytes || len(outcome.Reason) > MaxTextBytes {
+		if outcomeTooLong(outcome) {
 			return counts{}, fmt.Errorf("outcome strings must not exceed %d bytes", MaxTextBytes)
 		}
 		key := outcome.Axis + "\x00" + outcome.Scenario
@@ -261,18 +308,16 @@ func validateOutcomes(batch *OutcomeBatch, campaign *Campaign) (counts, error) {
 			return counts{}, fmt.Errorf("duplicate outcome for %q / %q", outcome.Axis, outcome.Scenario)
 		}
 		seen[key] = struct{}{}
-		switch outcome.Status {
-		case "pass":
-			total.Pass++
-		case "finding":
-			total.Finding++
-		case "not_exercised":
-			total.NotExercised++
-		default:
-			return counts{}, fmt.Errorf("invalid outcome status %q", outcome.Status)
+		if err := countOutcome(&total, outcome); err != nil {
+			return counts{}, err
 		}
 	}
 	return total, nil
+}
+
+func outcomeTooLong(outcome Outcome) bool {
+	return len(outcome.Axis) > MaxTextBytes || len(outcome.Scenario) > MaxTextBytes || len(outcome.Status) > MaxTextBytes ||
+		len(outcome.Severity) > MaxTextBytes || len(outcome.Reason) > MaxTextBytes
 }
 
 func validateLedger(value *ledger) error {
@@ -306,7 +351,7 @@ func validateLedger(value *ledger) error {
 		seenOutcomes := make(map[string]struct{}, len(pass.Outcomes))
 		var computed counts
 		for _, outcome := range pass.Outcomes {
-			if len(outcome.Axis) > MaxTextBytes || len(outcome.Scenario) > MaxTextBytes || len(outcome.Status) > MaxTextBytes || len(outcome.Reason) > MaxTextBytes {
+			if outcomeTooLong(outcome) {
 				return fmt.Errorf("pass %q has an outcome string exceeding %d bytes", pass.PassID, MaxTextBytes)
 			}
 			if outcome.Axis == "" || outcome.Scenario == "" {
@@ -317,15 +362,8 @@ func validateLedger(value *ledger) error {
 				return fmt.Errorf("pass %q has duplicate outcome %q / %q", pass.PassID, outcome.Axis, outcome.Scenario)
 			}
 			seenOutcomes[key] = struct{}{}
-			switch outcome.Status {
-			case "pass":
-				computed.Pass++
-			case "finding":
-				computed.Finding++
-			case "not_exercised":
-				computed.NotExercised++
-			default:
-				return fmt.Errorf("pass %q has invalid outcome status %q", pass.PassID, outcome.Status)
+			if err := countOutcome(&computed, outcome); err != nil {
+				return fmt.Errorf("pass %q: %w", pass.PassID, err)
 			}
 		}
 		if computed != pass.Counts {

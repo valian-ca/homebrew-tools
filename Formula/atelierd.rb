@@ -24,7 +24,7 @@ class Atelierd < Formula
   test do
     assert_match "atelierd", shell_output("#{bin}/atelierd --help")
     assert_match version.to_s, shell_output("#{bin}/atelierd --version")
-    assert_equal "2", shell_output("#{bin}/atelierd forge contract").strip
+    assert_equal build.head? ? "3" : "2", shell_output("#{bin}/atelierd forge contract").strip
     output = shell_output("#{bin}/atelierd ulid").strip
     assert_match(/^[0-9A-HJKMNP-TV-Z]{26}$/, output)
   end

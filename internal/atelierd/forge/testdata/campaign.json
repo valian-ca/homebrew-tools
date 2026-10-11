@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "axes": [
     {
       "title": "Navigation",
@@ -10,14 +10,18 @@
             "Ouvrir la liste",
             "Sélectionner le premier élément"
           ],
-          "expected": "Le détail sélectionné est visible"
+          "expected": "Le détail sélectionné est visible",
+          "rank": 9,
+          "access": "readonly"
         },
         {
           "title": "Retourner à la liste",
           "steps": [
             "Utiliser le bouton retour"
           ],
-          "expected": "La position de défilement est conservée"
+          "expected": "La position de défilement est conservée",
+          "rank": 4,
+          "access": "readonly"
         }
       ]
     },
@@ -30,7 +34,9 @@
             "Couper le réseau",
             "Appuyer sur Réessayer"
           ],
-          "expected": "Une erreur actionnable reste affichée"
+          "expected": "Une erreur actionnable reste affichée",
+          "rank": 6,
+          "access": "mutating"
         }
       ]
     }
