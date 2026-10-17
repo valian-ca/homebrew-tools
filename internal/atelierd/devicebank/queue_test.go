@@ -7,9 +7,6 @@ import (
 	"time"
 )
 
-// TestWaitZeroEnqueuesAndExits10: with the slot taken, --wait 0
-// exits 10 and leaves the caller visible in the queue, the holder with its
-// power-on time.
 func TestWaitZeroEnqueuesAndExits10(t *testing.T) {
 	useFake(t)
 	c := useClock(t, t0)
@@ -50,8 +47,6 @@ func TestQueueKeepsPlaceAcrossCalls(t *testing.T) {
 	}
 }
 
-// TestHeadServedBeforeNewcomer: when the holder suspends or
-// releases, the head of the queue is served before a newcomer.
 func TestHeadServedBeforeNewcomer(t *testing.T) {
 	for _, free := range []struct {
 		name string
@@ -118,8 +113,6 @@ func TestReleaseAndSessionEndRemoveWaiters(t *testing.T) {
 	}
 }
 
-// TestCrossPlatformHeadDoesNotBlock: an Android head blocked by exhaustion
-// does not hold back an iOS caller the free slot can serve.
 func TestCrossPlatformHeadDoesNotBlock(t *testing.T) {
 	useFake(t)
 	seed(t, bank(androidDevice(1), iosDevice(1)))
@@ -172,7 +165,6 @@ func TestLeaseWaitsForItsTurn(t *testing.T) {
 	}
 }
 
-// TestWaiterNotifiedOnceAfterTenMinutes: one notification per waiter.
 func TestWaiterNotifiedOnceAfterTenMinutes(t *testing.T) {
 	f := useFake(t)
 	c := useClock(t, t0)
@@ -184,6 +176,60 @@ func TestWaiterNotifiedOnceAfterTenMinutes(t *testing.T) {
 	}
 	if len(f.notes) != 1 {
 		t.Fatalf("exactly one notification after 10 min of waiting, got %v", f.notes)
+	}
+}
+
+func TestAcquireWaitHonoursCancel(t *testing.T) {
+	useFake(t)
+	seed(t, bank(iosDevice(1)))
+	lease(t, "sess-1", PlatformIOS)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err := Acquire(ctx, "sess-2", "/wd", PlatformIOS, 5*time.Second, discard{})
+	if !errors.Is(err, context.DeadlineExceeded) || time.Since(start) > 2*time.Second {
+		t.Fatalf("a cancelled wait returns promptly with the context error, got %v after %s", err, time.Since(start))
+	}
+	if findWaiter(load(t), "sess-2", PlatformIOS) == nil {
+		t.Fatal("an interrupted waiter keeps its place until it expires")
+	}
+}
+
+func TestCancelledBootIsNotAFailure(t *testing.T) {
+	f := useFake(t)
+	seed(t, bank(iosDevice(1), androidDevice(1)))
+	ctx, cancel := context.WithCancel(context.Background())
+	f.onBoot = cancel
+	f.fail["bootIOS"] = 1
+
+	if _, err := Acquire(ctx, "sess-1", "/wd", PlatformIOS, 0, discard{}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("an interrupted lease returns the context error, got %v", err)
+	}
+	s := load(t)
+	d := s.FindDevice("atelier-ios-1")
+	if d.RecycleFailures != 0 || d.State != StateOn || !d.Booting || len(f.spawned) != 0 {
+		t.Fatalf("an interrupted boot is not charged to the device, got %+v spawned %v", d, f.spawned)
+	}
+	if s.FindLease("sess-1", PlatformIOS) == nil {
+		t.Fatal("the lease survives the interruption")
+	}
+}
+
+func TestWipeConsumedWhenItsBootIsGranted(t *testing.T) {
+	f := useFake(t)
+	recycled := androidDevice(1)
+	recycled.WipePending = true
+	seed(t, bank(recycled))
+	ctx, cancel := context.WithCancel(context.Background())
+	f.onBoot = cancel
+
+	_, _ = Acquire(ctx, "sess-1", "/wd", PlatformAndroid, 0, discard{})
+	if f.count("startAVD atelier-android-1 wipe=true") != 1 {
+		t.Fatalf("the granted boot wipes, got %v", f.calls)
+	}
+	if load(t).FindDevice("atelier-android-1").WipePending {
+		t.Fatal("a wipe already started must not be repeated by a later resume")
 	}
 }
 

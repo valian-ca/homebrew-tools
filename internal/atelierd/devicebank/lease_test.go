@@ -7,17 +7,17 @@ import (
 	"time"
 )
 
-func TestReservationSkipsHeldBrokenAndRecycling(t *testing.T) {
+func TestDeviceToPowerOnSkipsHeldBrokenAndRecycling(t *testing.T) {
 	s := bank(iosDevice(1), iosDevice(2), iosDevice(3), iosDevice(4))
 	commitLease(s, &Candidate{Device: s.Devices[0]}, "sess-a", "/wd", PlatformIOS, t0)
 	s.Leases[0].SuspendedAt = t0
 	s.Devices[0].State = StateOff
 	s.Devices[1].State = StateBroken
 	s.Devices[2].State = StateRecycling
-	if d := reservation(s, "sess-b", PlatformIOS, nil); d == nil || d.Name != "atelier-ios-4" {
+	if d := deviceToPowerOn(s, "sess-b", PlatformIOS, nil); d == nil || d.Name != "atelier-ios-4" {
 		t.Fatalf("only the unleased off device is a candidate, got %+v", d)
 	}
-	if d := reservation(s, "sess-a", PlatformIOS, nil); d == nil || d.Name != "atelier-ios-1" {
+	if d := deviceToPowerOn(s, "sess-a", PlatformIOS, nil); d == nil || d.Name != "atelier-ios-1" {
 		t.Fatalf("a suspended lease reserves its own device, got %+v", d)
 	}
 }
@@ -31,7 +31,7 @@ func TestReleaseSessionRecyclesVirtualOnly(t *testing.T) {
 	if len(s.spawns) != 1 || s.spawns[0] != "atelier-ios-1" {
 		t.Fatalf("only the virtual device recycles, got %v", s.spawns)
 	}
-	if s.Devices[0].State != StateRecycling || s.Devices[0].RecycleOff {
+	if s.Devices[0].State != StateRecycling || s.Devices[0].PowerOffConfirmed {
 		t.Fatalf("a released on device is recycling, not yet confirmed off, got %+v", s.Devices[0])
 	}
 	if len(s.Leases) != 0 {
@@ -88,8 +88,6 @@ func TestTouchSessionRenewsAllLeases(t *testing.T) {
 	}
 }
 
-// TestConcurrentLeaseUnderFlock: two sessions racing through the locked
-// acquire transaction never share a device.
 func TestConcurrentLeaseUnderFlock(t *testing.T) {
 	useFake(t)
 	seed(t, &State{Config: Config{IOS: 2, MaxOn: 2}, Devices: []*Device{iosDevice(1), iosDevice(2)}})

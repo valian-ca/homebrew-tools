@@ -21,8 +21,6 @@ func seedLeased(t *testing.T, renewedAt time.Time) {
 	seed(t, s)
 }
 
-// TestOnEmitRenewsAndNoOps covers OnEmit's branches: no bank file, empty
-// session, renewal, and skipped writes.
 func TestOnEmitRenewsAndNoOps(t *testing.T) {
 	t.Run("no bank file", func(t *testing.T) {
 		useFake(t)
@@ -78,9 +76,6 @@ func fakeAndroidSDK(t *testing.T) {
 	}
 }
 
-// TestInitBankRejectsOversizedAndroidBank verifies the size cap fires before
-// any toolchain exec — but only when the Android side would provision; a
-// missing SDK keeps the degrade-with-warning contract.
 func TestInitBankRejectsOversizedAndroidBank(t *testing.T) {
 	useFake(t)
 	fakeAndroidSDK(t)

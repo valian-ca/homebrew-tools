@@ -26,8 +26,6 @@ func bankName(platform Platform, index int) string {
 	return fmt.Sprintf("%s%s-%d", namePrefix, platform, index)
 }
 
-// EmulatorPort returns the deterministic console port for bank AVD index
-// (1-based): 5584 - 2*(index-1), descending.
 func EmulatorPort(index int) int {
 	return emulatorTopPort - 2*(index-1)
 }
@@ -51,7 +49,7 @@ func bankIndex(platform Platform, name string) int {
 type ResizePlan struct {
 	Create []string // names to provision, ascending index
 	Delete []string // free excess clones to remove, ascending index
-	Keep   []string // leased excess clones that survive with a warning
+	Keep   []string
 }
 
 // planResize computes the two-way sizing for one platform: indexes 1..n must

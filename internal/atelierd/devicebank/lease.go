@@ -23,9 +23,8 @@ const recycleReapAfter = RecycleBound + 30*time.Second
 
 const maxRecycleFailures = 2
 
-// commitLease records the lease for the candidate. A virtual device is on
-// from this moment, so the ignition limit counts it before the unlocked
-// boot that follows.
+// A virtual device is on from this moment, so the ignition limit counts it
+// before the unlocked boot that follows.
 func commitLease(s *State, c *Candidate, session, workdir string, platform Platform, now time.Time) *Lease {
 	l := &Lease{
 		SessionID:  session,
@@ -78,9 +77,6 @@ func removeLease(s *State, l *Lease) {
 	}
 }
 
-// dropLease removes l and sends the virtual device it held to recycling,
-// scheduling the worker. A physical device is leasable again the moment
-// its lease is gone; a broken device stays broken.
 func dropLease(s *State, l *Lease, now time.Time, reason string) {
 	removeLease(s, l)
 	if l.Physical {
@@ -93,16 +89,13 @@ func dropLease(s *State, l *Lease, now time.Time, reason string) {
 	from := d.State
 	d.State = StateRecycling
 	d.RecycleStartedAt = now
-	d.RecycleOff = from == StateOff
+	d.PowerOffConfirmed = from == StateOff
 	d.Booting = false
 	d.LastUsedAt = now
 	s.journal(d, from, nil, reason)
 	s.spawnRecycle(d.Name)
 }
 
-// releaseSession drops the session's leases (all platforms, or just one when
-// platform is non-empty) and its queue entries. Reports whether anything
-// was dropped.
 func releaseSession(s *State, session string, platform Platform, now time.Time, reason string) bool {
 	dropped := false
 	for _, l := range append([]*Lease(nil), s.Leases...) {
@@ -126,28 +119,26 @@ func reapExpired(s *State, now time.Time) bool {
 	return reaped
 }
 
-// recordFailure counts one recycle or boot failure against the device. The
-// second failure since the last successful boot leaves it broken, out of
-// the bank until bank init repairs it. Reports whether it broke.
-func recordFailure(s *State, d *Device, cause, reason string, now time.Time) bool {
+// The second failure since the last successful boot leaves the device broken
+// until bank init repairs it.
+func recordFailure(s *State, d *Device, cause, reason string, now time.Time) {
 	from := d.State
 	d.RecycleFailures++
 	d.Booting = false
+	if from == StateOn {
+		d.PowerOffConfirmed = false
+	}
 	if d.RecycleFailures >= maxRecycleFailures {
 		d.State = StateBroken
 		d.BrokenReason = cause
 		d.RecycleStartedAt = time.Time{}
 		s.journal(d, from, nil, "broken")
-		return true
-	}
-	if from == StateOn {
-		d.RecycleOff = false
+		return
 	}
 	d.State = StateRecycling
 	d.RecycleStartedAt = now
 	s.journal(d, from, nil, reason)
 	s.spawnRecycle(d.Name)
-	return false
 }
 
 func reapStuckRecycles(s *State, now time.Time) bool {

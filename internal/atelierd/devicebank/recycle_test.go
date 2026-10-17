@@ -9,8 +9,6 @@ import (
 	"time"
 )
 
-// TestColdRecycleNeverBoots: after release the recycle powers the
-// device off, erases it, and leaves it off — it never boots it.
 func TestColdRecycleNeverBoots(t *testing.T) {
 	t.Run("ios", func(t *testing.T) {
 		f := useFake(t)
@@ -61,8 +59,6 @@ func TestColdRecycleNeverBoots(t *testing.T) {
 	})
 }
 
-// TestRecycleTwoFailuresBreaks: the first failure re-spawns the
-// worker once, the second leaves the device broken with its reason.
 func TestRecycleTwoFailuresBreaks(t *testing.T) {
 	f := useFake(t)
 	seed(t, bank(iosDevice(1)))
@@ -138,8 +134,6 @@ func TestRecycleWithinBoundIsLeftAlone(t *testing.T) {
 	}
 }
 
-// TestBootFailuresCountTowardBroken: a boot failure under lease shares the
-// recycle counter; a successful boot resets it.
 func TestBootFailuresCountTowardBroken(t *testing.T) {
 	f := useFake(t)
 	seed(t, bank(iosDevice(1)))
@@ -164,8 +158,6 @@ func TestBootFailuresCountTowardBroken(t *testing.T) {
 	}
 }
 
-// TestBankInitRepairsBroken: bank init puts a broken device back to off
-// with a clean counter; it keeps the ignition limit.
 func TestBankInitRepairsBroken(t *testing.T) {
 	useFake(t)
 	d := iosDevice(1)

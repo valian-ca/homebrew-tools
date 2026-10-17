@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/valian-ca/homebrew-tools/internal/atelierd/paths"
@@ -16,8 +17,6 @@ func pause(t *testing.T, session string) {
 	}
 }
 
-// TestPauseSuspendsAndFreesSlot: the paused device is off, the lease
-// stays with the session as suspended, and the slot goes to someone else.
 func TestPauseSuspendsAndFreesSlot(t *testing.T) {
 	f := useFake(t)
 	seed(t, bank(iosDevice(1), iosDevice(2)))
@@ -51,7 +50,6 @@ func TestPauseSuspendsAndFreesSlot(t *testing.T) {
 	}
 }
 
-// TestLeaseResumesSameDeviceWithoutWipe: a pause then a resume never erases.
 func TestLeaseResumesSameDeviceWithoutWipe(t *testing.T) {
 	f := useFake(t)
 	seed(t, bank(iosDevice(1), androidDevice(1)))
@@ -108,5 +106,31 @@ func TestPauseIdempotentNoLeaseAndPhysical(t *testing.T) {
 	pause(t, "sess-p")
 	if l := load(t).FindLease("sess-p", PlatformAndroid); l == nil || l.Suspended() {
 		t.Fatalf("pause leaves a physical lease as it is, got %+v", l)
+	}
+}
+
+func TestPausePowerOffFailureKeepsLeaseActive(t *testing.T) {
+	f := useFake(t)
+	seed(t, bank(iosDevice(1), androidDevice(1)))
+	if err := SetMaxOn(2); err != nil {
+		t.Fatal(err)
+	}
+	lease(t, "sess-a", PlatformIOS)
+	lease(t, "sess-a", PlatformAndroid)
+	f.fail["killAVD"] = 1
+
+	err := Pause(context.Background(), "sess-a")
+	if err == nil || !strings.Contains(err.Error(), "pause atelier-android-1") {
+		t.Fatalf("a refused power-off is reported, got %v", err)
+	}
+	s := load(t)
+	if l := s.FindLease("sess-a", PlatformIOS); !l.Suspended() || f.isOn("UDID-1") {
+		t.Fatalf("the other lease is still paused, got %+v", l)
+	}
+	if l := s.FindLease("sess-a", PlatformAndroid); l.Suspended() || s.FindDevice("atelier-android-1").State != StateOn {
+		t.Fatalf("the refused lease stays active and on, got %+v", l)
+	}
+	if n := s.poweredOnCount(); n != 1 {
+		t.Fatalf("the device still on keeps counting, got %d", n)
 	}
 }

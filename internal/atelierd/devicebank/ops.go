@@ -17,19 +17,34 @@ var (
 	ErrNotInitialized = errors.New("device bank not initialized — run `atelierd device bank init` first")
 )
 
-// reapLocked runs the lifecycle pass and reports whether it changed the
-// state. Callers must hold the flock. TTL-expired leases recycle their
-// device, a recycle past its bound counts as a failure, and the recorded
-// power state is confronted with reality.
 func reapLocked(ctx context.Context, s *State, now time.Time) bool {
 	changed := reapExpired(s, now)
 	changed = reapStuckRecycles(s, now) || changed
 	return reconcile(ctx, s, now) || changed
 }
 
-// reconcile corrects the recorded power state against one probe of the
-// toolchains. A probe failure leaves every recorded state as it is: no
-// state flips on missing data.
+// powerOffRetryAfter spaces out power-off attempts on a device that refused
+// one: each attempt can hold the devices lock for its whole timeout, and
+// every lease poll reaps.
+const powerOffRetryAfter = 5 * time.Minute
+
+// reapPowerOff attempts a reconcile power-off and records a refusal, so the
+// state is saved either way.
+func reapPowerOff(ctx context.Context, d *Device, now time.Time) (off, changed bool) {
+	if !d.PowerOffFailedAt.IsZero() && now.Sub(d.PowerOffFailedAt) < powerOffRetryAfter {
+		return false, false
+	}
+	if err := powerOff(ctx, d); err != nil {
+		d.PowerOffFailedAt = now
+		return false, true
+	}
+	d.PowerOffFailedAt = time.Time{}
+	return true, true
+}
+
+// reconcile confronts the recorded power state with one probe of the
+// toolchains. A failed probe never marks a device dead or found on; an
+// unleased on device is powered off from the record alone.
 func reconcile(ctx context.Context, s *State, now time.Time) bool {
 	var ios, android bool
 	for _, d := range s.Devices {
@@ -51,10 +66,11 @@ func reconcile(ctx context.Context, s *State, now time.Time) bool {
 		switch d.State {
 		case StateOn:
 			if l == nil {
-				if powerOff(ctx, d) == nil {
+				off, attempted := reapPowerOff(ctx, d, now)
+				changed = attempted || changed
+				if off {
 					markOff(d)
 					s.journal(d, StateOn, nil, "reap-unleased-on")
-					changed = true
 				}
 				continue
 			}
@@ -68,14 +84,26 @@ func reconcile(ctx context.Context, s *State, now time.Time) bool {
 				changed = true
 			}
 		case StateOff, StateBroken:
-			if reallyOn && powerOff(ctx, d) == nil {
-				reason := "reap-unleased-on"
-				if l != nil {
-					reason = "reap-off"
+			if !reallyOn {
+				if probed && d.State == StateBroken && !d.PowerOffConfirmed {
+					d.PowerOffConfirmed = true
+					changed = true
 				}
-				s.journal(d, StateOn, l, reason)
-				changed = true
+				continue
 			}
+			off, attempted := reapPowerOff(ctx, d, now)
+			changed = attempted || changed
+			if !off {
+				continue
+			}
+			reason := "reap-unleased-on"
+			if l != nil {
+				reason = "reap-off"
+			}
+			if d.State == StateBroken {
+				d.PowerOffConfirmed = true
+			}
+			s.journal(d, StateOn, l, reason)
 		}
 	}
 	return changed
@@ -108,10 +136,17 @@ type grant struct {
 	notify *Waiter
 }
 
-// grantLocked decides one lease attempt under the lock. A nil lease means
-// the caller waits in the queue.
-func grantLocked(s *State, session, workdir string, platform Platform, physical []PhysicalDevice, now, deadline time.Time) (grant, bool) {
-	var g grant
+// takeWipe consumes a pending wipe when its boot is granted: once the
+// emulator starts with -wipe-data the erase has happened, even if this
+// process dies before the boot returns, and a later resume must not wipe
+// again. A failed boot goes back through recycling, which sets it again.
+func takeWipe(d *Device) bool {
+	wipe := d.WipePending
+	d.WipePending = false
+	return wipe
+}
+
+func grantLocked(s *State, session, workdir string, platform Platform, physical []PhysicalDevice, now, deadline time.Time) (g grant, changed bool) {
 	if l := s.FindLease(session, platform); l != nil {
 		if l.Physical {
 			g.lease = l
@@ -125,7 +160,7 @@ func grantLocked(s *State, session, workdir string, platform Platform, physical 
 			if fairReservation(s, session, platform) == d {
 				powerUp(s, d, l, now, "resume")
 				removeWaiters(s, session, platform)
-				g.lease, g.boot, g.wipe = l, d, d.WipePending
+				g.lease, g.boot, g.wipe = l, d, takeWipe(d)
 				return g, true
 			}
 			return queueCaller(s, session, platform, now, deadline)
@@ -136,7 +171,7 @@ func grantLocked(s *State, session, workdir string, platform Platform, physical 
 	if d := fairReservation(s, session, platform); d != nil {
 		g.lease = commitLease(s, &Candidate{Device: d}, session, workdir, platform, now)
 		removeWaiters(s, session, platform)
-		g.boot, g.wipe = d, d.WipePending
+		g.boot, g.wipe = d, takeWipe(d)
 		return g, true
 	}
 	// Physical fallback only when the platform has no virtual device to
@@ -162,15 +197,15 @@ func queueCaller(s *State, session string, platform Platform, now, deadline time
 	return g, changed
 }
 
-// Acquire leases a device of the platform for the session and returns its
-// targetable ID. Idempotent per (session, platform); a suspended or dead
-// lease gets its own device back, powered on. Within the ignition limit
-// and the queue order only; otherwise it waits in the queue up to wait,
-// then returns ErrExhausted.
+// Acquire is idempotent per (session, platform): a suspended or dead lease
+// gets its own device back, powered on.
 func Acquire(ctx context.Context, session, workdir string, platform Platform, wait time.Duration, progress io.Writer) (string, error) {
 	deadline := clock().Add(wait)
 	physical := drv.physical(ctx, platform)
 	for {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
 		var g grant
 		var outcome error
 		err := WithLock(func(s *State) error {
@@ -217,7 +252,13 @@ func Acquire(ctx context.Context, session, workdir string, platform Platform, wa
 			return g.lease.DeviceID, nil
 		}
 		bootErr := boot(ctx, g.boot, g.wipe)
-		if err := settleBoot(session, platform, g.boot.Name, g.wipe, bootErr); err != nil {
+		// An interrupted boot is not the device's fault: the lease stays,
+		// still booting, and the reap past bootTimeout decides whether the
+		// device came up or died.
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		if err := settleBoot(session, platform, g.boot.Name, bootErr); err != nil {
 			return "", err
 		}
 		if bootErr == nil {
@@ -229,7 +270,7 @@ func Acquire(ctx context.Context, session, workdir string, platform Platform, wa
 
 // settleBoot records a boot outcome by device identity: the lease can vanish
 // in the unlocked boot window (racing session-end).
-func settleBoot(session string, platform Platform, name string, wiped bool, bootErr error) error {
+func settleBoot(session string, platform Platform, name string, bootErr error) error {
 	return WithLock(func(s *State) error {
 		d := s.FindDevice(name)
 		if d == nil || d.State != StateOn {
@@ -238,9 +279,6 @@ func settleBoot(session string, platform Platform, name string, wiped bool, boot
 		if bootErr == nil {
 			d.Booting = false
 			d.RecycleFailures = 0
-			if wiped {
-				d.WipePending = false
-			}
 			return nil
 		}
 		if l := s.FindLease(session, platform); l != nil && l.DeviceName == name {
@@ -256,9 +294,6 @@ func firstLine(err error) string {
 	return msg
 }
 
-// Pause suspends every virtual lease of the session: the device is powered
-// off, keeps its data, and leaves the ignition limit; the session's next
-// lease powers it back on. Physical leases are left as they are.
 func Pause(ctx context.Context, session string) error {
 	var failures []error
 	err := WithLock(func(s *State) error {
@@ -297,10 +332,6 @@ func Pause(ctx context.Context, session string) error {
 	return errors.Join(failures...)
 }
 
-// Release drops the session's leases and queue entries (all platforms when
-// platform is empty). It returns immediately: virtual devices recycle in a
-// detached worker, physical devices are leasable again the moment the lease
-// is gone.
 func Release(ctx context.Context, session string, platform Platform) error {
 	return WithLock(func(s *State) error {
 		now := clock()
@@ -335,10 +366,6 @@ func OnEmit(session string, sessionEnd bool) {
 	})
 }
 
-// RunRecycle is the detached worker behind `atelierd device recycle`:
-// confirmed power-off, then erase without booting, then off. An Android
-// erase is the -wipe-data of its next boot. The whole recycle is bounded
-// by RecycleBound; a failure counts toward broken.
 func RunRecycle(ctx context.Context, name string) error {
 	ctx, cancel := context.WithTimeout(ctx, RecycleBound)
 	defer cancel()
@@ -366,7 +393,7 @@ func RunRecycle(ctx context.Context, name string) error {
 		}
 		markOff(cur)
 		cur.RecycleStartedAt = time.Time{}
-		cur.RecycleOff = false
+		cur.PowerOffConfirmed = false
 		cur.LastUsedAt = now
 		cur.WipePending = cur.Platform == PlatformAndroid
 		s.journal(cur, StateRecycling, nil, "recycle-done")
@@ -384,10 +411,10 @@ func recycle(ctx context.Context, d *Device) error {
 	}
 	err := WithLock(func(s *State) error {
 		cur := s.FindDevice(d.Name)
-		if cur == nil || cur.State != StateRecycling || cur.RecycleOff {
+		if cur == nil || cur.State != StateRecycling || cur.PowerOffConfirmed {
 			return errNoChange
 		}
-		cur.RecycleOff = true
+		cur.PowerOffConfirmed = true
 		s.journal(cur, StateRecycling, nil, "recycle-off")
 		return nil
 	})
@@ -421,11 +448,6 @@ func SetMaxOn(n int) error {
 	})
 }
 
-// InitBank provisions the bank to nIOS + nAndroid clones, two-way: missing
-// clones are created, free excess clones are deleted, leased excess clones
-// survive with a warning. Broken devices are repaired. A missing toolchain
-// degrades to provisioning the other side with a warning (exit 0).
-// Idempotent.
 func InitBank(ctx context.Context, nIOS, nAndroid int, out io.Writer) error {
 	hasXcode, hasAndroid := HasXcode(), HasAndroidSDK()
 	if !hasXcode {
@@ -474,7 +496,7 @@ func repair(s *State, d *Device, out io.Writer) {
 	d.RecycleFailures = 0
 	d.BrokenReason = ""
 	d.RecycleStartedAt = time.Time{}
-	d.RecycleOff = false
+	d.PowerOffConfirmed = false
 	s.journal(d, StateBroken, nil, "repair")
 	fmt.Fprintf(out, "repaired broken %s\n", d.Name)
 }
@@ -646,10 +668,7 @@ type StatusRow struct {
 	Lease    *Lease
 }
 
-// StatusRows builds the status listing — the virtual bank from the state
-// snapshot plus every connected physical device — and the live queue in
-// arrival order.
-func StatusRows(ctx context.Context) ([]StatusRow, []*Waiter, error) {
+func StatusRows(ctx context.Context) (rows []StatusRow, queue []*Waiter, err error) {
 	s, err := Load()
 	if err != nil {
 		return nil, nil, err
@@ -658,7 +677,6 @@ func StatusRows(ctx context.Context) ([]StatusRow, []*Waiter, error) {
 	for _, l := range s.Leases {
 		leaseByID[l.DeviceID] = l
 	}
-	var rows []StatusRow
 	for _, d := range s.Devices {
 		rows = append(rows, StatusRow{
 			Name: d.Name, Platform: d.Platform, State: d.State, Device: d, Lease: s.leaseForDevice(d.Name),

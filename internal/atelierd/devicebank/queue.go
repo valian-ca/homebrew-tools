@@ -61,10 +61,7 @@ func (s *State) orderedQueue() []*Waiter {
 	return q
 }
 
-// reservation is the virtual device a request would power on: the device
-// its own suspended or dead lease already holds, else an unleased off
-// device of the platform not yet promised to someone ahead.
-func reservation(s *State, session string, platform Platform, taken map[string]bool) *Device {
+func deviceToPowerOn(s *State, session string, platform Platform, taken map[string]bool) *Device {
 	if l := s.FindLease(session, platform); l != nil {
 		if l.Physical {
 			return nil
@@ -96,7 +93,7 @@ func fairReservation(s *State, session string, platform Platform) *Device {
 		if slots <= 0 {
 			return nil
 		}
-		if d := reservation(s, w.SessionID, w.Platform, taken); d != nil {
+		if d := deviceToPowerOn(s, w.SessionID, w.Platform, taken); d != nil {
 			taken[d.Name] = true
 			slots--
 		}
@@ -104,15 +101,13 @@ func fairReservation(s *State, session string, platform Platform) *Device {
 	if slots <= 0 {
 		return nil
 	}
-	return reservation(s, session, platform, taken)
+	return deviceToPowerOn(s, session, platform, taken)
 }
 
 func hasVirtualCandidate(s *State, platform Platform) bool {
-	return reservation(s, "", platform, nil) != nil
+	return deviceToPowerOn(s, "", platform, nil) != nil
 }
 
-// waiterAhead reports whether a live waiter of the platform queued before
-// the caller — it gets the physical fallback first.
 func waiterAhead(s *State, session string, platform Platform) bool {
 	for _, w := range s.orderedQueue() {
 		if w.SessionID == session && w.Platform == platform {

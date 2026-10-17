@@ -20,14 +20,14 @@ type fakeDriver struct {
 	spawned   []string
 	runSpawns bool
 	notes     []string
+	onBoot    func()
 }
 
 func newFake() *fakeDriver {
 	return &fakeDriver{on: map[string]bool{}, fail: map[string]int{}, runSpawns: true}
 }
 
-// useFake isolates a test: temp HOME for the state file, the fake driver,
-// and a fast queue poll. Spawned recycle workers run synchronously.
+// Spawned recycle workers run synchronously.
 func useFake(t *testing.T) *fakeDriver {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
@@ -90,7 +90,6 @@ func (f *fakeDriver) isOn(target string) bool {
 	return f.on[target]
 }
 
-// count returns how many recorded calls start with prefix.
 func (f *fakeDriver) count(prefix string) int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -110,6 +109,9 @@ func (f *fakeDriver) resetCalls() {
 }
 
 func (f *fakeDriver) bootIOS(_ context.Context, udid string) error {
+	if f.onBoot != nil {
+		f.onBoot()
+	}
 	if err := f.call("bootIOS", udid); err != nil {
 		return err
 	}
@@ -140,6 +142,9 @@ func (f *fakeDriver) startAVD(avd string, port int, wipe bool) error {
 }
 
 func (f *fakeDriver) waitAVDReady(_ context.Context, serial string) error {
+	if f.onBoot != nil {
+		f.onBoot()
+	}
 	return f.call("waitAVDReady", serial)
 }
 

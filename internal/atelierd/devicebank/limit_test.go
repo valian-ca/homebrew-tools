@@ -8,9 +8,6 @@ import (
 	"time"
 )
 
-// TestConcurrentSessionsNeverExceedLimit: two sessions on two
-// platforms lease, hold and release in a loop under the real flock; the
-// fake never sees more than one virtual device on.
 func TestConcurrentSessionsNeverExceedLimit(t *testing.T) {
 	t.Run("two sessions racing", func(t *testing.T) {
 		f := useFake(t)

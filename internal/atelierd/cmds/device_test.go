@@ -17,8 +17,6 @@ import (
 	"github.com/valian-ca/homebrew-tools/internal/atelierd/paths"
 )
 
-// TestStatusShowsOnSinceAndQueue: the holder with its
-// power-on time, the waiting session in the queue, a broken device's reason.
 func TestStatusShowsOnSinceAndQueue(t *testing.T) {
 	now := time.Date(2026, 10, 17, 15, 30, 0, 0, time.Local)
 	on := &devicebank.Device{Name: "atelier-android-1", Platform: devicebank.PlatformAndroid, State: devicebank.StateOn, PoweredOnAt: now.Add(-26 * time.Minute)}
@@ -30,6 +28,9 @@ func TestStatusShowsOnSinceAndQueue(t *testing.T) {
 		{Name: broken.Name, Platform: broken.Platform, State: broken.State, Device: broken},
 		{Name: suspended.Name, Platform: suspended.Platform, State: suspended.State, Device: suspended,
 			Lease: &devicebank.Lease{SessionID: "S3", SuspendedAt: now.Add(-10 * time.Minute)}},
+		{Name: "atelier-ios-2", Platform: devicebank.PlatformIOS, State: devicebank.StateOff,
+			Device: &devicebank.Device{Name: "atelier-ios-2", Platform: devicebank.PlatformIOS, State: devicebank.StateOff},
+			Lease:  &devicebank.Lease{SessionID: "S4", DeviceDied: true}},
 	}
 	queue := []*devicebank.Waiter{{SessionID: "S2", Platform: devicebank.PlatformAndroid, EnqueuedAt: now.Add(-18 * time.Minute)}}
 
@@ -41,6 +42,7 @@ func TestStatusShowsOnSinceAndQueue(t *testing.T) {
 		"session S1, on since 15:04, renewed 12s ago",
 		"broken: emulator emulator-5582 still running after adb emu kill",
 		"session S3, suspended since 15:20",
+		"session S4, device died — restarts at next lease",
 		"QUEUE\n1. session S2 (android) waiting since 15:12",
 	} {
 		if !strings.Contains(out.String(), want) {

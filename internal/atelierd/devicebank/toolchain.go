@@ -33,8 +33,6 @@ func HasXcode() bool {
 	return err == nil
 }
 
-// androidSDKRoot resolves the SDK root from the conventional env vars,
-// falling back to the macOS default install location.
 func androidSDKRoot() string {
 	for _, env := range []string{"ANDROID_HOME", "ANDROID_SDK_ROOT"} {
 		if v := os.Getenv(env); v != "" {
@@ -199,7 +197,6 @@ type simctlRuntimesOutput struct {
 	} `json:"runtimes"`
 }
 
-// pickIOSRuntime returns the identifier of the newest available iOS runtime.
 func pickIOSRuntime(data []byte) (string, error) {
 	var parsed simctlRuntimesOutput
 	if err := json.Unmarshal(data, &parsed); err != nil {
@@ -415,10 +412,6 @@ func pickAndroidDevice(out []byte) string {
 	return bestID
 }
 
-// CreateAVD provisions a new bank AVD on the newest installed system image,
-// cut from the newest base Pixel profile in the catalog. Without a -d
-// profile avdmanager defaults to a 320x640 / 160dpi generic screen — the
-// "tiny emulator" forge runs used to lease.
 func CreateAVD(ctx context.Context, name string) error {
 	avdmanager, err := avdmanagerPath()
 	if err != nil {
@@ -486,8 +479,6 @@ func emulatorArgs(avd string, port int, wipeData bool) []string {
 	return args
 }
 
-// WaitEmulatorReady blocks until the emulator's Android system is fully
-// booted, under bootTimeout.
 func WaitEmulatorReady(ctx context.Context, serial string) error {
 	waitCtx, cancel := context.WithTimeout(ctx, bootTimeout)
 	defer cancel()
@@ -507,8 +498,6 @@ func WaitEmulatorReady(ctx context.Context, serial string) error {
 	}
 }
 
-// EmulatorBooted reports whether the emulator serial is online and fully
-// booted — the cheap health check for an already-running AVD.
 func EmulatorBooted(ctx context.Context, serial string) bool {
 	execCtx, cancel := boundedCtx(ctx)
 	defer cancel()
@@ -568,8 +557,8 @@ func StopEmulator(ctx context.Context, serial string) error {
 	}
 }
 
-// Notify posts a macOS notification, best-effort. Title and body travel as
-// osascript arguments so no quoting reaches AppleScript.
+// Title and body travel as osascript arguments so no quoting reaches
+// AppleScript.
 func Notify(title, body string) {
 	ctx, cancel := context.WithTimeout(context.Background(), cmdTimeout)
 	defer cancel()

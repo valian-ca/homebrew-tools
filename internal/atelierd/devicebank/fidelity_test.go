@@ -17,8 +17,6 @@ func reap(t *testing.T) {
 	}
 }
 
-// TestReapCorrectsDeadDevice: a leased device stopped by
-// hand is off at the next reap, and its lease says the device died.
 func TestReapCorrectsDeadDevice(t *testing.T) {
 	f := useFake(t)
 	seed(t, bank(iosDevice(1)))
@@ -35,8 +33,6 @@ func TestReapCorrectsDeadDevice(t *testing.T) {
 	}
 }
 
-// TestLeaseRestartsDeadDevice: the next lease of the
-// session restarts its own device instead of handing back a dead one.
 func TestLeaseRestartsDeadDevice(t *testing.T) {
 	f := useFake(t)
 	seed(t, bank(iosDevice(1), iosDevice(2)))
@@ -107,8 +103,6 @@ func TestReapBootGraceAndProbeFailure(t *testing.T) {
 	}
 }
 
-// TestLegacyFreeMigrates: a 0.20 state file loads with its leases intact;
-// its booted free devices are powered off by the next reap.
 func TestLegacyFreeMigrates(t *testing.T) {
 	f := useFake(t)
 	legacy := `{
@@ -146,6 +140,56 @@ func TestLegacyFreeMigrates(t *testing.T) {
 	}
 }
 
+func TestReapPowersOffSuspendedDeviceFoundOn(t *testing.T) {
+	f := useFake(t)
+	seed(t, bank(iosDevice(1)))
+	lease(t, "sess-1", PlatformIOS)
+	pause(t, "sess-1")
+	f.setOn("UDID-1", true)
+
+	reap(t)
+	s := load(t)
+	if f.isOn("UDID-1") || s.FindDevice("atelier-ios-1").State != StateOff {
+		t.Fatal("a suspended device booted by hand is powered off again")
+	}
+	if l := s.FindLease("sess-1", PlatformIOS); !l.Suspended() || l.DeviceDied {
+		t.Fatalf("the lease stays suspended, not dead, got %+v", l)
+	}
+	j := readJournal(t)
+	if last := j[len(j)-1]; last.Reason != "reap-off" || !last.Leased {
+		t.Fatalf("the correction is journaled as reap-off under the lease, got %+v", last)
+	}
+}
+
+func TestBrokenWhileOnCountsUntilConfirmedOff(t *testing.T) {
+	f := useFake(t)
+	c := useClock(t, t0)
+	wedged := iosDevice(1)
+	wedged.State = StateBroken
+	wedged.BrokenReason = "simctl bootstatus: signal: killed"
+	seed(t, bank(wedged, iosDevice(2)))
+	f.setOn("UDID-1", true)
+	f.fail["shutdownIOS"] = 1
+
+	if err := leaseErr("sess-1", PlatformIOS); !errors.Is(err, ErrExhausted) {
+		t.Fatalf("a broken device still running holds the only slot, got %v", err)
+	}
+	if err := leaseErr("sess-1", PlatformIOS); !errors.Is(err, ErrExhausted) {
+		t.Fatalf("still held, got %v", err)
+	}
+	if n := f.count("shutdownIOS"); n != 1 {
+		t.Fatalf("a refused power-off waits before the next attempt, got %d attempts", n)
+	}
+
+	c.advance(powerOffRetryAfter + time.Second)
+	if id := lease(t, "sess-1", PlatformIOS); id != "UDID-2" {
+		t.Fatalf("once the broken device is confirmed off its slot is free, got %q", id)
+	}
+	if d := load(t).FindDevice("atelier-ios-1"); d.State != StateBroken || !d.PowerOffConfirmed {
+		t.Fatalf("the device stays broken, confirmed off, got %+v", d)
+	}
+}
+
 func TestSuspendedLeaseReapedByTTL(t *testing.T) {
 	f := useFake(t)
 	f.runSpawns = false
@@ -158,7 +202,7 @@ func TestSuspendedLeaseReapedByTTL(t *testing.T) {
 	reap(t)
 	s := load(t)
 	d := s.FindDevice("atelier-ios-1")
-	if s.FindLease("sess-1", PlatformIOS) != nil || d.State != StateRecycling || !d.RecycleOff || len(f.spawned) != 1 {
+	if s.FindLease("sess-1", PlatformIOS) != nil || d.State != StateRecycling || !d.PowerOffConfirmed || len(f.spawned) != 1 {
 		t.Fatalf("a suspended lease past its TTL is recycled, got %+v spawned %v", d, f.spawned)
 	}
 	if n := s.poweredOnCount(); n != 0 {

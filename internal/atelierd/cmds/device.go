@@ -71,8 +71,6 @@ func NewDeviceCmd() *cobra.Command {
 	return c
 }
 
-// warnHolder never changes an exit code: the warning is a nudge to the
-// session that holds the powered-on device, on stderr.
 func warnHolder(w io.Writer, session string) {
 	if msg := devicebank.HolderWarning(session); msg != "" {
 		fmt.Fprintln(w, msg)
@@ -244,6 +242,8 @@ recycling or broken; LEASE starts with the holding session's id. The
 recorded state is checked against the simulators and emulators actually
 running first. When sessions are waiting, a QUEUE block lists them in
 order.`,
+		Example: `  atelierd device status
+  atelierd device status | grep abc123`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if devicebank.Exists() {

@@ -59,29 +59,41 @@ type Config struct {
 // Device is one provisioned virtual bank device. Physical devices are never
 // stored here — they are probed live and tracked only through leases.
 type Device struct {
-	Name             string      `json:"name"`
-	Platform         Platform    `json:"platform"`
-	UDID             string      `json:"udid,omitempty"`
-	AVD              string      `json:"avd,omitempty"`
-	Port             int         `json:"port,omitempty"`
-	State            DeviceState `json:"state"`
-	LastUsedAt       time.Time   `json:"lastUsedAt"`
-	PoweredOnAt      time.Time   `json:"poweredOnAt,omitzero"`
-	Booting          bool        `json:"booting,omitempty"`
-	RecycleStartedAt time.Time   `json:"recycleStartedAt,omitzero"`
-	RecycleOff       bool        `json:"recycleOff,omitempty"`
-	RecycleFailures  int         `json:"recycleFailures,omitempty"`
-	BrokenReason     string      `json:"brokenReason,omitempty"`
-	WipePending      bool        `json:"wipePending,omitempty"`
+	Name              string      `json:"name"`
+	Platform          Platform    `json:"platform"`
+	UDID              string      `json:"udid,omitempty"`
+	AVD               string      `json:"avd,omitempty"`
+	Port              int         `json:"port,omitempty"`
+	State             DeviceState `json:"state"`
+	LastUsedAt        time.Time   `json:"lastUsedAt"`
+	PoweredOnAt       time.Time   `json:"poweredOnAt,omitzero"`
+	Booting           bool        `json:"booting,omitempty"`
+	RecycleStartedAt  time.Time   `json:"recycleStartedAt,omitzero"`
+	PowerOffConfirmed bool        `json:"powerOffConfirmed,omitempty"`
+	PowerOffFailedAt  time.Time   `json:"powerOffFailedAt,omitzero"`
+	RecycleFailures   int         `json:"recycleFailures,omitempty"`
+	BrokenReason      string      `json:"brokenReason,omitempty"`
+	WipePending       bool        `json:"wipePending,omitempty"`
 }
 
-// TargetID returns the identifier a runner targets: simulator UDID for iOS,
-// emulator serial for Android.
 func (d *Device) TargetID() string {
 	if d.Platform == PlatformIOS {
 		return d.UDID
 	}
 	return fmt.Sprintf("emulator-%d", d.Port)
+}
+
+// mayBeOn is what the ignition limit counts. A recycling or broken device
+// counts until its power-off is confirmed: a release racing a lease, or a
+// device that broke while running, can never let a second device on.
+func (d *Device) mayBeOn() bool {
+	switch d.State {
+	case StateOn:
+		return true
+	case StateRecycling, StateBroken:
+		return !d.PowerOffConfirmed
+	}
+	return false
 }
 
 type Lease struct {
@@ -165,13 +177,10 @@ func (s *State) maxOn() int {
 	return DefaultMaxOn
 }
 
-// poweredOnCount is what the ignition limit counts. A recycling device
-// counts until its power-off is confirmed, so a release racing a lease can
-// never put two devices on.
 func (s *State) poweredOnCount() int {
 	n := 0
 	for _, d := range s.Devices {
-		if d.State == StateOn || (d.State == StateRecycling && !d.RecycleOff) {
+		if d.mayBeOn() {
 			n++
 		}
 	}
@@ -252,10 +261,6 @@ func save(s *State) error {
 // renews leases) from rewriting the file when there is nothing to renew.
 var errNoChange = errors.New("devicebank: no change")
 
-// WithLock runs fn under the devices flock with a fresh load of the state,
-// then persists the (possibly mutated) state if fn succeeds. Transitions
-// are journaled under the lock once the state is saved; recycle workers are
-// spawned after the lock is released.
 func WithLock(fn func(s *State) error) error {
 	if err := paths.EnsureDir(paths.MustRoot()); err != nil {
 		return err

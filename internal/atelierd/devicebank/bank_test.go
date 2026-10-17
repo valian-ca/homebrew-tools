@@ -101,9 +101,6 @@ func TestBankIndex(t *testing.T) {
 }
 
 func TestEmulatorPort(t *testing.T) {
-	// Descends from the top of adb's auto-discovery range [5554, 5584]:
-	// outside it adb never sees the emulator, below it manual emulators
-	// climbing from 5554 would collide.
 	if got := EmulatorPort(1); got != 5584 {
 		t.Errorf("EmulatorPort(1) = %d, want 5584", got)
 	}

@@ -97,7 +97,9 @@ func TestJqRecipeComputesUnleasedOn(t *testing.T) {
 	if err := os.WriteFile(path, []byte(fixture), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	out, err := exec.Command("jq", "-rs", readmeRecipe(t), path).CombinedOutput()
+	ctx, cancel := context.WithTimeout(context.Background(), cmdTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "jq", "-rs", readmeRecipe(t), path).CombinedOutput()
 	if err != nil {
 		t.Fatalf("jq recipe failed: %v\n%s", err, out)
 	}

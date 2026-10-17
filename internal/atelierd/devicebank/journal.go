@@ -30,14 +30,11 @@ func (s *State) journal(d *Device, from DeviceState, l *Lease, reason string) {
 		From:     from,
 		To:       d.State,
 		Reason:   reason,
-		On:       d.State == StateOn || (d.State == StateRecycling && !d.RecycleOff),
+		On:       d.mayBeOn(),
 		Leased:   l != nil,
 	}
 	if l != nil {
 		t.Session = l.SessionID
-		if l.Suspended() || l.DeviceDied {
-			t.On = false
-		}
 	}
 	s.transitions = append(s.transitions, t)
 }

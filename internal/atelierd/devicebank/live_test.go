@@ -20,11 +20,6 @@ import (
 	"github.com/valian-ca/homebrew-tools/internal/atelierd/paths"
 )
 
-// The live run boots a real simulator and a real AVD (~9 GB): run it only
-// on a slot nobody else needs. It never touches ~/.atelier/devices.json nor
-// the atelier-* bank: its devices are atelierfit-*, created and deleted
-// here, and its state lives under a temporary HOME.
-
 const (
 	fitIOS      = "atelierfit-ios-1"
 	fitAndroid  = "atelierfit-android-1"
@@ -162,7 +157,9 @@ func liveLease(t *testing.T, session string, platform Platform) string {
 
 func run(t *testing.T, name string, args ...string) (string, error) {
 	t.Helper()
-	out, err := exec.Command(name, args...).CombinedOutput()
+	ctx, cancel := context.WithTimeout(context.Background(), cmdTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, name, args...).CombinedOutput()
 	return strings.TrimSpace(string(out)), err
 }
 
@@ -202,6 +199,8 @@ func assertNothingUnleasedOn(t *testing.T, udid, serial string) {
 
 var memTotal = regexp.MustCompile(`MemTotal:\s+(\d+) kB`)
 
+// Boots a real simulator and a real AVD (~9 GB): run it only on a slot
+// nobody else needs.
 func TestLiveBank(t *testing.T) {
 	ios, android := liveSetup(t)
 	serial := android.TargetID()
