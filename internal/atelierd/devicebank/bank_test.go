@@ -20,7 +20,7 @@ func TestPlanResize(t *testing.T) {
 		{
 			name: "idempotent rerun changes nothing",
 			devices: []*Device{
-				{Name: "atelier-ios-1", Platform: PlatformIOS, State: StateFree},
+				{Name: "atelier-ios-1", Platform: PlatformIOS, State: StateOff},
 				{Name: "atelier-ios-2", Platform: PlatformIOS, State: StateOff},
 			},
 			n:    2,
@@ -29,7 +29,7 @@ func TestPlanResize(t *testing.T) {
 		{
 			name: "grow fills the gap",
 			devices: []*Device{
-				{Name: "atelier-ios-1", Platform: PlatformIOS, State: StateFree},
+				{Name: "atelier-ios-1", Platform: PlatformIOS, State: StateOff},
 			},
 			n:    3,
 			want: ResizePlan{Create: []string{"atelier-ios-2", "atelier-ios-3"}},
@@ -37,8 +37,8 @@ func TestPlanResize(t *testing.T) {
 		{
 			name: "shrink deletes free excess, keeps leased with warning",
 			devices: []*Device{
-				{Name: "atelier-ios-1", Platform: PlatformIOS, State: StateFree},
-				{Name: "atelier-ios-2", Platform: PlatformIOS, State: StateLeased},
+				{Name: "atelier-ios-1", Platform: PlatformIOS, State: StateOff},
+				{Name: "atelier-ios-2", Platform: PlatformIOS, State: StateOn},
 				{Name: "atelier-ios-3", Platform: PlatformIOS, State: StateOff},
 			},
 			n:    1,
@@ -47,7 +47,7 @@ func TestPlanResize(t *testing.T) {
 		{
 			name: "recycling excess is busy, kept like leased",
 			devices: []*Device{
-				{Name: "atelier-ios-1", Platform: PlatformIOS, State: StateFree},
+				{Name: "atelier-ios-1", Platform: PlatformIOS, State: StateOff},
 				{Name: "atelier-ios-2", Platform: PlatformIOS, State: StateRecycling},
 			},
 			n:    1,
@@ -56,7 +56,7 @@ func TestPlanResize(t *testing.T) {
 		{
 			name: "other platform is untouched",
 			devices: []*Device{
-				{Name: "atelier-android-1", Platform: PlatformAndroid, State: StateFree},
+				{Name: "atelier-android-1", Platform: PlatformAndroid, State: StateOff},
 			},
 			n:    1,
 			want: ResizePlan{Create: []string{"atelier-ios-1"}},
@@ -64,7 +64,13 @@ func TestPlanResize(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := planResize(&State{Devices: tt.devices}, PlatformIOS, tt.n)
+			s := &State{Devices: tt.devices}
+			for _, d := range tt.devices {
+				if d.State == StateOn {
+					s.Leases = append(s.Leases, &Lease{SessionID: "sess-a", Platform: d.Platform, DeviceName: d.Name})
+				}
+			}
+			got := planResize(s, PlatformIOS, tt.n)
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("planResize() = %+v, want %+v", got, tt.want)
 			}

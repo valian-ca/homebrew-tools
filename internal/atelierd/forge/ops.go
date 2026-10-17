@@ -870,3 +870,16 @@ func GetRefContext(ctx context.Context, runID, key string) (string, error) {
 	})
 	return value, err
 }
+
+// RunSession reads the session a run was started under without the run
+// lock: it only feeds a display-only warning.
+func RunSession(runID string) (string, error) {
+	if err := validateRunID(runID); err != nil {
+		return "", err
+	}
+	state, err := readRun(runID)
+	if err != nil {
+		return "", err
+	}
+	return state.Session, nil
+}
