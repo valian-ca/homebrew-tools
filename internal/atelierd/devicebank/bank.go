@@ -26,8 +26,6 @@ func bankName(platform Platform, index int) string {
 	return fmt.Sprintf("%s%s-%d", namePrefix, platform, index)
 }
 
-// EmulatorPort returns the deterministic console port for bank AVD index
-// (1-based): 5584 - 2*(index-1), descending.
 func EmulatorPort(index int) int {
 	return emulatorTopPort - 2*(index-1)
 }
@@ -51,12 +49,12 @@ func bankIndex(platform Platform, name string) int {
 type ResizePlan struct {
 	Create []string // names to provision, ascending index
 	Delete []string // free excess clones to remove, ascending index
-	Keep   []string // leased excess clones that survive with a warning
+	Keep   []string
 }
 
 // planResize computes the two-way sizing for one platform: indexes 1..n must
-// exist; existing clones above n are deleted when free, kept (warned) when
-// leased — a leased clone is never touched, per the ticket.
+// exist; clones above n are deleted unless a lease or a recycle holds them,
+// which keeps them (warned) until a later init.
 func planResize(s *State, platform Platform, n int) ResizePlan {
 	var plan ResizePlan
 	existing := map[int]*Device{}
@@ -82,7 +80,7 @@ func planResize(s *State, platform Platform, n int) ResizePlan {
 	sort.Ints(excess)
 	for _, idx := range excess {
 		d := existing[idx]
-		if d.State == StateLeased || d.State == StateRecycling {
+		if s.leaseForDevice(d.Name) != nil || d.State == StateRecycling {
 			plan.Keep = append(plan.Keep, d.Name)
 		} else {
 			plan.Delete = append(plan.Delete, d.Name)

@@ -1,11 +1,10 @@
 package devicebank
 
 import (
+	"fmt"
 	"time"
 )
 
-// PhysicalDevice is a live-probed physical device offered to the lease
-// selector alongside the virtual bank.
 type PhysicalDevice struct {
 	ID       string
 	Name     string
@@ -19,39 +18,16 @@ type Candidate struct {
 	Physical *PhysicalDevice
 }
 
-// acquireExisting implements lease idempotence: a session that already holds
-// a lease on the platform gets the same device back, renewed.
-func acquireExisting(s *State, session string, platform Platform, now time.Time) *Lease {
-	l := s.FindLease(session, platform)
-	if l == nil {
-		return nil
-	}
-	l.RenewedAt = now
-	return l
-}
+// recycleReapAfter gives a live worker, bounded by RecycleBound, the time
+// to record its own outcome before reap presumes it dead.
+const recycleReapAfter = RecycleBound + 30*time.Second
 
-// pickCandidate selects the next device to try, virtual bank first (booted
-// free before cold), then unleased physical devices. Returns nil when the
-// platform has nothing available.
-func pickCandidate(s *State, platform Platform, physical []PhysicalDevice) *Candidate {
-	for _, want := range []DeviceState{StateFree, StateOff} {
-		for _, d := range s.Devices {
-			if d.Platform == platform && d.State == want {
-				return &Candidate{Device: d}
-			}
-		}
-	}
-	for i := range physical {
-		p := &physical[i]
-		if p.Platform == platform && s.LeaseForDeviceID(p.ID) == nil {
-			return &Candidate{Physical: p}
-		}
-	}
-	return nil
-}
+const maxRecycleFailures = 2
 
-// commitLease records the lease for the candidate and flips a virtual
-// device to leased.
+var stuckRecycleReason = fmt.Sprintf("recycle worker did not finish within %s", RecycleBound)
+
+// A virtual device is on from this moment, so the ignition limit counts it
+// before the unlocked boot that follows.
 func commitLease(s *State, c *Candidate, session, workdir string, platform Platform, now time.Time) *Lease {
 	l := &Lease{
 		SessionID:  session,
@@ -61,10 +37,9 @@ func commitLease(s *State, c *Candidate, session, workdir string, platform Platf
 		RenewedAt:  now,
 	}
 	if c.Device != nil {
-		c.Device.State = StateLeased
-		c.Device.LastUsedAt = now
 		l.DeviceName = c.Device.Name
 		l.DeviceID = c.Device.TargetID()
+		powerUp(s, c.Device, l, now, "lease")
 	} else {
 		l.DeviceID = c.Physical.ID
 		l.DeviceName = c.Physical.Name
@@ -74,8 +49,17 @@ func commitLease(s *State, c *Candidate, session, workdir string, platform Platf
 	return l
 }
 
-// touchSession renews every lease the session holds. Returns the number of
-// leases touched.
+func powerUp(s *State, d *Device, l *Lease, now time.Time, reason string) {
+	from := d.State
+	d.State = StateOn
+	d.PoweredOnAt = now
+	d.LastUsedAt = now
+	d.Booting = true
+	l.SuspendedAt = time.Time{}
+	l.DeviceDied = false
+	s.journal(d, from, l, reason)
+}
+
 func touchSession(s *State, session string, now time.Time) int {
 	n := 0
 	for _, l := range s.Leases {
@@ -87,81 +71,85 @@ func touchSession(s *State, session string, now time.Time) int {
 	return n
 }
 
-// dropLease removes l from the lease list and returns the virtual device it
-// held, flipped to recycling — or nil when the lease was physical (a
-// physical device is leasable again the moment its lease is gone).
-func dropLease(s *State, l *Lease, now time.Time) *Device {
+func removeLease(s *State, l *Lease) {
 	for i, cur := range s.Leases {
 		if cur == l {
 			s.Leases = append(s.Leases[:i], s.Leases[i+1:]...)
-			break
+			return
 		}
 	}
+}
+
+func dropLease(s *State, l *Lease, now time.Time, reason string) {
+	removeLease(s, l)
 	if l.Physical {
-		return nil
+		return
 	}
 	d := s.FindDevice(l.DeviceName)
-	if d == nil {
-		return nil
+	if d == nil || d.State == StateRecycling || d.State == StateBroken {
+		return
+	}
+	from := d.State
+	d.State = StateRecycling
+	d.RecycleStartedAt = now
+	d.PowerOffConfirmed = from == StateOff
+	d.Booting = false
+	d.LastUsedAt = now
+	s.journal(d, from, nil, reason)
+	s.spawnRecycle(d.Name)
+}
+
+func releaseSession(s *State, session string, platform Platform, now time.Time, reason string) bool {
+	dropped := false
+	for _, l := range append([]*Lease(nil), s.Leases...) {
+		if l.SessionID != session || (platform != "" && l.Platform != platform) {
+			continue
+		}
+		dropLease(s, l, now, reason)
+		dropped = true
+	}
+	return removeWaiters(s, session, platform) || dropped
+}
+
+func reapExpired(s *State, now time.Time) bool {
+	reaped := false
+	for _, l := range append([]*Lease(nil), s.Leases...) {
+		if now.Sub(l.RenewedAt) > TTL {
+			dropLease(s, l, now, "ttl")
+			reaped = true
+		}
+	}
+	return reaped
+}
+
+// The second failure since the last successful boot leaves the device broken
+// until bank init repairs it.
+func recordFailure(s *State, d *Device, cause, reason string, now time.Time) {
+	from := d.State
+	d.RecycleFailures++
+	d.Booting = false
+	if from == StateOn {
+		d.PowerOffConfirmed = false
+	}
+	if d.RecycleFailures >= maxRecycleFailures {
+		d.State = StateBroken
+		d.BrokenReason = cause
+		d.RecycleStartedAt = time.Time{}
+		s.journal(d, from, nil, "broken")
+		return
 	}
 	d.State = StateRecycling
 	d.RecycleStartedAt = now
-	d.LastUsedAt = now
-	return d
+	s.journal(d, from, nil, reason)
+	s.spawnRecycle(d.Name)
 }
 
-// releaseSession drops the session's leases (all platforms, or just one when
-// platform is non-empty) and returns the virtual devices to recycle.
-func releaseSession(s *State, session string, platform Platform, now time.Time) []*Device {
-	var toRecycle []*Device
-	for _, l := range append([]*Lease(nil), s.Leases...) {
-		if l.SessionID != session {
-			continue
-		}
-		if platform != "" && l.Platform != platform {
-			continue
-		}
-		if d := dropLease(s, l, now); d != nil {
-			toRecycle = append(toRecycle, d)
-		}
-	}
-	return toRecycle
-}
-
-// reapExpired drops every lease whose last renewal is older than TTL and
-// returns the virtual devices to recycle.
-func reapExpired(s *State, now time.Time) []*Device {
-	var toRecycle []*Device
-	for _, l := range append([]*Lease(nil), s.Leases...) {
-		if now.Sub(l.RenewedAt) <= TTL {
-			continue
-		}
-		if d := dropLease(s, l, now); d != nil {
-			toRecycle = append(toRecycle, d)
-		}
-	}
-	return toRecycle
-}
-
-// idleDevices returns the free booted virtual devices idle past
-// IdleShutdown — the lazy-shutdown set.
-func idleDevices(s *State, now time.Time) []*Device {
-	var idle []*Device
+func reapStuckRecycles(s *State, now time.Time) bool {
+	stuck := false
 	for _, d := range s.Devices {
-		if d.State == StateFree && now.Sub(d.LastUsedAt) > IdleShutdown {
-			idle = append(idle, d)
-		}
-	}
-	return idle
-}
-
-// stuckRecycles returns recycling devices whose recycler is presumed dead
-// (no completion past StuckRecycle), to be re-spawned.
-func stuckRecycles(s *State, now time.Time) []*Device {
-	var stuck []*Device
-	for _, d := range s.Devices {
-		if d.State == StateRecycling && now.Sub(d.RecycleStartedAt) > StuckRecycle {
-			stuck = append(stuck, d)
+		if d.State == StateRecycling && now.Sub(d.RecycleStartedAt) > recycleReapAfter {
+			recordFailure(s, d, stuckRecycleReason, "recycle-failed", now)
+			stuck = true
 		}
 	}
 	return stuck

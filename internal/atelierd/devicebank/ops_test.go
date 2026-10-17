@@ -11,123 +11,52 @@ import (
 	"github.com/valian-ca/homebrew-tools/internal/atelierd/paths"
 )
 
-// TestOnEmitRenewsAndNoOps covers OnEmit's exec-free branches:
-// no bank file, empty session, renewal, and skipped writes.
-func TestOnEmitRenewsAndNoOps(t *testing.T) {
-	tests := []struct {
-		name      string
-		setup     func(t *testing.T)
-		session   string
-		checkPost func(t *testing.T)
-	}{
-		{
-			name: "no bank file",
-			setup: func(t *testing.T) {
-				t.Setenv("HOME", t.TempDir())
-			},
-			session: "sess-a",
-			checkPost: func(t *testing.T) {
-				if Exists() {
-					t.Fatalf("OnEmit must not create state file on fresh machine")
-				}
-			},
-		},
-		{
-			name: "empty session",
-			setup: func(t *testing.T) {
-				t.Setenv("HOME", t.TempDir())
-				err := WithLock(func(s *State) error {
-					*s = *bankOfTwo()
-					commitLease(s, &Candidate{Device: s.Devices[0]}, "sess-a", "/wd", PlatformIOS, t0)
-					return nil
-				})
-				if err != nil {
-					t.Fatal(err)
-				}
-			},
-			session: "",
-			checkPost: func(t *testing.T) {
-				s, err := Load()
-				if err != nil {
-					t.Fatal(err)
-				}
-				l := s.FindLease("sess-a", PlatformIOS)
-				if l == nil {
-					t.Fatalf("lease must exist")
-				}
-				if !l.RenewedAt.Equal(t0) {
-					t.Fatalf("empty session must not renew, RenewedAt=%v want %v", l.RenewedAt, t0)
-				}
-			},
-		},
-		{
-			name: "renew on emit",
-			setup: func(t *testing.T) {
-				t.Setenv("HOME", t.TempDir())
-				err := WithLock(func(s *State) error {
-					*s = *bankOfTwo()
-					c := &Candidate{Device: s.Devices[0]}
-					l := commitLease(s, c, "sess-a", "/wd", PlatformIOS, t0)
-					l.RenewedAt = t0.Add(-10 * time.Minute)
-					return nil
-				})
-				if err != nil {
-					t.Fatal(err)
-				}
-			},
-			session: "sess-a",
-			checkPost: func(t *testing.T) {
-				s, err := Load()
-				if err != nil {
-					t.Fatal(err)
-				}
-				l := s.FindLease("sess-a", PlatformIOS)
-				if l == nil {
-					t.Fatalf("lease must exist")
-				}
-				oldTime := t0.Add(-10 * time.Minute)
-				if !l.RenewedAt.After(oldTime) {
-					t.Fatalf("OnEmit must renew, RenewedAt=%v was not after %v", l.RenewedAt, oldTime)
-				}
-			},
-		},
-		{
-			name: "non-holding session no-op",
-			setup: func(t *testing.T) {
-				t.Setenv("HOME", t.TempDir())
-				err := WithLock(func(s *State) error {
-					*s = *bankOfTwo()
-					commitLease(s, &Candidate{Device: s.Devices[0]}, "sess-a", "/wd", PlatformIOS, t0)
-					return nil
-				})
-				if err != nil {
-					t.Fatal(err)
-				}
-			},
-			session: "other-session",
-			checkPost: func(t *testing.T) {
-				s, err := Load()
-				if err != nil {
-					t.Fatal(err)
-				}
-				l := s.FindLease("sess-a", PlatformIOS)
-				if l == nil {
-					t.Fatalf("lease must exist")
-				}
-				if !l.RenewedAt.Equal(t0) {
-					t.Fatalf("other session must not modify state, RenewedAt=%v want %v", l.RenewedAt, t0)
-				}
-			},
-		},
-	}
+func seedLeased(t *testing.T, renewedAt time.Time) {
+	t.Helper()
+	s := bank(iosDevice(1), iosDevice(2))
+	commitLease(s, &Candidate{Device: s.Devices[0]}, "sess-a", "/wd", PlatformIOS, t0)
+	s.Leases[0].RenewedAt = renewedAt
+	s.Devices[0].Booting = false
+	s.transitions = nil
+	seed(t, s)
+}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			tt.setup(t)
-			OnEmit(tt.session, false)
-			tt.checkPost(t)
-		})
-	}
+func TestOnEmitRenewsAndNoOps(t *testing.T) {
+	t.Run("no bank file", func(t *testing.T) {
+		useFake(t)
+		OnEmit("sess-a", false)
+		if Exists() {
+			t.Fatal("OnEmit must not create state file on fresh machine")
+		}
+	})
+
+	t.Run("empty session", func(t *testing.T) {
+		useFake(t)
+		seedLeased(t, t0)
+		OnEmit("", false)
+		if l := load(t).FindLease("sess-a", PlatformIOS); !l.RenewedAt.Equal(t0) {
+			t.Fatalf("empty session must not renew, RenewedAt=%v", l.RenewedAt)
+		}
+	})
+
+	t.Run("renew on emit", func(t *testing.T) {
+		useFake(t)
+		old := time.Now().Add(-10 * time.Minute)
+		seedLeased(t, old)
+		OnEmit("sess-a", false)
+		if l := load(t).FindLease("sess-a", PlatformIOS); !l.RenewedAt.After(old) {
+			t.Fatalf("OnEmit must renew, RenewedAt=%v", l.RenewedAt)
+		}
+	})
+
+	t.Run("non-holding session no-op", func(t *testing.T) {
+		useFake(t)
+		seedLeased(t, t0)
+		OnEmit("other-session", false)
+		if l := load(t).FindLease("sess-a", PlatformIOS); !l.RenewedAt.Equal(t0) {
+			t.Fatalf("other session must not modify state, RenewedAt=%v", l.RenewedAt)
+		}
+	})
 }
 
 // fakeAndroidSDK builds an on-disk SDK skeleton so HasAndroidSDK() is true
@@ -147,11 +76,8 @@ func fakeAndroidSDK(t *testing.T) {
 	}
 }
 
-// TestInitBankRejectsOversizedAndroidBank verifies the size cap fires before
-// any toolchain exec — but only when the Android side would provision; a
-// missing SDK keeps the degrade-with-warning contract.
 func TestInitBankRejectsOversizedAndroidBank(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	useFake(t)
 	fakeAndroidSDK(t)
 	err := InitBank(context.Background(), 0, 17, io.Discard)
 	if err == nil {
@@ -162,26 +88,11 @@ func TestInitBankRejectsOversizedAndroidBank(t *testing.T) {
 	}
 }
 
-// TestReleaseNoChangeAndPhysicalDrop covers Release's exec-free branches:
-// a non-holding session skips the state write, a physical-lease drop
-// persists without spawning any recycle worker.
 func TestReleaseNoChangeAndPhysicalDrop(t *testing.T) {
 	t.Run("non-holding session leaves the state file untouched", func(t *testing.T) {
-		t.Setenv("HOME", t.TempDir())
-		err := WithLock(func(s *State) error {
-			*s = *bankOfTwo()
-			now := time.Now()
-			// Fresh timestamps keep reapLocked's idle pass empty — an idle
-			// device would trigger a real simctl exec inside the unit test.
-			for _, d := range s.Devices {
-				d.LastUsedAt = now
-			}
-			commitLease(s, &Candidate{Device: s.Devices[0]}, "sess-a", "/wd", PlatformIOS, now)
-			return nil
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
+		f := useFake(t)
+		seedLeased(t, time.Now())
+		f.setOn("UDID-1", true)
 		before, err := os.ReadFile(paths.Devices())
 		if err != nil {
 			t.Fatal(err)
@@ -199,62 +110,48 @@ func TestReleaseNoChangeAndPhysicalDrop(t *testing.T) {
 	})
 
 	t.Run("platform-scoped release renews the other platform's lease", func(t *testing.T) {
-		t.Setenv("HOME", t.TempDir())
+		f := useFake(t)
 		stale := time.Now().Add(-10 * time.Minute)
-		err := WithLock(func(s *State) error {
-			*s = *bankOfTwo()
-			now := time.Now()
-			for _, d := range s.Devices {
-				d.LastUsedAt = now
-			}
-			l := commitLease(s, &Candidate{Device: s.Devices[0]}, "sess-a", "/wd", PlatformIOS, now)
-			l.RenewedAt = stale
+		seedLeased(t, stale)
+		f.setOn("UDID-1", true)
+		if err := WithLock(func(s *State) error {
 			commitLease(s, &Candidate{Physical: &PhysicalDevice{ID: "serial-1", Name: "Pixel", Platform: PlatformAndroid}},
-				"sess-a", "/wd", PlatformAndroid, now)
+				"sess-a", "/wd", PlatformAndroid, time.Now())
 			return nil
-		})
-		if err != nil {
+		}); err != nil {
 			t.Fatal(err)
 		}
 		if err := Release(context.Background(), "sess-a", PlatformAndroid); err != nil {
 			t.Fatal(err)
 		}
-		s, err := Load()
-		if err != nil {
-			t.Fatal(err)
-		}
+		s := load(t)
 		if s.FindLease("sess-a", PlatformAndroid) != nil {
 			t.Fatal("android lease must be gone after platform-scoped release")
 		}
 		ios := s.FindLease("sess-a", PlatformIOS)
-		if ios == nil {
-			t.Fatal("iOS lease must survive an android-only release")
-		}
-		if !ios.RenewedAt.After(stale) {
-			t.Fatalf("the surviving lease must be renewed by the device command, RenewedAt=%v", ios.RenewedAt)
+		if ios == nil || !ios.RenewedAt.After(stale) {
+			t.Fatalf("the surviving lease must be renewed by the device command, got %+v", ios)
 		}
 	})
 
-	t.Run("physical lease drop persists", func(t *testing.T) {
-		t.Setenv("HOME", t.TempDir())
-		err := WithLock(func(s *State) error {
-			*s = State{Config: Config{IOS: 1}}
+	t.Run("physical lease drop persists without a recycle", func(t *testing.T) {
+		f := useFake(t)
+		seed(t, &State{Config: Config{IOS: 1}})
+		if err := WithLock(func(s *State) error {
 			commitLease(s, &Candidate{Physical: &PhysicalDevice{ID: "serial-1", Name: "Pixel", Platform: PlatformAndroid}},
 				"sess-a", "/wd", PlatformAndroid, time.Now())
 			return nil
-		})
-		if err != nil {
+		}); err != nil {
 			t.Fatal(err)
 		}
 		if err := Release(context.Background(), "sess-a", ""); err != nil {
 			t.Fatal(err)
 		}
-		s, err := Load()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if s.FindLease("sess-a", PlatformAndroid) != nil {
+		if load(t).FindLease("sess-a", PlatformAndroid) != nil {
 			t.Fatal("physical lease must be gone after release")
+		}
+		if len(f.spawned) != 0 || f.count("") != 0 {
+			t.Fatalf("a physical device is never recycled nor powered off, got %v %v", f.spawned, f.calls)
 		}
 	})
 }

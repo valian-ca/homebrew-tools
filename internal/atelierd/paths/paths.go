@@ -54,6 +54,8 @@ func Devices() string { return filepath.Join(MustRoot(), "devices.json") }
 
 func DevicesLock() string { return filepath.Join(MustRoot(), "devices.lock") }
 
+func DeviceTransitions() string { return filepath.Join(MustRoot(), "device-transitions.jsonl") }
+
 func Forge() string { return filepath.Join(MustRoot(), "forge") }
 
 func ForgeLock() string { return filepath.Join(Forge(), "forge.lock") }

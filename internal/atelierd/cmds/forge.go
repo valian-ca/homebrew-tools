@@ -28,6 +28,9 @@ func NewForgeCmd() *cobra.Command {
   atelierd forge outcome record --run 01J00000000000000000000000 --pass review-1 --from /tmp/review-outcome.json
   atelierd forge ref set https://linear.app/valian/issue/VAL-306#comment-1 --run 01J00000000000000000000000 --key report
   atelierd forge testplan render --run 01J00000000000000000000000 --lang en --out /tmp/testplan.md`,
+		PersistentPostRun: func(cmd *cobra.Command, _ []string) {
+			warnHolder(cmd.ErrOrStderr(), forgeSession(cmd))
+		},
 	}
 	command.AddCommand(
 		newForgeRunCmd(),
@@ -41,6 +44,21 @@ func NewForgeCmd() *cobra.Command {
 		newForgeContractCmd(),
 	)
 	return command
+}
+
+func forgeSession(cmd *cobra.Command) string {
+	if f := cmd.Flags().Lookup("session"); f != nil && f.Value.String() != "" {
+		return f.Value.String()
+	}
+	f := cmd.Flags().Lookup("run")
+	if f == nil || f.Value.String() == "" {
+		return ""
+	}
+	session, err := forge.RunSession(f.Value.String())
+	if err != nil {
+		return ""
+	}
+	return session
 }
 
 func newForgeRunCmd() *cobra.Command {

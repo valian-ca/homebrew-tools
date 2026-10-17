@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -23,19 +24,15 @@ const bootTimeout = 3 * time.Minute
 // takes minutes, a list/delete that does is wedged.
 const cmdTimeout = 30 * time.Second
 
-// boundedCtx derives the short deadline every non-boot exec runs under.
 func boundedCtx(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(ctx, cmdTimeout)
 }
 
-// HasXcode reports whether the simulator toolchain is reachable.
 func HasXcode() bool {
 	_, err := exec.LookPath("xcrun")
 	return err == nil
 }
 
-// androidSDKRoot resolves the SDK root from the conventional env vars,
-// falling back to the macOS default install location.
 func androidSDKRoot() string {
 	for _, env := range []string{"ANDROID_HOME", "ANDROID_SDK_ROOT"} {
 		if v := os.Getenv(env); v != "" {
@@ -75,7 +72,6 @@ func emulatorPath() (string, error) {
 	return sdkTool("emulator", "emulator")
 }
 
-// HasAndroidSDK reports whether the AVD toolchain is reachable.
 func HasAndroidSDK() bool {
 	if _, err := avdmanagerPath(); err != nil {
 		return false
@@ -116,11 +112,6 @@ func androidEnv() []string {
 	return env
 }
 
-// ---------------------------------------------------------------------------
-// iOS — simctl
-// ---------------------------------------------------------------------------
-
-// Sim is one simulator row from `simctl list devices --json` (all states).
 type Sim struct {
 	Name  string
 	UDID  string
@@ -152,7 +143,6 @@ func parseSimctlDevices(data []byte) ([]Sim, error) {
 	return out, nil
 }
 
-// ListSimulators lists every simulator on the machine, all states.
 func ListSimulators(ctx context.Context) ([]Sim, error) {
 	execCtx, cancel := boundedCtx(ctx)
 	defer cancel()
@@ -207,7 +197,6 @@ type simctlRuntimesOutput struct {
 	} `json:"runtimes"`
 }
 
-// pickIOSRuntime returns the identifier of the newest available iOS runtime.
 func pickIOSRuntime(data []byte) (string, error) {
 	var parsed simctlRuntimesOutput
 	if err := json.Unmarshal(data, &parsed); err != nil {
@@ -255,7 +244,6 @@ func versionLess(a, b []int) bool {
 	return false
 }
 
-// CreateSimulator clones a new bank simulator and returns its UDID.
 func CreateSimulator(ctx context.Context, name string) (string, error) {
 	execCtx, cancel := boundedCtx(ctx)
 	defer cancel()
@@ -282,7 +270,6 @@ func CreateSimulator(ctx context.Context, name string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-// DeleteSimulator removes a simulator by UDID.
 func DeleteSimulator(ctx context.Context, udid string) error {
 	execCtx, cancel := boundedCtx(ctx)
 	defer cancel()
@@ -324,11 +311,6 @@ func EraseSimulator(ctx context.Context, udid string) error {
 	return nil
 }
 
-// ---------------------------------------------------------------------------
-// Android — avdmanager / emulator / adb
-// ---------------------------------------------------------------------------
-
-// ListAVDs returns the names of every AVD on the machine.
 func ListAVDs(ctx context.Context) ([]string, error) {
 	emu, err := emulatorPath()
 	if err != nil {
@@ -430,10 +412,6 @@ func pickAndroidDevice(out []byte) string {
 	return bestID
 }
 
-// CreateAVD provisions a new bank AVD on the newest installed system image,
-// cut from the newest base Pixel profile in the catalog. Without a -d
-// profile avdmanager defaults to a 320x640 / 160dpi generic screen — the
-// "tiny emulator" forge runs used to lease.
 func CreateAVD(ctx context.Context, name string) error {
 	avdmanager, err := avdmanagerPath()
 	if err != nil {
@@ -462,7 +440,6 @@ func CreateAVD(ctx context.Context, name string) error {
 	return nil
 }
 
-// DeleteAVD removes an AVD by name.
 func DeleteAVD(ctx context.Context, name string) error {
 	avdmanager, err := avdmanagerPath()
 	if err != nil {
@@ -486,15 +463,22 @@ func StartEmulator(avd string, port int, wipeData bool) error {
 	if err != nil {
 		return err
 	}
-	args := []string{"-avd", avd, "-port", strconv.Itoa(port), "-no-snapshot", "-no-boot-anim"}
+	return spawnDetached(androidEnv(), emu, emulatorArgs(avd, port, wipeData)...)
+}
+
+// emulatorMemoryMB overrides the hw.ramSize an AVD was provisioned with, on
+// every start, so AVDs cut at 2 GB get 4 GB without a bank init: Android
+// wedges under load at 2 GB.
+const emulatorMemoryMB = 4096
+
+func emulatorArgs(avd string, port int, wipeData bool) []string {
+	args := []string{"-avd", avd, "-port", strconv.Itoa(port), "-memory", strconv.Itoa(emulatorMemoryMB), "-no-snapshot", "-no-boot-anim"}
 	if wipeData {
 		args = append(args, "-wipe-data")
 	}
-	return spawnDetached(androidEnv(), emu, args...)
+	return args
 }
 
-// WaitEmulatorReady blocks until the emulator's Android system is fully
-// booted, under bootTimeout.
 func WaitEmulatorReady(ctx context.Context, serial string) error {
 	waitCtx, cancel := context.WithTimeout(ctx, bootTimeout)
 	defer cancel()
@@ -514,8 +498,6 @@ func WaitEmulatorReady(ctx context.Context, serial string) error {
 	}
 }
 
-// EmulatorBooted reports whether the emulator serial is online and fully
-// booted — the cheap health check for an already-running AVD.
 func EmulatorBooted(ctx context.Context, serial string) bool {
 	execCtx, cancel := boundedCtx(ctx)
 	defer cancel()
@@ -529,4 +511,60 @@ func KillEmulator(ctx context.Context, serial string) {
 	execCtx, cancel := boundedCtx(ctx)
 	defer cancel()
 	_ = exec.CommandContext(execCtx, "adb", "-s", serial, "emu", "kill").Run()
+}
+
+// parseAdbDevices reads `adb devices`: every listed serial counts, offline
+// included — an offline emulator still holds its memory.
+func parseAdbDevices(out []byte) []string {
+	var serials []string
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 || fields[0] == "List" || strings.HasPrefix(fields[0], "*") {
+			continue
+		}
+		serials = append(serials, fields[0])
+	}
+	return serials
+}
+
+func AdbSerials(ctx context.Context) ([]string, error) {
+	execCtx, cancel := boundedCtx(ctx)
+	defer cancel()
+	out, err := exec.CommandContext(execCtx, "adb", "devices").Output()
+	if err != nil {
+		return nil, fmt.Errorf("adb devices: %w", err)
+	}
+	return parseAdbDevices(out), nil
+}
+
+// StopEmulator kills the emulator and waits until adb no longer lists it:
+// `adb emu kill` returns before the process is gone, and the ignition limit
+// may only drop once the memory is actually released.
+func StopEmulator(ctx context.Context, serial string) error {
+	stopCtx, cancel := boundedCtx(ctx)
+	defer cancel()
+	KillEmulator(stopCtx, serial)
+	for {
+		serials, err := AdbSerials(stopCtx)
+		if err == nil && !slices.Contains(serials, serial) {
+			return nil
+		}
+		select {
+		case <-stopCtx.Done():
+			return fmt.Errorf("emulator %s still running after adb emu kill", serial)
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+}
+
+// Title and body travel as osascript arguments so no quoting reaches
+// AppleScript.
+func Notify(title, body string) {
+	ctx, cancel := context.WithTimeout(context.Background(), cmdTimeout)
+	defer cancel()
+	_ = exec.CommandContext(ctx, "osascript",
+		"-e", "on run argv",
+		"-e", "display notification (item 2 of argv) with title (item 1 of argv)",
+		"-e", "end run",
+		title, body).Run()
 }

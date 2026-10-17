@@ -8,6 +8,26 @@ import (
 	"testing"
 )
 
+func TestStartEmulatorArgsMemory(t *testing.T) {
+	got := emulatorArgs("atelier-android-1", 5584, false)
+	want := []string{"-avd", "atelier-android-1", "-port", "5584", "-memory", "4096", "-no-snapshot", "-no-boot-anim"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("emulatorArgs() = %v, want %v", got, want)
+	}
+	if wiped := emulatorArgs("atelier-android-1", 5584, true); wiped[len(wiped)-1] != "-wipe-data" {
+		t.Fatalf("a wipe boot passes -wipe-data, got %v", wiped)
+	}
+}
+
+func TestParseAdbDevices(t *testing.T) {
+	out := "* daemon not running; starting now at tcp:5037\n* daemon started successfully\nList of devices attached\nemulator-5584\tdevice\nemulator-5582\toffline\n38021FDJH00ABC\tdevice\n\n"
+	got := parseAdbDevices([]byte(out))
+	want := []string{"emulator-5584", "emulator-5582", "38021FDJH00ABC"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("parseAdbDevices() = %v, want %v", got, want)
+	}
+}
+
 // Captured from `xcrun simctl list devices --json` (trimmed): the bank needs
 // shutdown devices too, unlike frn's booted-only probe.
 const simctlDevicesJSON = `{
