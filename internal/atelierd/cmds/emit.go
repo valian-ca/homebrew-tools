@@ -33,10 +33,15 @@ set the same key, the --data-json value wins.
 activity:minute heartbeats are derived from the transcripts by atelierd run
 and cannot be emitted by hand.
 
+session:role declares the session's role: role=vigie, or role=none to turn
+the session back into an ordinary one. Any other value, or no role at all,
+fails without writing to the outbox.
+
 Examples:
   atelierd emit hook:session-start cs-abc123 --data jsonlPath=/path/to/cs-abc123.jsonl --data cwd=/path/to/repo
   atelierd emit skill:phase-start cs-abc123 --data phase=blueprint --data ticketId=VAL-164
-  atelierd emit skill:phase-end cs-abc123 --data phase=blueprint --data outcome=completed`,
+  atelierd emit skill:phase-end cs-abc123 --data phase=blueprint --data outcome=completed
+  atelierd emit session:role cs-abc123 --data role=vigie`,
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			eventType := args[0]
@@ -62,6 +67,11 @@ Examples:
 			}
 			for key, val := range jsonPayload {
 				payload[key] = val
+			}
+			if eventType == string(events.SessionRole) {
+				if err := events.ValidateSessionRole(payload); err != nil {
+					return err
+				}
 			}
 
 			// Register the session BEFORE writing the outbox envelope so a
