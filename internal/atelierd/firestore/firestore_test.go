@@ -136,3 +136,35 @@ func TestCommitEvents_CreateOnlyPreconditionAnd409(t *testing.T) {
 		t.Fatalf("409 response: err = %v, want IsAlreadyExists", err)
 	}
 }
+
+func TestCommitEvents_SessionRoleShipsTypeAndRole(t *testing.T) {
+	for _, role := range []string{"vigie", "none"} {
+		var body map[string]any
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			_, _ = w.Write([]byte(`{}`))
+		}))
+		restore := app.SetCommitURLForTest(srv.URL)
+
+		doc := &EventDoc{ULID: "01JROLE", Type: "session:role", ClaudeSessionID: "cs-1", UID: "u", Host: "h", TS: time.Now().UTC(), Payload: map[string]any{"role": role}}
+		err := CommitEvents(context.Background(), "tok", []*EventDoc{doc})
+		restore()
+		srv.Close()
+		if err != nil {
+			t.Fatalf("role=%s: CommitEvents: %v", role, err)
+		}
+
+		writes, _ := body["writes"].([]any)
+		if len(writes) != 1 {
+			t.Fatalf("role=%s: writes = %v, want 1", role, body["writes"])
+		}
+		fields := writes[0].(map[string]any)["update"].(map[string]any)["fields"].(map[string]any)
+		if got := fields["type"].(map[string]any)["stringValue"]; got != "session:role" {
+			t.Errorf("role=%s: type = %v, want session:role", role, got)
+		}
+		payload := fields["payload"].(map[string]any)["mapValue"].(map[string]any)["fields"].(map[string]any)
+		if got := payload["role"].(map[string]any)["stringValue"]; got != role {
+			t.Errorf("role=%s: payload.role = %v, want %s", role, got, role)
+		}
+	}
+}

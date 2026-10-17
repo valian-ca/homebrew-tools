@@ -2,6 +2,7 @@ package events
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -37,6 +38,7 @@ func TestIsValid(t *testing.T) {
 		{"skill:ship-complete", true},
 		{"transcript:ai-title", true},
 		{"transcript:custom-title", true},
+		{"session:role", true},
 		{"hook:invented", false},
 		{"activity:minute", false},
 		{"ship:unknown", false},
@@ -51,9 +53,36 @@ func TestIsValid(t *testing.T) {
 	}
 }
 
-func TestAllReturnsTwentyTwoTypes(t *testing.T) {
-	if got := len(All()); got != 22 {
-		t.Errorf("All() returned %d types, want 22", got)
+func TestAllReturnsTwentyThreeTypes(t *testing.T) {
+	if got := len(All()); got != 23 {
+		t.Errorf("All() returned %d types, want 23", got)
+	}
+}
+
+func TestValidateSessionRole(t *testing.T) {
+	cases := []struct {
+		name    string
+		payload map[string]any
+		wantErr bool
+	}{
+		{"vigie", map[string]any{"role": "vigie"}, false},
+		{"none", map[string]any{"role": "none"}, false},
+		{"extra keys kept", map[string]any{"role": "vigie", "note": "x"}, false},
+		{"unknown value", map[string]any{"role": "chef"}, true},
+		{"case sensitive", map[string]any{"role": "Vigie"}, true},
+		{"empty", map[string]any{"role": ""}, true},
+		{"non-string", map[string]any{"role": float64(42)}, true},
+		{"missing", map[string]any{}, true},
+	}
+	for _, c := range cases {
+		err := ValidateSessionRole(c.payload)
+		if (err != nil) != c.wantErr {
+			t.Errorf("%s: ValidateSessionRole(%v) err = %v, wantErr %v", c.name, c.payload, err, c.wantErr)
+			continue
+		}
+		if err != nil && (!strings.Contains(err.Error(), "role=vigie") || !strings.Contains(err.Error(), "role=none")) {
+			t.Errorf("%s: error %q does not name both admitted values", c.name, err)
+		}
 	}
 }
 

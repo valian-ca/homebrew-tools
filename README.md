@@ -24,6 +24,47 @@ brew update
 brew upgrade valian-ca/tools/<name>
 ```
 
+## Session role
+
+A Claude Code session declares its role to the atelier dashboard through
+`atelierd`:
+
+```sh
+atelierd emit session:role "$CLAUDE_CODE_SESSION_ID" --data role=vigie
+```
+
+- **Admitted values** — `vigie` (a long-running session that keeps a
+  project's plan and follows its ticket sessions) and `none` (the session
+  is an ordinary one again). Values are case-sensitive; any other value, or
+  no `role` at all, makes `atelierd emit` fail without writing to the
+  outbox.
+- **The last declaration wins, for the whole session.** A session may
+  declare itself at any time and as often as it likes; the dashboard keeps
+  the latest declaration and applies it to the entire session, from its
+  first minute.
+- **A vigie never runs an atelier skill in its own session.** Blueprint,
+  plan-implement, forge and the other skills run in separate sessions. If
+  a vigie runs one anyway, the dashboard shows it like any other session:
+  the ticket card appears and the phase's time goes to the ticket.
+
+Like every event, the declaration goes through the outbox: it needs neither
+network nor authentication when it is emitted.
+
+### If you run a vigie
+
+Until a dedicated vigie plugin exists, apply the contract through your
+vigie's own instructions. Put this command in its startup instructions:
+
+```sh
+atelierd emit session:role "$CLAUDE_CODE_SESSION_ID" --data role=vigie
+```
+
+And copy these two rules into them:
+
+- Never run an atelier skill in the vigie session.
+- If the session stops being a vigie, declare it again with `role=none`:
+  `atelierd emit session:role "$CLAUDE_CODE_SESSION_ID" --data role=none`.
+
 ---
 
 ## `frn`

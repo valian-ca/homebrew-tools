@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -248,5 +249,62 @@ func TestEmitSessionEndLeavesReaderStateAlone(t *testing.T) {
 	}
 	if _, err := transcript.LoadState("cs-watched"); err != nil {
 		t.Errorf("reader state must survive session-end (offsets guard re-emission): %v", err)
+	}
+}
+
+func TestEmitSessionRoleAcceptsAdmittedValues(t *testing.T) {
+	for _, role := range []string{"vigie", "none"} {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+
+		if err := runEmit(t, "session:role", "cs-test", "--data", "role="+role); err != nil {
+			t.Fatalf("emit role=%s failed: %v", role, err)
+		}
+
+		env := readOnlyEnvelope(t, home)
+		if env.Type != "session:role" {
+			t.Errorf("role=%s: envelope type = %q, want session:role", role, env.Type)
+		}
+		if want := map[string]any{"role": role}; !reflect.DeepEqual(env.Payload, want) {
+			t.Errorf("role=%s: payload = %v, want %v", role, env.Payload, want)
+		}
+	}
+}
+
+func TestEmitSessionRoleAcceptsJSONString(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	if err := runEmit(t, "session:role", "cs-test", "--data-json", `role="vigie"`); err != nil {
+		t.Fatalf("emit failed: %v", err)
+	}
+	if got := readOnlyEnvelope(t, home).Payload["role"]; got != "vigie" {
+		t.Errorf("payload[role] = %v, want vigie", got)
+	}
+}
+
+func TestEmitSessionRoleRejectsInvalidWithoutWriting(t *testing.T) {
+	cases := map[string][]string{
+		"unknown value":  {"--data", "role=chef"},
+		"missing role":   nil,
+		"non-string":     {"--data-json", "role=42"},
+		"case sensitive": {"--data", "role=Vigie"},
+	}
+	for name, flags := range cases {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+
+		err := runEmit(t, append([]string{"session:role", "cs-test"}, flags...)...)
+		if err == nil {
+			t.Errorf("%s: emit accepted an invalid role, want error", name)
+			continue
+		}
+		if !strings.Contains(err.Error(), "vigie") || !strings.Contains(err.Error(), "none") {
+			t.Errorf("%s: error %q does not name vigie and none", name, err)
+		}
+		entries, _ := os.ReadDir(filepath.Join(home, ".atelier", "outbox"))
+		if len(entries) != 0 {
+			t.Errorf("%s: outbox holds %d files after rejected emit, want 0", name, len(entries))
+		}
 	}
 }
