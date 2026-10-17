@@ -1,6 +1,7 @@
 package devicebank
 
 import (
+	"fmt"
 	"time"
 )
 
@@ -22,6 +23,8 @@ type Candidate struct {
 const recycleReapAfter = RecycleBound + 30*time.Second
 
 const maxRecycleFailures = 2
+
+var stuckRecycleReason = fmt.Sprintf("recycle worker did not finish within %s", RecycleBound)
 
 // A virtual device is on from this moment, so the ignition limit counts it
 // before the unlocked boot that follows.
@@ -145,7 +148,7 @@ func reapStuckRecycles(s *State, now time.Time) bool {
 	stuck := false
 	for _, d := range s.Devices {
 		if d.State == StateRecycling && now.Sub(d.RecycleStartedAt) > recycleReapAfter {
-			recordFailure(s, d, "recycle worker did not finish within 5m", "recycle-failed", now)
+			recordFailure(s, d, stuckRecycleReason, "recycle-failed", now)
 			stuck = true
 		}
 	}

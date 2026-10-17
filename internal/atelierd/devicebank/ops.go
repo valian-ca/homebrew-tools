@@ -15,6 +15,7 @@ import (
 var (
 	ErrExhausted      = errors.New("no device of the platform could be powered on within the wait: every device is leased, recycling or broken, or the ignition limit is reached")
 	ErrNotInitialized = errors.New("device bank not initialized — run `atelierd device bank init` first")
+	ErrLeaseLost      = errors.New("the lease was released while its device was booting")
 )
 
 func reapLocked(ctx context.Context, s *State, now time.Time) bool {
@@ -204,6 +205,7 @@ func Acquire(ctx context.Context, session, workdir string, platform Platform, wa
 	physical := drv.physical(ctx, platform)
 	for {
 		if err := ctx.Err(); err != nil {
+			leaveQueue(session, platform)
 			return "", err
 		}
 		var g grant
@@ -239,6 +241,7 @@ func Acquire(ctx context.Context, session, workdir string, platform Platform, wa
 			if remaining := deadline.Sub(clock()); remaining > 0 {
 				select {
 				case <-ctx.Done():
+					leaveQueue(session, platform)
 					return "", ctx.Err()
 				case <-time.After(min(queuePoll, remaining)):
 				}
@@ -258,33 +261,50 @@ func Acquire(ctx context.Context, session, workdir string, platform Platform, wa
 		if err := ctx.Err(); err != nil {
 			return "", err
 		}
-		if err := settleBoot(session, platform, g.boot.Name, bootErr); err != nil {
+		mine, err := settleBoot(session, platform, g.boot.Name, g.boot.PoweredOnAt, bootErr)
+		if err != nil {
 			return "", err
+		}
+		if !mine {
+			return "", ErrLeaseLost
 		}
 		if bootErr == nil {
 			return g.lease.DeviceID, nil
 		}
-		fmt.Fprintf(progress, "%s failed to boot (%v), recycling it and trying the next device\n", g.boot.Name, bootErr)
+		fmt.Fprintf(progress, "%s failed to boot (%v), recycling it; another device is tried as soon as the limit allows\n", g.boot.Name, bootErr)
 	}
 }
 
-// settleBoot records a boot outcome by device identity: the lease can vanish
-// in the unlocked boot window (racing session-end).
-func settleBoot(session string, platform Platform, name string, bootErr error) error {
-	return WithLock(func(s *State) error {
+// settleBoot records a boot outcome only for the power-on it belongs to: in
+// the unlocked boot window the lease can be released and the device leased
+// again by another session, whose boot this outcome must not touch.
+func settleBoot(session string, platform Platform, name string, poweredOnAt time.Time, bootErr error) (mine bool, err error) {
+	err = WithLock(func(s *State) error {
 		d := s.FindDevice(name)
-		if d == nil || d.State != StateOn {
+		if d == nil || d.State != StateOn || !d.PoweredOnAt.Equal(poweredOnAt) {
 			return errNoChange
 		}
+		l := s.FindLease(session, platform)
+		mine = l != nil && l.DeviceName == name
 		if bootErr == nil {
 			d.Booting = false
 			d.RecycleFailures = 0
 			return nil
 		}
-		if l := s.FindLease(session, platform); l != nil && l.DeviceName == name {
+		if mine {
 			removeLease(s, l)
 		}
 		recordFailure(s, d, firstLine(bootErr), "boot-failed", clock())
+		return nil
+	})
+	return mine, err
+}
+
+func leaveQueue(session string, platform Platform) {
+	_ = WithLock(func(s *State) error {
+		if !removeWaiters(s, session, platform) {
+			return errNoChange
+		}
 		return nil
 	})
 }
@@ -367,8 +387,6 @@ func OnEmit(session string, sessionEnd bool) {
 }
 
 func RunRecycle(ctx context.Context, name string) error {
-	ctx, cancel := context.WithTimeout(ctx, RecycleBound)
-	defer cancel()
 	s, err := Load()
 	if err != nil {
 		return err
@@ -380,10 +398,52 @@ func RunRecycle(ctx context.Context, name string) error {
 	if d.State != StateRecycling {
 		return nil
 	}
-	recycleErr := recycle(ctx, d)
+	return runRecycle(ctx, name, d.RecycleStartedAt)
+}
+
+// runRecycle acts only while the device is still in the recycle it was
+// spawned for: a re-spawned worker restamps RecycleStartedAt, so a stale
+// worker stops at its next step instead of touching a device leased since.
+// The power-off runs under the lock so no lease can slip in between the
+// check and the kill.
+func runRecycle(ctx context.Context, name string, startedAt time.Time) error {
+	ctx, cancel := context.WithTimeout(ctx, RecycleBound)
+	defer cancel()
+	current := func(cur *Device) bool {
+		return cur != nil && cur.State == StateRecycling && cur.RecycleStartedAt.Equal(startedAt)
+	}
+	var dev Device
+	var stale bool
+	var recycleErr error
+	err := WithLock(func(s *State) error {
+		cur := s.FindDevice(name)
+		if !current(cur) {
+			stale = true
+			return errNoChange
+		}
+		dev = *cur
+		if cur.PowerOffConfirmed {
+			return errNoChange
+		}
+		if recycleErr = powerOff(ctx, cur); recycleErr != nil {
+			return errNoChange
+		}
+		cur.PowerOffConfirmed = true
+		s.journal(cur, StateRecycling, nil, "recycle-off")
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if stale {
+		return nil
+	}
+	if recycleErr == nil && dev.Platform == PlatformIOS {
+		recycleErr = drv.eraseIOS(ctx, dev.UDID)
+	}
 	lockErr := WithLock(func(s *State) error {
 		cur := s.FindDevice(name)
-		if cur == nil || cur.State != StateRecycling {
+		if !current(cur) {
 			return errNoChange
 		}
 		now := clock()
@@ -403,28 +463,6 @@ func RunRecycle(ctx context.Context, name string) error {
 		return lockErr
 	}
 	return recycleErr
-}
-
-func recycle(ctx context.Context, d *Device) error {
-	if err := powerOff(ctx, d); err != nil {
-		return err
-	}
-	err := WithLock(func(s *State) error {
-		cur := s.FindDevice(d.Name)
-		if cur == nil || cur.State != StateRecycling || cur.PowerOffConfirmed {
-			return errNoChange
-		}
-		cur.PowerOffConfirmed = true
-		s.journal(cur, StateRecycling, nil, "recycle-off")
-		return nil
-	})
-	if err != nil {
-		return err
-	}
-	if d.Platform == PlatformIOS {
-		return drv.eraseIOS(ctx, d.UDID)
-	}
-	return nil
 }
 
 func MaxOn() (int, error) {
@@ -558,7 +596,7 @@ func resizeIOS(ctx context.Context, s *State, n int, now time.Time, out io.Write
 		fmt.Fprintf(out, "deleted excess simulator %s\n", name)
 	}
 	for _, name := range plan.Keep {
-		fmt.Fprintf(out, "warning: %s is leased — kept for now, will be removed on a later bank init\n", name)
+		fmt.Fprintf(out, "warning: %s is in use (leased or recycling) — kept for now, will be removed on a later bank init\n", name)
 	}
 	return nil
 }
@@ -611,7 +649,7 @@ func resizeAndroid(ctx context.Context, s *State, n int, now time.Time, out io.W
 			continue
 		}
 		if s.leaseForDevice(d.Name) != nil || d.State == StateRecycling {
-			fmt.Fprintf(out, "warning: %s is leased — kept on its current profile, will be recreated on a later bank init\n", d.Name)
+			fmt.Fprintf(out, "warning: %s is in use (leased or recycling) — kept on its current profile, will be recreated on a later bank init\n", d.Name)
 			continue
 		}
 		recreate = append(recreate, d)
@@ -651,7 +689,7 @@ func resizeAndroid(ctx context.Context, s *State, n int, now time.Time, out io.W
 		fmt.Fprintf(out, "deleted excess AVD %s\n", name)
 	}
 	for _, name := range plan.Keep {
-		fmt.Fprintf(out, "warning: %s is leased — kept for now, will be removed on a later bank init\n", name)
+		fmt.Fprintf(out, "warning: %s is in use (leased or recycling) — kept for now, will be removed on a later bank init\n", name)
 	}
 	return nil
 }

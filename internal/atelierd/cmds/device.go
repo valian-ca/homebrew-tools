@@ -90,10 +90,14 @@ func newBankCmd() *cobra.Command {
 and N AVDs named atelier-android-1..N (default 2 + 2).
 
 Idempotent and two-way sizing: re-running tops the bank up; shrinking deletes
-the free excess clones, while a leased clone is never touched (warned,
-removed on a later pass). A broken device is repaired and leasable again.
-A machine missing one toolchain provisions the other side, warns, and
-exits 0. The ignition limit (bank limit) is kept.`,
+the idle excess clones, while a leased or recycling clone is kept (warned,
+removed on a later pass). Every unleased AVD in range is recreated on the
+current device profile; at most 16 AVDs (adb discovers console ports
+5554-5584 only). A broken device is repaired and leasable again. A machine
+missing one toolchain provisions the other side, warns, and exits 0. The
+ignition limit (bank limit) is kept.`,
+		Example: `  atelierd device bank init
+  atelierd device bank init --ios 1 --android 2`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return devicebank.InitBank(cmd.Context(), nIOS, nAndroid, cmd.ErrOrStderr())
@@ -137,10 +141,13 @@ func newLeaseCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "lease --platform ios|android --session <id> [--wait <duration>]",
 		Short: "Lease a device of the platform for the session",
-		Long: `Select a device of the platform, power it on (a device that fails to boot
-goes to recycling and the next one is tried), record the lease, and print
+		Long: `Select a device of the platform, power it on, record the lease, and print
 the targetable identifier (simulator UDID or Android serial) alone on
-stdout.
+stdout. A device that fails to boot goes to recycling and keeps counting
+toward the ignition limit until its power-off is confirmed: another device
+is tried as soon as the limit allows, within --wait. A connected physical
+device is leased only when the platform has no virtual device left to
+power on.
 
 Idempotent per (session, platform): a session that already holds a lease
 gets the same device back. A suspended lease (see pause), or one whose
@@ -150,7 +157,8 @@ Powering a virtual device on obeys the ignition limit (bank limit) and a
 first-come queue: when no device can be served, the session waits its turn
 up to --wait (default 0: queue once and exit), then exits 10. The queue
 keeps its place across calls and forgets it 2 min after the last call's
-deadline. After 10 min of waiting, one macOS notification is posted.
+deadline, or at once when the wait is interrupted (Ctrl-C, SIGTERM). After
+10 min of waiting, one macOS notification is posted.
 
 Exit codes: 0 leased, 10 not served within the wait (bank exhausted or
 ignition limit reached), 11 bank not initialized.`,
@@ -209,9 +217,10 @@ func newReleaseCmd() *cobra.Command {
 		Short: "Release the session's leases (all platforms by default)",
 		Long: `Release the session's leases and queue entries, and return immediately: a
 virtual device is powered off and erased, without being booted, by a
-detached worker, and goes back to off within 5 min (a recycle that fails
-twice leaves it broken until bank init); a physical device is leasable
-again on the spot, no erase, no power-off.`,
+detached worker, and goes back to off within 5 min (an AVD is wiped by
+-wipe-data on its next boot; a recycle that fails twice leaves the device
+broken until bank init); a physical device is leasable again on the spot,
+no erase, no power-off.`,
 		Example: `  atelierd device release --session abc123
   atelierd device release --session abc123 --platform android`,
 		Args: cobra.NoArgs,
@@ -238,10 +247,10 @@ func newDeviceStatusCmd() *cobra.Command {
 		Use:   "status",
 		Short: "List every bank device with its state and lease, and the queue",
 		Long: `List every bank device and connected physical device. STATE is off, on,
-recycling or broken; LEASE starts with the holding session's id. The
-recorded state is checked against the simulators and emulators actually
-running first. When sessions are waiting, a QUEUE block lists them in
-order.`,
+recycling or broken; LEASE starts with the holding session's id, and a
+broken device shows its reason there. The recorded state is checked
+against the simulators and emulators actually running first. When
+sessions are waiting, a QUEUE block lists them in order.`,
 		Example: `  atelierd device status
   atelierd device status | grep abc123`,
 		Args: cobra.NoArgs,
@@ -314,7 +323,7 @@ func clockTime(t time.Time) string {
 func newRecycleCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:    "recycle <name>",
-		Short:  "Recycle worker (spawned detached by release; not for direct use)",
+		Short:  "Recycle worker (spawned detached when a lease ends or a device fails; not for direct use)",
 		Hidden: true,
 		Args:   cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {

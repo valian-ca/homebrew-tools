@@ -103,7 +103,7 @@ func TestStuckWorkerCountsAsFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	got = load(t).FindDevice("atelier-ios-1")
-	if got.State != StateBroken || got.BrokenReason != "recycle worker did not finish within 5m" {
+	if got.State != StateBroken || got.BrokenReason != stuckRecycleReason {
 		t.Fatalf("a second silent worker breaks the device, got %+v", got)
 	}
 
@@ -113,6 +113,38 @@ func TestStuckWorkerCountsAsFailure(t *testing.T) {
 	}
 	if len(f.spawned) != 1 {
 		t.Fatalf("a broken device is never re-spawned, got %v", f.spawned)
+	}
+}
+
+func TestStaleRecycleWorkerLeavesTheDeviceAlone(t *testing.T) {
+	f := useFake(t)
+	f.runSpawns = false
+	restamped := iosDevice(1)
+	restamped.State = StateRecycling
+	restamped.RecycleStartedAt = t0.Add(6 * time.Minute)
+	leased := iosDevice(2)
+	seed(t, bank(restamped, leased))
+	if err := SetMaxOn(2); err != nil {
+		t.Fatal(err)
+	}
+	lease(t, "sess-b", PlatformIOS)
+	f.resetCalls()
+
+	if err := runRecycle(context.Background(), "atelier-ios-1", t0); err != nil {
+		t.Fatal(err)
+	}
+	if err := runRecycle(context.Background(), "atelier-ios-2", t0); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.calls) != 0 {
+		t.Fatalf("a worker whose recycle was restamped or whose device was leased since does nothing, got %v", f.calls)
+	}
+	s := load(t)
+	if d := s.FindDevice("atelier-ios-1"); d.State != StateRecycling || d.PowerOffConfirmed {
+		t.Fatalf("the current recycle is left to its own worker, got %+v", d)
+	}
+	if d := s.FindDevice("atelier-ios-2"); d.State != StateOn || !f.isOn("UDID-2") {
+		t.Fatalf("the re-leased device stays on, got %+v", d)
 	}
 }
 

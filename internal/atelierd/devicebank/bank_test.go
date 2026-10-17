@@ -35,7 +35,7 @@ func TestPlanResize(t *testing.T) {
 			want: ResizePlan{Create: []string{"atelier-ios-2", "atelier-ios-3"}},
 		},
 		{
-			name: "shrink deletes free excess, keeps leased with warning",
+			name: "shrink deletes idle excess, keeps leased with warning",
 			devices: []*Device{
 				{Name: "atelier-ios-1", Platform: PlatformIOS, State: StateOff},
 				{Name: "atelier-ios-2", Platform: PlatformIOS, State: StateOn},

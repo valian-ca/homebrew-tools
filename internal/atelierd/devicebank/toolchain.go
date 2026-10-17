@@ -541,9 +541,9 @@ func AdbSerials(ctx context.Context) ([]string, error) {
 // `adb emu kill` returns before the process is gone, and the ignition limit
 // may only drop once the memory is actually released.
 func StopEmulator(ctx context.Context, serial string) error {
-	KillEmulator(ctx, serial)
 	stopCtx, cancel := boundedCtx(ctx)
 	defer cancel()
+	KillEmulator(stopCtx, serial)
 	for {
 		serials, err := AdbSerials(stopCtx)
 		if err == nil && !slices.Contains(serials, serial) {

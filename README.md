@@ -60,6 +60,14 @@ atelierd device release --session <id> [--platform ios|android]
 atelierd device status                              # bank + physical devices, states, leases, queue
 ```
 
+- **`bank init`** is idempotent and sizes both ways: re-running tops up;
+  shrinking deletes the idle excess clones and keeps a leased or recycling
+  one (warned, removed on a later pass). Every unleased AVD in range is
+  recreated on the current device profile, a `broken` device is repaired
+  and leasable again, and the `bank limit` setting is kept. The Android
+  side holds at most 16 AVDs (adb discovers console ports 5554–5584 only).
+  A machine missing one toolchain provisions the other side, warns, and
+  exits 0.
 - **States** — a virtual device is `off`, `on`, `recycling` or `broken`.
   The LEASE column of `status` always starts with the holding session's id
   (`session S, on since 15:04, renewed 12s ago` · `session S, suspended
@@ -72,10 +80,13 @@ atelierd device status                              # bank + physical devices, s
   on within the limit and in arrival order: when it cannot, the session
   waits in the queue up to `--wait` (default `0`) and exits `10`. The queue
   keeps a session's place across calls and forgets it 2 min after its last
-  call's deadline; `status` shows it, the holder of a powered-on device gets
-  a warning on stderr from its `atelierd device` and `atelierd forge`
-  commands, and after 10 min of waiting one macOS notification is posted.
-  A device that fails to boot goes to recycling and the next one is tried.
+  call's deadline, or at once when the wait is interrupted (Ctrl-C,
+  SIGTERM); `status` shows it, the holder of a powered-on device gets a
+  warning on stderr from its `atelierd device` and `atelierd forge` commands
+  that succeed, and after 10 min of waiting one macOS notification is
+  posted. A device that fails to boot goes to recycling; it keeps counting
+  toward the limit until its power-off is confirmed, so another device is
+  tried as soon as the limit allows, within `--wait`.
   Exit codes: `0` leased, `10` not served within the wait (bank exhausted or
   limit reached), `11` bank not initialized. A connected physical device is
   leased only when the platform has no virtual device left to power on.
@@ -94,10 +105,12 @@ atelierd device status                              # bank + physical devices, s
 - **Lease lifecycle** — every `atelierd emit` and every `device` command
   carrying a session ID renews that session's leases; `hook:session-end`
   releases them; a lease unrenewed for ~1 h, suspended or not, is reaped.
-  Every `device` command also checks the recorded state against the
-  simulators and emulators actually running: a device stopped by hand is
-  `off` (a leased one restarts at the session's next lease), and a virtual
-  device on without a lease is powered off. Nothing runs in the background.
+  Every `device` command except `bank limit` also checks the recorded state
+  against the simulators and emulators actually running: a device stopped
+  by hand is `off` (a leased one restarts at the session's next lease), and
+  a virtual device on without a lease is powered off. There is no resident
+  daemon: these checks run when a command runs, and the only background
+  process is the detached recycle worker a release spawns, bounded to 5 min.
 - **`frn` integration** — the picker suffixes bank devices with their lease
   state (e.g. `atelier-ios-1 — bank, on, session abc123 · def456 waiting 12
   min`) so a human avoids stepping on a running forge. frn never takes a
@@ -106,7 +119,7 @@ atelierd device status                              # bank + physical devices, s
 State lives in `~/.atelier/devices.json`, guarded by a `flock` so concurrent
 leases from parallel sessions never double-book a device. Every state
 change is appended to `~/.atelier/device-transitions.jsonl`, one JSON line
-with `at`, `device`, `from`, `to`, `session`, `reason`, and the device's
+with `at`, `device`, `platform`, `from`, `to`, `session`, `reason`, and the device's
 `on` / `leased` flags after the change. This lists every stretch a virtual
 device spent on without a lease for more than 2 min:
 

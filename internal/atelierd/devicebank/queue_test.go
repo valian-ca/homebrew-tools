@@ -191,8 +191,35 @@ func TestAcquireWaitHonoursCancel(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) || time.Since(start) > 2*time.Second {
 		t.Fatalf("a cancelled wait returns promptly with the context error, got %v after %s", err, time.Since(start))
 	}
-	if findWaiter(load(t), "sess-2", PlatformIOS) == nil {
-		t.Fatal("an interrupted waiter keeps its place until it expires")
+	if findWaiter(load(t), "sess-2", PlatformIOS) != nil {
+		t.Fatal("a cancelled wait leaves the queue at once, so it blocks nobody behind it")
+	}
+}
+
+func TestBootOutcomeOfALostLeaseTouchesNoLaterBoot(t *testing.T) {
+	for _, bootFails := range []bool{false, true} {
+		f := useFake(t)
+		seed(t, bank(iosDevice(1)))
+		f.onBoot = func() {
+			f.onBoot = nil
+			OnEmit("sess-a", true)
+			lease(t, "sess-b", PlatformIOS)
+			if bootFails {
+				f.fail["bootIOS"] = 1
+			}
+		}
+
+		if _, err := Acquire(context.Background(), "sess-a", "/wd", PlatformIOS, 0, discard{}); !errors.Is(err, ErrLeaseLost) {
+			t.Fatalf("bootFails=%v: a lease released mid-boot hands back no device id, got %v", bootFails, err)
+		}
+		s := load(t)
+		d := s.FindDevice("atelier-ios-1")
+		if d.State != StateOn || d.RecycleFailures != 0 || d.Booting {
+			t.Fatalf("bootFails=%v: the late outcome must not touch sess-b's boot, got %+v", bootFails, d)
+		}
+		if l := s.FindLease("sess-b", PlatformIOS); l == nil {
+			t.Fatalf("bootFails=%v: sess-b keeps its lease", bootFails)
+		}
 	}
 }
 
