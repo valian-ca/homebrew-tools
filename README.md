@@ -140,8 +140,10 @@ atelierd device status                              # bank + physical devices, s
   limit reached, or no physical device available under `--type physical`),
   `11` bank not initialized.
 - **Physical devices** — `--type` says which devices a lease admits:
-  `virtual` (default), `any`, or `physical`. Without `--type`, a physical
-  device is never returned. Under `any` the lease returns a physical device
+  `virtual` (default), `any`, or `physical`. Without `--type`, a new
+  physical device is never leased; a physical lease the session already
+  holds is returned and resumed whatever `--type` says. Under `any` the
+  lease returns a physical device
   plugged by cable and free first, then a virtual device through the
   queue; under `physical` it never queues and exits `10`. A physical device
   is available when it is plugged by USB with debugging allowed on this

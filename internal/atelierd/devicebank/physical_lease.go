@@ -9,8 +9,8 @@ import (
 	"time"
 )
 
-// Requirement is the device type a lease admits. The zero value is virtual:
-// a caller that says nothing never gets a physical device.
+// The zero Requirement is virtual: a caller that says nothing never takes a
+// new physical device, so an old plugin can never touch a plugged phone.
 type Requirement string
 
 const (
@@ -57,29 +57,50 @@ func (pp physicalProbe) wired(l *Lease) *PhysicalDevice {
 	return nil
 }
 
+// restoreReapAfter gives a live worker, bounded like a recycle, the time to
+// record its own outcome before reap spawns another one.
 const (
-	restoreReapAfter  = 2 * time.Minute
+	restoreReapAfter  = RecycleBound + 30*time.Second
 	restoreRetryAfter = time.Minute
 )
 
-// holdPhysical decides an existing physical lease: kept while its device is
-// still on the cable. A suspended Android lease resumes with its screen kept
-// on again, outside the lock — only when the value to restore was recorded.
-func holdPhysical(l *Lease, probe physicalProbe) (kept, resumeStayOn bool) {
-	if !probe.ok {
-		return true, false
+type holdDecision int
+
+const (
+	holdKeep holdDecision = iota
+	holdDrop
+	holdRetake
+	holdWait
+)
+
+// holdPhysical decides an existing physical lease. Only a probe that worked
+// and no longer sees the device on the cable ends it. A lease whose
+// preparation never finished (its preparer died, or a parallel call is still
+// at it) is prepared again before it is handed back: the conflict check has
+// not run on it.
+func holdPhysical(l *Lease, probe physicalProbe) (decision holdDecision, dev *PhysicalDevice, resumeStayOn bool) {
+	if probe.ok {
+		if dev = probe.wired(l); dev == nil {
+			return holdDrop, nil, false
+		}
 	}
-	if probe.wired(l) == nil {
-		return false, false
+	if l.AppID != "" && l.Snapshot == nil {
+		if dev == nil {
+			return holdWait, nil, false
+		}
+		l.SuspendedAt = time.Time{}
+		return holdRetake, dev, false
 	}
 	if !l.Suspended() {
-		return true, false
+		return holdKeep, nil, false
 	}
 	l.SuspendedAt = time.Time{}
-	return true, l.Snapshot != nil && l.Snapshot.StayOnBefore != nil
+	// A lease recorded without its pre-lease value must never change the
+	// setting: nothing would put it back.
+	return holdKeep, nil, l.Snapshot != nil && l.Snapshot.StayOnBefore != nil
 }
 
-func pickPhysical(s *State, platform Platform, devices []PhysicalDevice, excluded map[string]string, notes *[]string) *PhysicalDevice {
+func pickPhysical(s *State, platform Platform, devices []PhysicalDevice, excluded map[string]bool, notes *[]string) *PhysicalDevice {
 	var candidates []PhysicalDevice
 	for _, p := range devices {
 		if p.Platform == platform {
@@ -89,7 +110,7 @@ func pickPhysical(s *State, platform Platform, devices []PhysicalDevice, exclude
 	sort.Slice(candidates, func(i, j int) bool { return candidates[i].ID < candidates[j].ID })
 	for i := range candidates {
 		p := &candidates[i]
-		if excluded[p.Serial] != "" {
+		if excluded[p.Serial] {
 			continue
 		}
 		var why string
@@ -112,19 +133,15 @@ func skipNote(p *PhysicalDevice, why string) string {
 	return fmt.Sprintf("note: %s (%s) skipped: %s", p.Name, p.Serial, why)
 }
 
-// takePhysical prepares a device just leased, outside the lock. The run's
-// app already installed as a Store build makes the device unavailable before
-// anything is touched: flutter run would uninstall it, data included. The
-// snapshot is recorded before the screen setting changes, so a crash never
-// leaves a change the restore does not know about. A non-empty skip note
-// means the lease was given up and the caller chooses again.
-func takePhysical(ctx context.Context, req LeaseRequest, taken *Lease, p PhysicalDevice) (skip string, err error) {
+// takePhysical prepares a leased device outside the lock. A non-empty skip
+// note means the lease was given up and the caller chooses again.
+func takePhysical(ctx context.Context, taken *Lease, p PhysicalDevice) (skip string, err error) {
 	mine := func(cur *Lease) bool {
 		return cur != nil && cur.Physical && cur.DeviceID == p.ID && cur.AcquiredAt.Equal(taken.AcquiredAt)
 	}
 	giveUp := func(why string, touched bool) (string, error) {
 		err := WithLock(func(s *State) error {
-			cur := s.FindLease(req.Session, req.Platform)
+			cur := s.FindLease(taken.SessionID, taken.Platform)
 			if !mine(cur) {
 				return errNoChange
 			}
@@ -138,15 +155,18 @@ func takePhysical(ctx context.Context, req LeaseRequest, taken *Lease, p Physica
 		return skipNote(&p, why), err
 	}
 
-	app, err := drv.appInfo(ctx, p, req.AppID)
+	appID := taken.AppID
+	app, err := drv.appInfo(ctx, p, appID)
 	if err == nil && app.Installed && !app.Developer && p.Platform == PlatformAndroid {
-		app.Name, err = drv.androidLabel(ctx, p.ID, req.AppID)
+		app.Name, err = drv.androidLabel(ctx, p.ID, appID)
 	}
 	if err != nil {
-		return giveUp(fmt.Sprintf("could not read %s on the device (%s)", req.AppID, firstLine(err)), false)
+		return giveUp(fmt.Sprintf("could not read %s on the device (%s)", appID, firstLine(err)), false)
 	}
+	// flutter run would uninstall a Store build to install its own, data
+	// included: the device is given up before anything on it is touched.
 	if !app.overwritable() {
-		return giveUp(req.AppID+" already installed and is neither a developer build nor named [D] …", false)
+		return giveUp(appID+" already installed and is neither a developer build nor named [D] …", false)
 	}
 
 	snap := &PhysicalSnapshot{TakenAt: clock()}
@@ -161,20 +181,31 @@ func takePhysical(ctx context.Context, req LeaseRequest, taken *Lease, p Physica
 		snap.StayOnBefore = &before
 	}
 
-	lost := false
+	// Recorded before the setting changes, so a crash never leaves a change
+	// the restore does not know about. A parallel preparer that recorded
+	// first keeps its snapshot: this one would record its 3 as the value
+	// from before the lease.
+	lost, prepared := false, false
 	if err := WithLock(func(s *State) error {
-		cur := s.FindLease(req.Session, req.Platform)
-		if !mine(cur) {
+		cur := s.FindLease(taken.SessionID, taken.Platform)
+		switch {
+		case !mine(cur):
 			lost = true
-			return errNoChange
+		case cur.Snapshot != nil:
+			prepared = true
+		default:
+			cur.Snapshot = snap
+			return nil
 		}
-		cur.Snapshot = snap
-		return nil
+		return errNoChange
 	}); err != nil {
 		return "", err
 	}
 	if lost {
 		return "", ErrLeaseLost
+	}
+	if prepared {
+		return "", nil
 	}
 
 	if p.Platform == PlatformAndroid {
@@ -195,37 +226,19 @@ func pausePhysical(ctx context.Context, l *Lease) error {
 	return nil
 }
 
-// reapRestores re-spawns the worker of each due restore whose device is
-// reachable again, by any transport: adb wifi is enough to restore. A device
-// still out of reach is probed again at most once per retry period.
-func reapRestores(ctx context.Context, s *State, now time.Time) bool {
-	var due []*PendingRestore
-	platforms := map[Platform]bool{}
+// reapRestores re-spawns the worker of each due restore. The worker probes
+// for the device outside the lock: a probe here would hold the devices lock,
+// which every emit takes, for up to its whole timeout.
+func reapRestores(s *State, now time.Time) bool {
+	due := false
 	for _, r := range s.Restores {
 		if now.Sub(r.StartedAt) > restoreReapAfter && now.Sub(r.LastAttemptAt) > restoreRetryAfter {
-			due = append(due, r)
-			platforms[r.Platform] = true
+			r.StartedAt = now
+			s.spawnRestore(r.DeviceID)
+			due = true
 		}
 	}
-	if len(due) == 0 {
-		return false
-	}
-	probed := map[Platform]physicalProbe{}
-	for p := range platforms {
-		devices, err := drv.physical(ctx, p)
-		probed[p] = physicalProbe{ok: err == nil, devices: devices}
-	}
-	for _, r := range due {
-		pp := probed[r.Platform]
-		if !pp.ok || !slices.ContainsFunc(pp.devices, func(p PhysicalDevice) bool { return p.Serial == r.Serial || p.ID == r.DeviceID }) {
-			r.LastAttemptAt = now
-			r.LastError = r.Name + " is not connected"
-			continue
-		}
-		r.StartedAt = now
-		s.spawnRestore(r.DeviceID)
-	}
-	return true
+	return due
 }
 
 func RunRestore(ctx context.Context, deviceID string) error {
@@ -273,11 +286,9 @@ func runRestore(ctx context.Context, deviceID string, startedAt time.Time) error
 	return restoreErr
 }
 
-// restorePhysical puts back the screen setting, removes the run's adb
-// reverses, and uninstalls only developer builds that were not there before
-// the lease: a Store app the user installed meanwhile stays. The screen
-// setting is written back whenever it was recorded, even if the lease never
-// changed it, so a crash between the change and its record cannot leak it.
+// restorePhysical runs on any transport: adb wifi is enough to restore. Only
+// developer builds absent from the snapshot are uninstalled: a Store app the
+// user installed during the lease stays.
 func restorePhysical(ctx context.Context, r PendingRestore) error {
 	devices, err := drv.physical(ctx, r.Platform)
 	if err != nil {
@@ -290,6 +301,8 @@ func restorePhysical(ctx context.Context, r PendingRestore) error {
 	dev := devices[i]
 	var errs []error
 	if r.Platform == PlatformAndroid {
+		// Written back whenever recorded: after a crash the bank cannot know
+		// whether the change happened.
 		if r.Snapshot != nil && r.Snapshot.StayOnBefore != nil {
 			errs = append(errs, drv.setStayOn(ctx, dev.ID, *r.Snapshot.StayOnBefore))
 		}

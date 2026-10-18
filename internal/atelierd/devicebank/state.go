@@ -56,8 +56,6 @@ type Config struct {
 	MaxOn   int `json:"maxOn,omitempty"`
 }
 
-// Device is one provisioned virtual bank device. Physical devices are never
-// stored here — they are probed live and tracked only through leases.
 type Device struct {
 	Name              string      `json:"name"`
 	Platform          Platform    `json:"platform"`
@@ -121,16 +119,13 @@ func (l *Lease) serial() string {
 	return l.DeviceID
 }
 
-// PhysicalSnapshot is what a physical device held before its lease, recorded
-// before the bank changes anything on it. StayOnBefore is nil on iOS.
 type PhysicalSnapshot struct {
 	TakenAt      time.Time `json:"takenAt"`
 	StayOnBefore *string   `json:"stayOnBefore,omitempty"`
 	AppsBefore   []string  `json:"appsBefore"`
 }
 
-// PendingRestore is a returned physical device the bank still owes its
-// pre-lease state. The device is not leasable until the restore succeeds.
+// PendingRestore keeps its device out of every lease until it succeeds.
 type PendingRestore struct {
 	DeviceID      string            `json:"deviceId"`
 	Serial        string            `json:"serial"`
@@ -163,7 +158,9 @@ type State struct {
 	Restores []*PendingRestore `json:"restores,omitempty"`
 
 	transitions []Transition
-	spawns      []spawnJob
+	// Spawned only once the state is saved and the lock released: a worker's
+	// first act is to take the same lock.
+	spawns []spawnJob
 }
 
 type spawnJob struct {
@@ -264,8 +261,6 @@ func (s *State) poweredOnCount() int {
 	return n
 }
 
-// spawnRecycle defers the detached worker until the state is saved and the
-// lock released: the worker's first act is to take the same lock.
 func (s *State) spawnRecycle(name string) {
 	s.spawns = append(s.spawns, spawnJob{target: name})
 }
@@ -299,8 +294,7 @@ func Exists() bool {
 	return err == nil
 }
 
-// Load reads the state snapshot without taking the lock. Display paths
-// (status, frn) use this; mutations go through WithLock.
+// Load takes no lock: never write back what it returns, go through WithLock.
 func Load() (*State, error) {
 	data, err := os.ReadFile(paths.Devices())
 	if err != nil {

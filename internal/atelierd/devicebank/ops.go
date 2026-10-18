@@ -9,7 +9,6 @@ import (
 	"time"
 )
 
-// Sentinel errors the CLI maps to distinct exit codes (10 and 11).
 var (
 	ErrExhausted      = errors.New("no device of the platform could be leased within the wait: every device is leased, recycling or broken, the ignition limit is reached, or no physical device is plugged, free and available")
 	ErrNotInitialized = errors.New("device bank not initialized — run `atelierd device bank init` first")
@@ -19,7 +18,7 @@ var (
 func reapLocked(ctx context.Context, s *State, now time.Time) bool {
 	changed := reapExpired(s, now)
 	changed = reapStuckRecycles(s, now) || changed
-	changed = reapRestores(ctx, s, now) || changed
+	changed = reapRestores(s, now) || changed
 	return reconcile(ctx, s, now) || changed
 }
 
@@ -149,18 +148,18 @@ func takeWipe(d *Device) bool {
 	return wipe
 }
 
-// grantLocked takes the whole decision under the lock: a physical device on
-// the cable when the requirement admits one, else a virtual device through
-// the ignition limit and the queue. A physical device never joins the queue,
-// and a requirement without physical never returns one.
-func grantLocked(s *State, req LeaseRequest, probe physicalProbe, excluded map[string]string, now, deadline time.Time) (g grant, changed bool) {
+func grantLocked(s *State, req LeaseRequest, probe physicalProbe, excluded map[string]bool, now, deadline time.Time) (g grant, changed bool) {
 	session, platform := req.Session, req.Platform
 	if l := s.FindLease(session, platform); l != nil {
 		if l.Physical {
 			wasSuspended := l.Suspended()
-			if kept, resume := holdPhysical(l, probe); kept {
-				g.lease, g.resumeStayOn = l, resume
+			decision, dev, resume := holdPhysical(l, probe)
+			switch decision {
+			case holdKeep, holdRetake:
+				g.lease, g.take, g.resumeStayOn = l, dev, resume
 				return g, removeWaiters(s, session, platform) || wasSuspended != l.Suspended()
+			case holdWait:
+				return g, wasSuspended != l.Suspended()
 			}
 			g.notes = append(g.notes, fmt.Sprintf("note: %s (%s) is no longer connected by cable — lease dropped, choosing again", l.DeviceName, l.serial()))
 			dropLease(s, l, now, "unplugged")
@@ -209,6 +208,37 @@ func grantLocked(s *State, req LeaseRequest, probe physicalProbe, excluded map[s
 	return q, queued || changed
 }
 
+// probeForLease probes whenever the session holds a physical lease, whatever
+// the requirement, so a held lease is checked on the cable and resumed. A
+// held device the probe no longer sees is probed once more before its lease
+// ends: right after an adb server restart, adb lists nothing.
+func probeForLease(ctx context.Context, req LeaseRequest) (physicalProbe, error) {
+	var held *Lease
+	if s, err := Load(); err == nil {
+		if l := s.FindLease(req.Session, req.Platform); l != nil && l.Physical {
+			held = l
+		}
+	}
+	if held == nil && (!req.Type.admitsPhysical() || req.AppID == "") {
+		return physicalProbe{}, nil
+	}
+	probe := probePhysicals(ctx, req.Platform)
+	if held == nil || !probe.ok || probe.wired(held) != nil {
+		return probe, nil
+	}
+	select {
+	case <-ctx.Done():
+		return physicalProbe{}, ctx.Err()
+	case <-time.After(unpluggedRecheck):
+	}
+	return probePhysicals(ctx, req.Platform), nil
+}
+
+func probePhysicals(ctx context.Context, platform Platform) physicalProbe {
+	devices, err := drv.physical(ctx, platform)
+	return physicalProbe{ok: err == nil, devices: devices}
+}
+
 func queueCaller(s *State, session string, platform Platform, now, deadline time.Time) (grant, bool) {
 	var g grant
 	w, changed := upsertWaiter(s, session, platform, now, deadline)
@@ -220,16 +250,15 @@ func queueCaller(s *State, session string, platform Platform, now, deadline time
 	return g, changed
 }
 
-// Acquire is idempotent per (session, platform): a suspended or dead lease
-// gets its own device back, powered on. Physical devices are probed again on
-// every attempt, so one plugged or freed during the wait is taken.
+// Acquire is idempotent per (session, platform): a suspended or dead
+// virtual lease gets its own device back, powered on.
 func Acquire(ctx context.Context, req LeaseRequest, progress io.Writer) (string, error) {
 	if req.Type == "" {
 		req.Type = RequireVirtual
 	}
 	session, platform := req.Session, req.Platform
 	deadline := clock().Add(req.Wait)
-	excluded := map[string]string{}
+	excluded := map[string]bool{}
 	printed := map[string]bool{}
 	note := func(lines []string) {
 		for _, line := range lines {
@@ -244,14 +273,16 @@ func Acquire(ctx context.Context, req LeaseRequest, progress io.Writer) (string,
 			leaveQueue(session, platform)
 			return "", err
 		}
-		var probe physicalProbe
-		if req.Type.admitsPhysical() && req.AppID != "" {
-			devices, err := drv.physical(ctx, platform)
-			probe = physicalProbe{ok: err == nil, devices: devices}
+		// Probed on every attempt, not once before the loop: a device plugged
+		// or freed during the wait must be taken.
+		probe, err := probeForLease(ctx, req)
+		if err != nil {
+			leaveQueue(session, platform)
+			return "", err
 		}
 		var g grant
 		var outcome error
-		err := WithLock(func(s *State) error {
+		err = WithLock(func(s *State) error {
 			now := clock()
 			changed := reapLocked(ctx, s, now)
 			changed = touchSession(s, session, now) > 0 || changed
@@ -294,12 +325,12 @@ func Acquire(ctx context.Context, req LeaseRequest, progress io.Writer) (string,
 			return "", outcome
 		}
 		if g.take != nil {
-			skip, err := takePhysical(ctx, req, g.lease, *g.take)
+			skip, err := takePhysical(ctx, g.lease, *g.take)
 			if err != nil {
 				return "", err
 			}
 			if skip != "" {
-				excluded[g.take.Serial] = skip
+				excluded[g.take.Serial] = true
 				note([]string{skip})
 				continue
 			}
@@ -384,10 +415,10 @@ func Pause(ctx context.Context, session string) error {
 				continue
 			}
 			if l.Physical {
-				if err := pausePhysical(ctx, l); err != nil {
-					failures = append(failures, err)
-					continue
-				}
+				// A device out of reach still suspends: its value is put back
+				// at the return, and dropping the lease here would start a
+				// restore under a run that may be using the device.
+				_ = pausePhysical(ctx, l)
 				l.SuspendedAt = now
 				changed = true
 				continue
@@ -789,7 +820,7 @@ func StatusRows(ctx context.Context) (rows []StatusRow, queue []*Waiter, err err
 			Name: d.Name, Platform: d.Platform, State: d.State, ID: d.TargetID(), Device: d, Lease: s.leaseForDevice(d.Name),
 		})
 	}
-	physical, _ := drv.physical(ctx, "")
+	physical, _ := drv.physical(ctx, allPlatforms)
 	shownLeases := map[*Lease]bool{}
 	shownRestores := map[*PendingRestore]bool{}
 	for i := range physical {

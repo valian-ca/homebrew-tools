@@ -21,6 +21,8 @@ type fakeDriver struct {
 	phys      []PhysicalDevice
 	unplugged []PhysicalDevice
 	physErr   error
+	blindFor  int
+	onApps    func()
 	installed map[string]map[string]AppInfo
 	stayOnVal map[string]string
 	reverses  map[string]int
@@ -44,9 +46,9 @@ func useFake(t *testing.T) *fakeDriver {
 	t.Setenv("HOME", t.TempDir())
 	f := newFake()
 	f.t = t
-	prevDrv, prevClock, prevPoll := drv, clock, queuePoll
-	drv, queuePoll = f, 5*time.Millisecond
-	t.Cleanup(func() { drv, clock, queuePoll = prevDrv, prevClock, prevPoll })
+	prevDrv, prevClock, prevPoll, prevRecheck := drv, clock, queuePoll, unpluggedRecheck
+	drv, queuePoll, unpluggedRecheck = f, 5*time.Millisecond, 5*time.Millisecond
+	t.Cleanup(func() { drv, clock, queuePoll, unpluggedRecheck = prevDrv, prevClock, prevPoll, prevRecheck })
 	return f
 }
 
@@ -120,9 +122,7 @@ func (f *fakeDriver) resetCalls() {
 	f.calls = nil
 }
 
-// guard fails the test on any destructive operation aimed at a physical
-// device, on whatever path it comes from.
-func (f *fakeDriver) guard(op string, targets ...string) {
+func (f *fakeDriver) failIfPhysicalTarget(op string, targets ...string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for _, p := range append(f.phys, f.unplugged...) {
@@ -135,7 +135,7 @@ func (f *fakeDriver) guard(op string, targets ...string) {
 }
 
 func (f *fakeDriver) bootIOS(_ context.Context, udid string) error {
-	f.guard("bootIOS", udid)
+	f.failIfPhysicalTarget("bootIOS", udid)
 	if f.onBoot != nil {
 		f.onBoot()
 	}
@@ -147,7 +147,7 @@ func (f *fakeDriver) bootIOS(_ context.Context, udid string) error {
 }
 
 func (f *fakeDriver) shutdownIOS(_ context.Context, udid string) error {
-	f.guard("shutdownIOS", udid)
+	f.failIfPhysicalTarget("shutdownIOS", udid)
 	if err := f.call("shutdownIOS", udid); err != nil {
 		return err
 	}
@@ -156,14 +156,14 @@ func (f *fakeDriver) shutdownIOS(_ context.Context, udid string) error {
 }
 
 func (f *fakeDriver) eraseIOS(_ context.Context, udid string) error {
-	f.guard("eraseIOS", udid)
+	f.failIfPhysicalTarget("eraseIOS", udid)
 	return f.call("eraseIOS", udid)
 }
 
 func (f *fakeDriver) avdBooted(_ context.Context, serial string) bool { return f.isOn(serial) }
 
 func (f *fakeDriver) startAVD(avd string, port int, wipe bool) error {
-	f.guard("startAVD", avd, fmt.Sprintf("emulator-%d", port))
+	f.failIfPhysicalTarget("startAVD", avd, fmt.Sprintf("emulator-%d", port))
 	if err := f.call("startAVD", fmt.Sprintf("%s wipe=%v", avd, wipe)); err != nil {
 		return err
 	}
@@ -172,7 +172,7 @@ func (f *fakeDriver) startAVD(avd string, port int, wipe bool) error {
 }
 
 func (f *fakeDriver) waitAVDReady(_ context.Context, serial string) error {
-	f.guard("waitAVDReady", serial)
+	f.failIfPhysicalTarget("waitAVDReady", serial)
 	if f.onBoot != nil {
 		f.onBoot()
 	}
@@ -180,7 +180,7 @@ func (f *fakeDriver) waitAVDReady(_ context.Context, serial string) error {
 }
 
 func (f *fakeDriver) killAVD(_ context.Context, serial string) error {
-	f.guard("killAVD", serial)
+	f.failIfPhysicalTarget("killAVD", serial)
 	if err := f.call("killAVD", serial); err != nil {
 		return err
 	}
@@ -209,6 +209,10 @@ func (f *fakeDriver) physical(_ context.Context, platform Platform) ([]PhysicalD
 	if f.physErr != nil {
 		return nil, f.physErr
 	}
+	if f.blindFor > 0 {
+		f.blindFor--
+		return nil, nil
+	}
 	var out []PhysicalDevice
 	for _, p := range f.phys {
 		if platform == "" || p.Platform == platform {
@@ -218,8 +222,6 @@ func (f *fakeDriver) physical(_ context.Context, platform Platform) ([]PhysicalD
 	return out, nil
 }
 
-// plug replaces the connected physical devices; the ones it removes stay
-// under the destructive-operation guard.
 func (f *fakeDriver) plug(devices ...PhysicalDevice) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -227,8 +229,6 @@ func (f *fakeDriver) plug(devices ...PhysicalDevice) {
 	f.phys = devices
 }
 
-// serialOf resolves a transport id to the device behind it, so state on the
-// fake device survives a change of transport.
 func (f *fakeDriver) serialOf(id string) string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -300,6 +300,11 @@ func (f *fakeDriver) removeReverses(_ context.Context, id string) error {
 }
 
 func (f *fakeDriver) apps(_ context.Context, p PhysicalDevice) ([]string, error) {
+	if f.onApps != nil {
+		hook := f.onApps
+		f.onApps = nil
+		hook()
+	}
 	if err := f.call("apps", p.ID); err != nil {
 		return nil, err
 	}
@@ -361,7 +366,7 @@ func (f *fakeDriver) spawnRestore(deviceID string) error {
 }
 
 func (f *fakeDriver) spawnRecycle(name string) error {
-	f.guard("spawnRecycle", name)
+	f.failIfPhysicalTarget("spawnRecycle", name)
 	f.mu.Lock()
 	f.spawned = append(f.spawned, name)
 	run := f.runSpawns

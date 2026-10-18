@@ -152,7 +152,7 @@ id for flutter run -d) alone on stdout.
 in order:
   1. a physical device plugged by cable and free (any, physical);
   2. a virtual device through the queue (any, virtual).
-Without --type, a physical device is never returned.
+Without --type, a new physical device is never leased.
 
 A physical device is available when it is plugged by USB with debugging
 allowed on this machine. One reachable only without cable (adb wifi, Wi-Fi
@@ -171,8 +171,10 @@ is tried as soon as the limit allows, within --wait.
 
 Idempotent per (session, platform): a session that already holds a lease
 gets the same device back. A suspended lease (see pause), or one whose
-device died, gets its own device back, data kept. A physical lease whose
-device is no longer on the cable is dropped and the choice is made again.
+device died, gets its own device back, data kept; this holds for a
+physical lease whatever --type says, the lease call checking it is still on
+the cable. A physical lease whose device is no longer on the cable (checked
+twice, 2 s apart) is dropped and the choice is made again.
 
 Powering a virtual device on obeys the ignition limit (bank limit) and a
 first-come queue: when no device can be served, the session waits its turn

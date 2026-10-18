@@ -19,9 +19,8 @@ import (
 // under this on a healthy machine; past it the device is treated as wedged.
 const bootTimeout = 3 * time.Minute
 
-// cmdTimeout bounds the quick toolchain commands (list, create, delete,
-// shutdown, erase, kill). Distinct from bootTimeout: a boot legitimately
-// takes minutes, a list/delete that does is wedged.
+// cmdTimeout bounds each quick toolchain command: a boot legitimately takes
+// minutes, a list or a delete that does is wedged.
 const cmdTimeout = 30 * time.Second
 
 func boundedCtx(ctx context.Context) (context.Context, context.CancelFunc) {

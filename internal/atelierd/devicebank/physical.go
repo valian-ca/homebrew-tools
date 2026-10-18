@@ -1,6 +1,7 @@
 package devicebank
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -25,19 +26,18 @@ type PhysicalDevice struct {
 	Wired    bool
 }
 
-// AppInfo is an app as installed on a physical device. Name is the display
-// name; on Android it is read separately (androidLabel), only when it decides
-// between conflict and overwrite.
+// Name stays empty on Android: the label costs an APK pull (androidLabel), so
+// it is read only when it decides between conflict and overwrite.
 type AppInfo struct {
 	Installed bool
 	Developer bool
 	Name      string
 }
 
-// overwritable reports whether a build of the run may replace this app: a
-// developer build, or one named "[D] …" by convention, never a Store app.
+const devBuildNamePrefix = "[D]"
+
 func (a AppInfo) overwritable() bool {
-	return !a.Installed || a.Developer || strings.HasPrefix(a.Name, "[D]")
+	return !a.Installed || a.Developer || strings.HasPrefix(a.Name, devBuildNamePrefix)
 }
 
 type adbTransport struct {
@@ -88,8 +88,6 @@ func mdnsSerial(id string) string {
 	return name
 }
 
-// groupBySerial lists each device once, whatever its number of transports:
-// the USB transport is the target when there is one.
 func groupBySerial(ts []adbTransport, serialOf func(id string) string) []PhysicalDevice {
 	bySerial := map[string]*PhysicalDevice{}
 	var order []string
@@ -171,18 +169,20 @@ func parseIOSPhysical(devicectlJSON, ioreg []byte) ([]PhysicalDevice, error) {
 	return out, nil
 }
 
-// physicalToolEnv is the environment of the physical-device tools; nil
-// inherits the process's.
 var physicalToolEnv []string
 
+// runBounded returns stdout alone: a device's shell prints warnings on
+// stderr, and a value read here may be written back to the device later.
 func runBounded(ctx context.Context, name string, args ...string) ([]byte, error) {
 	execCtx, cancel := boundedCtx(ctx)
 	defer cancel()
 	cmd := exec.CommandContext(execCtx, name, args...)
 	cmd.Env = physicalToolEnv
-	out, err := cmd.CombinedOutput()
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
 	if err != nil {
-		return out, fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+		return out, fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, strings.TrimSpace(stderr.String()+" "+string(out)))
 	}
 	return out, nil
 }
@@ -232,14 +232,16 @@ func probeIOSPhysical(ctx context.Context) ([]PhysicalDevice, error) {
 	return parseIOSPhysical(devices, bus)
 }
 
+const allPlatforms Platform = ""
+
 func probePhysical(ctx context.Context, platform Platform) ([]PhysicalDevice, error) {
 	var out []PhysicalDevice
 	var errs []error
-	if platform == "" || platform == PlatformAndroid {
+	if platform == allPlatforms || platform == PlatformAndroid {
 		ds, err := probeAndroidPhysical(ctx)
 		out, errs = append(out, ds...), append(errs, err)
 	}
-	if platform == "" || platform == PlatformIOS {
+	if platform == allPlatforms || platform == PlatformIOS {
 		ds, err := probeIOSPhysical(ctx)
 		out, errs = append(out, ds...), append(errs, err)
 	}
@@ -248,8 +250,17 @@ func probePhysical(ctx context.Context, platform Platform) ([]PhysicalDevice, er
 
 const stayOnSetting = "stay_on_while_plugged_in"
 
+var stayOnValue = regexp.MustCompile(`^(null|-?[0-9]+)$`)
+
 func readStayOn(ctx context.Context, id string) (string, error) {
-	return adbShell(ctx, id, "settings", "get", "global", stayOnSetting)
+	v, err := adbShell(ctx, id, "settings", "get", "global", stayOnSetting)
+	if err != nil {
+		return "", err
+	}
+	if !stayOnValue.MatchString(v) {
+		return "", fmt.Errorf("unexpected %s value %q", stayOnSetting, v)
+	}
+	return v, nil
 }
 
 // writeStayOn puts back a recorded value; "null" was an unset key, which
@@ -346,7 +357,6 @@ func parseApplicationLabel(badging string) (string, error) {
 	return m[1], nil
 }
 
-// aapt2Path takes the newest build-tools: aapt2 lives only there.
 func aapt2Path() (string, error) {
 	matches, _ := filepath.Glob(filepath.Join(androidSDKRoot(), "build-tools", "*", "aapt2"))
 	sort.Slice(matches, func(i, j int) bool {

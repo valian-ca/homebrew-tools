@@ -30,9 +30,10 @@ type driver interface {
 }
 
 var (
-	drv       driver = execDriver{}
-	clock            = time.Now
-	queuePoll        = 2 * time.Second
+	drv              driver = execDriver{}
+	clock                   = time.Now
+	queuePoll               = 2 * time.Second
+	unpluggedRecheck        = 2 * time.Second
 )
 
 type execDriver struct{}
@@ -86,8 +87,6 @@ func (execDriver) poweredOn(ctx context.Context, ios, android bool) (map[string]
 	return on, nil
 }
 
-// physical probes one platform, or both when platform is empty. Bank AVDs
-// show up in adb as emulators, so the probe never aliases a bank device.
 func (execDriver) physical(ctx context.Context, platform Platform) ([]PhysicalDevice, error) {
 	return probePhysical(ctx, platform)
 }

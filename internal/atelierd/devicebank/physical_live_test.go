@@ -15,7 +15,6 @@ import (
 
 type physicalLiveDriver struct{ execDriver }
 
-// The bank holds no virtual device: a recycle would be a bug.
 func (physicalLiveDriver) spawnRecycle(name string) error {
 	return errors.New("no virtual device may be recycled in the physical live run: " + name)
 }
@@ -123,7 +122,7 @@ func assertNoPendingRestore(t *testing.T) {
 }
 
 // Runs on the Pixel and the iPhone plugged by cable, with no virtual device
-// on, on a slot the vigie gave. ATELIERFIT_STORE_APP names an unimportant
+// on, on a slot nobody else needs. ATELIERFIT_STORE_APP names an unimportant
 // Store app installed on the Pixel; ATELIERFIT_APK and ATELIERFIT_IOS_APP are
 // debug builds of ATELIERFIT_APP_ID and ATELIERFIT_IOS_APP_ID (default: the
 // same id), absent from their device before the run; the iOS build is
@@ -155,7 +154,7 @@ func TestPhysicalLive(t *testing.T) {
 		}
 	})
 
-	t.Run("P1 physical required returns the iPhone and the Pixel", func(t *testing.T) {
+	t.Run("physical required returns the iPhone and the Pixel", func(t *testing.T) {
 		if id, err := physicalLease(t, "live-ios", PlatformIOS, fitIOSApp); err != nil || id != iphone.ID {
 			t.Fatalf("got %q %v, want %s", id, err, iphone.ID)
 		}
@@ -167,7 +166,7 @@ func TestPhysicalLive(t *testing.T) {
 		}
 	})
 
-	t.Run("P3 iPhone pause touches nothing", func(t *testing.T) {
+	t.Run("iPhone pause touches nothing", func(t *testing.T) {
 		if err := Pause(context.Background(), "live-ios"); err != nil {
 			t.Fatal(err)
 		}
@@ -182,13 +181,13 @@ func TestPhysicalLive(t *testing.T) {
 		}
 	})
 
-	t.Run("P4 install debug builds during the lease", func(t *testing.T) {
+	t.Run("debug builds installed during the lease", func(t *testing.T) {
 		liveInstall(t, "adb", "-s", pixel.ID, "install", "-r", apk)
 		if !slices.Contains(liveApps(t, pixel), fitApp) {
 			t.Fatal("the APK must be installed")
 		}
 		if iosApp == "" {
-			t.Log("no ATELIERFIT_IOS_APP: the iPhone half of AC 8 rests on the fake driver")
+			t.Log("no ATELIERFIT_IOS_APP: the iPhone uninstall rests on the fake driver")
 			return
 		}
 		liveInstall(t, "xcrun", "devicectl", "device", "install", "app", "--device", iphone.ID, iosApp)
@@ -197,7 +196,7 @@ func TestPhysicalLive(t *testing.T) {
 		}
 	})
 
-	t.Run("P2 Pixel stay_on through pause, resume and return", func(t *testing.T) {
+	t.Run("Pixel stay_on through pause, resume and return", func(t *testing.T) {
 		if err := Pause(context.Background(), "live-android"); err != nil {
 			t.Fatal(err)
 		}
@@ -223,7 +222,7 @@ func TestPhysicalLive(t *testing.T) {
 		}
 	})
 
-	t.Run("P4 return uninstalls the debug builds only", func(t *testing.T) {
+	t.Run("return uninstalls the debug builds only", func(t *testing.T) {
 		if err := Release(context.Background(), "live-ios", ""); err != nil {
 			t.Fatal(err)
 		}
@@ -236,7 +235,7 @@ func TestPhysicalLive(t *testing.T) {
 		}
 	})
 
-	t.Run("P2 kill variant restores at the TTL reap", func(t *testing.T) {
+	t.Run("unreleased lease restored at the TTL reap", func(t *testing.T) {
 		if _, err := physicalLease(t, "live-kill", PlatformAndroid, fitApp); err != nil {
 			t.Fatal(err)
 		}
@@ -261,7 +260,7 @@ func TestPhysicalLive(t *testing.T) {
 		}
 	})
 
-	t.Run("P5 the Store app makes the Pixel unavailable", func(t *testing.T) {
+	t.Run("the Store app makes the Pixel unavailable", func(t *testing.T) {
 		if !slices.Contains(liveApps(t, pixel), storeApp) {
 			t.Fatalf("%s must be installed on the Pixel", storeApp)
 		}

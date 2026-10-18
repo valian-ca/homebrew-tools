@@ -493,7 +493,7 @@ func TestPendingRestoreRetriedWhenReachable(t *testing.T) {
 		t.Fatalf("a restore is not retried before its retry delay, got %+v", s.Restores)
 	}
 
-	c.advance(2 * time.Minute)
+	c.advance(restoreReapAfter)
 	if err := Reap(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -669,7 +669,7 @@ func TestNoDestructiveOpOnPhysical(t *testing.T) {
 			leaseAny(t, "sess-gone", dev.Platform)
 			f.plug()
 			leaseAny(t, "sess-gone", dev.Platform)
-			c.advance(3 * time.Minute)
+			c.advance(restoreReapAfter + time.Minute)
 			f.plug(dev)
 			if err := Reap(context.Background()); err != nil {
 				t.Fatal(err)
@@ -679,7 +679,7 @@ func TestNoDestructiveOpOnPhysical(t *testing.T) {
 			f.install(dev.Serial, runApp, AppInfo{Name: "Store"})
 			leaseAny(t, "sess-conflict", dev.Platform)
 			release(t, "sess-conflict")
-			c.advance(3 * time.Minute)
+			c.advance(restoreReapAfter + time.Minute)
 			if err := Reap(context.Background()); err != nil {
 				t.Fatal(err)
 			}

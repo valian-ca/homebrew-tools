@@ -63,6 +63,11 @@ func TestStatusPhysicalRowNameAndID(t *testing.T) {
 		{Name: "Galaxy", Platform: devicebank.PlatformAndroid, Physical: true, State: devicebank.StateOff, ID: "192.168.1.30:5555", Serial: "R5CT1234"},
 		{Name: "Pixel 6", Platform: devicebank.PlatformAndroid, Physical: true, State: devicebank.StateOff, ID: "P6SERIAL", Serial: "P6SERIAL", Absent: true,
 			Restore: &devicebank.PendingRestore{EndedAt: now.Add(-26 * time.Minute), LastError: "Pixel 6 is not connected"}},
+		{Name: "Pixel 8", Platform: devicebank.PlatformAndroid, Physical: true, State: devicebank.StateOn, ID: "P8SERIAL", Serial: "P8SERIAL", Absent: true,
+			Lease: &devicebank.Lease{SessionID: "S3", AcquiredAt: now.Add(-2 * time.Minute), RenewedAt: now.Add(-time.Minute)}},
+		{Name: "Pixel 9", Platform: devicebank.PlatformAndroid, Physical: true, State: devicebank.StateOn, ID: "P9SERIAL", Serial: "P9SERIAL", Wired: true,
+			Lease:   &devicebank.Lease{SessionID: "S4", AcquiredAt: now.Add(-time.Minute), RenewedAt: now},
+			Restore: &devicebank.PendingRestore{EndedAt: now.Add(-30 * time.Minute)}},
 	}
 	var out bytes.Buffer
 	if err := renderStatus(&out, rows, nil, now); err != nil {
@@ -91,6 +96,8 @@ func TestStatusPhysicalRowNameAndID(t *testing.T) {
 		"192.168.1.30:5555 (serial R5CT1234)",
 		"not leasable: wireless only",
 		"restore pending since 15:04 (Pixel 6 is not connected)",
+		"session S3, age 2m0s, renewed 1m0s ago · not connected",
+		"session S4, age 1m0s, renewed 0s ago · restore pending since 15:00",
 	} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("status output lacks %q:\n%s", want, out.String())

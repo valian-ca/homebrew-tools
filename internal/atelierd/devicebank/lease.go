@@ -75,8 +75,6 @@ func removeLease(s *State, l *Lease) {
 	}
 }
 
-// A physical device is never powered off or erased: its lease ends in a
-// pending restore of the pre-lease state, run by a detached worker.
 func dropLease(s *State, l *Lease, now time.Time, reason string) {
 	removeLease(s, l)
 	if l.Physical {
