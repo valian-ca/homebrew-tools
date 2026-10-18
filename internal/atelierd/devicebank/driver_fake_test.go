@@ -3,6 +3,7 @@ package devicebank
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -11,27 +12,38 @@ import (
 
 type fakeDriver struct {
 	mu        sync.Mutex
+	t         testing.TB
 	on        map[string]bool
 	maxOnSeen int
 	calls     []string
 	fail      map[string]int
 	probeErr  error
 	phys      []PhysicalDevice
+	unplugged []PhysicalDevice
+	physErr   error
+	installed map[string]map[string]AppInfo
+	stayOnVal map[string]string
+	reverses  map[string]int
 	spawned   []string
+	restores  []string
 	runSpawns bool
 	notes     []string
 	onBoot    func()
 }
 
 func newFake() *fakeDriver {
-	return &fakeDriver{on: map[string]bool{}, fail: map[string]int{}, runSpawns: true}
+	return &fakeDriver{
+		on: map[string]bool{}, fail: map[string]int{}, runSpawns: true,
+		installed: map[string]map[string]AppInfo{}, stayOnVal: map[string]string{}, reverses: map[string]int{},
+	}
 }
 
-// Spawned recycle workers run synchronously.
+// Spawned recycle and restore workers run synchronously.
 func useFake(t *testing.T) *fakeDriver {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
 	f := newFake()
+	f.t = t
 	prevDrv, prevClock, prevPoll := drv, clock, queuePoll
 	drv, queuePoll = f, 5*time.Millisecond
 	t.Cleanup(func() { drv, clock, queuePoll = prevDrv, prevClock, prevPoll })
@@ -108,7 +120,22 @@ func (f *fakeDriver) resetCalls() {
 	f.calls = nil
 }
 
+// guard fails the test on any destructive operation aimed at a physical
+// device, on whatever path it comes from.
+func (f *fakeDriver) guard(op string, targets ...string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, p := range append(f.phys, f.unplugged...) {
+		for _, target := range targets {
+			if target == p.ID || target == p.Serial || target == p.Name {
+				f.t.Errorf("%s targeted the physical device %s (%s)", op, p.Name, target)
+			}
+		}
+	}
+}
+
 func (f *fakeDriver) bootIOS(_ context.Context, udid string) error {
+	f.guard("bootIOS", udid)
 	if f.onBoot != nil {
 		f.onBoot()
 	}
@@ -120,6 +147,7 @@ func (f *fakeDriver) bootIOS(_ context.Context, udid string) error {
 }
 
 func (f *fakeDriver) shutdownIOS(_ context.Context, udid string) error {
+	f.guard("shutdownIOS", udid)
 	if err := f.call("shutdownIOS", udid); err != nil {
 		return err
 	}
@@ -128,12 +156,14 @@ func (f *fakeDriver) shutdownIOS(_ context.Context, udid string) error {
 }
 
 func (f *fakeDriver) eraseIOS(_ context.Context, udid string) error {
+	f.guard("eraseIOS", udid)
 	return f.call("eraseIOS", udid)
 }
 
 func (f *fakeDriver) avdBooted(_ context.Context, serial string) bool { return f.isOn(serial) }
 
 func (f *fakeDriver) startAVD(avd string, port int, wipe bool) error {
+	f.guard("startAVD", avd, fmt.Sprintf("emulator-%d", port))
 	if err := f.call("startAVD", fmt.Sprintf("%s wipe=%v", avd, wipe)); err != nil {
 		return err
 	}
@@ -142,6 +172,7 @@ func (f *fakeDriver) startAVD(avd string, port int, wipe bool) error {
 }
 
 func (f *fakeDriver) waitAVDReady(_ context.Context, serial string) error {
+	f.guard("waitAVDReady", serial)
 	if f.onBoot != nil {
 		f.onBoot()
 	}
@@ -149,6 +180,7 @@ func (f *fakeDriver) waitAVDReady(_ context.Context, serial string) error {
 }
 
 func (f *fakeDriver) killAVD(_ context.Context, serial string) error {
+	f.guard("killAVD", serial)
 	if err := f.call("killAVD", serial); err != nil {
 		return err
 	}
@@ -171,17 +203,165 @@ func (f *fakeDriver) poweredOn(context.Context, bool, bool) (map[string]bool, er
 	return out, nil
 }
 
-func (f *fakeDriver) physical(_ context.Context, platform Platform) []PhysicalDevice {
+func (f *fakeDriver) physical(_ context.Context, platform Platform) ([]PhysicalDevice, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.physErr != nil {
+		return nil, f.physErr
+	}
 	var out []PhysicalDevice
 	for _, p := range f.phys {
-		if p.Platform == platform {
+		if platform == "" || p.Platform == platform {
 			out = append(out, p)
 		}
 	}
-	return out
+	return out, nil
+}
+
+// plug replaces the connected physical devices; the ones it removes stay
+// under the destructive-operation guard.
+func (f *fakeDriver) plug(devices ...PhysicalDevice) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.unplugged = append(f.unplugged, f.phys...)
+	f.phys = devices
+}
+
+// serialOf resolves a transport id to the device behind it, so state on the
+// fake device survives a change of transport.
+func (f *fakeDriver) serialOf(id string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, p := range f.phys {
+		if p.ID == id || p.Serial == id {
+			return p.Serial
+		}
+	}
+	return id
+}
+
+func (f *fakeDriver) install(serial, appID string, app AppInfo) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.installed[serial] == nil {
+		f.installed[serial] = map[string]AppInfo{}
+	}
+	app.Installed = true
+	f.installed[serial][appID] = app
+}
+
+func (f *fakeDriver) hasApp(serial, appID string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	_, ok := f.installed[serial][appID]
+	return ok
+}
+
+func (f *fakeDriver) stayOnOf(serial string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if v, ok := f.stayOnVal[serial]; ok {
+		return v
+	}
+	return "null"
+}
+
+func (f *fakeDriver) stayOn(_ context.Context, id string) (string, error) {
+	if err := f.call("stayOn", id); err != nil {
+		return "", err
+	}
+	return f.stayOnOf(f.serialOf(id)), nil
+}
+
+func (f *fakeDriver) setStayOn(_ context.Context, id, value string) error {
+	if err := f.call("setStayOn", id+" "+value); err != nil {
+		return err
+	}
+	serial := f.serialOf(id)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if value == "null" {
+		delete(f.stayOnVal, serial)
+	} else {
+		f.stayOnVal[serial] = value
+	}
+	return nil
+}
+
+func (f *fakeDriver) removeReverses(_ context.Context, id string) error {
+	if err := f.call("removeReverses", id); err != nil {
+		return err
+	}
+	serial := f.serialOf(id)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.reverses[serial] = 0
+	return nil
+}
+
+func (f *fakeDriver) apps(_ context.Context, p PhysicalDevice) ([]string, error) {
+	if err := f.call("apps", p.ID); err != nil {
+		return nil, err
+	}
+	serial := f.serialOf(p.ID)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var ids []string
+	for id := range f.installed[serial] {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids, nil
+}
+
+func (f *fakeDriver) appInfo(_ context.Context, p PhysicalDevice, appID string) (AppInfo, error) {
+	if err := f.call("appInfo", p.ID+" "+appID); err != nil {
+		return AppInfo{}, err
+	}
+	serial := f.serialOf(p.ID)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	app := f.installed[serial][appID]
+	if p.Platform == PlatformAndroid {
+		app.Name = ""
+	}
+	return app, nil
+}
+
+func (f *fakeDriver) androidLabel(_ context.Context, id, pkg string) (string, error) {
+	if err := f.call("androidLabel", id+" "+pkg); err != nil {
+		return "", err
+	}
+	serial := f.serialOf(id)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.installed[serial][pkg].Name, nil
+}
+
+func (f *fakeDriver) uninstall(_ context.Context, p PhysicalDevice, appID string) error {
+	if err := f.call("uninstall", p.ID+" "+appID); err != nil {
+		return err
+	}
+	serial := f.serialOf(p.ID)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.installed[serial], appID)
+	return nil
+}
+
+func (f *fakeDriver) spawnRestore(deviceID string) error {
+	f.mu.Lock()
+	f.restores = append(f.restores, deviceID)
+	run := f.runSpawns
+	f.mu.Unlock()
+	if run {
+		return RunRestore(context.Background(), deviceID)
+	}
+	return nil
 }
 
 func (f *fakeDriver) spawnRecycle(name string) error {
+	f.guard("spawnRecycle", name)
 	f.mu.Lock()
 	f.spawned = append(f.spawned, name)
 	run := f.runSpawns
@@ -241,7 +421,7 @@ func load(t *testing.T) *State {
 
 func lease(t *testing.T, session string, platform Platform) string {
 	t.Helper()
-	id, err := Acquire(context.Background(), session, "/wd", platform, 0, discard{})
+	id, err := Acquire(context.Background(), LeaseRequest{Session: session, Workdir: "/wd", Platform: platform}, discard{})
 	if err != nil {
 		t.Fatalf("lease %s %s: %v", session, platform, err)
 	}
@@ -249,7 +429,7 @@ func lease(t *testing.T, session string, platform Platform) string {
 }
 
 func leaseErr(session string, platform Platform) error {
-	_, err := Acquire(context.Background(), session, "/wd", platform, 0, discard{})
+	_, err := Acquire(context.Background(), LeaseRequest{Session: session, Workdir: "/wd", Platform: platform}, discard{})
 	return err
 }
 

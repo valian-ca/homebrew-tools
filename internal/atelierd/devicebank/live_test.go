@@ -70,7 +70,7 @@ func (d liveDriver) killAVD(ctx context.Context, serial string) error {
 	return fmt.Errorf("emulator %s still running after adb emu kill", serial)
 }
 
-func (liveDriver) physical(context.Context, Platform) []PhysicalDevice { return nil }
+func (liveDriver) physical(context.Context, Platform) ([]PhysicalDevice, error) { return nil, nil }
 
 func (liveDriver) spawnRecycle(name string) error {
 	go func() { _ = RunRecycle(context.Background(), name) }()
@@ -148,7 +148,7 @@ func forceRAM2G(t *testing.T, configPath string) {
 
 func liveLease(t *testing.T, session string, platform Platform) string {
 	t.Helper()
-	id, err := Acquire(context.Background(), session, "/wd", platform, leaseWait, os.Stderr)
+	id, err := Acquire(context.Background(), LeaseRequest{Session: session, Workdir: "/wd", Platform: platform, Wait: leaseWait}, os.Stderr)
 	if err != nil {
 		t.Fatalf("lease %s %s: %v", session, platform, err)
 	}

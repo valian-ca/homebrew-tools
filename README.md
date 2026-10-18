@@ -89,16 +89,18 @@ install` compiles it from source (pulls `go` as a build dependency).
 ## `atelierd device`
 
 The machine-local source of truth for mobile-device attribution: a bank of
-simulator/AVD clones that autonomous forge runs lease, release, and recycle
-without stepping on each other — or on you.
+simulator/AVD clones, plus the physical devices plugged by cable, that
+autonomous forge runs lease, release, and recycle without stepping on each
+other — or on you.
 
 ```sh
 atelierd device bank init [--ios N] [--android N]   # provision atelier-ios-1..N / atelier-android-1..N (default 2 + 2)
 atelierd device bank limit [N]                      # print or set how many virtual devices may be on at once (default 1)
-atelierd device lease --platform ios --session <id> [--wait 15m]  # print a targetable UDID/serial alone on stdout
+atelierd device lease --platform ios --session <id> [--type any|virtual|physical] [--app-id <id>] [--wait 15m]
+                                                    # print a targetable UDID/serial alone on stdout
 atelierd device pause --session <id>                # power the session's virtual devices off, keep the lease and the data
 atelierd device release --session <id> [--platform ios|android]
-atelierd device status                              # bank + physical devices, states, leases, queue
+atelierd device status                              # bank + physical devices, states, ids, leases, queue
 ```
 
 - **`bank init`** is idempotent and sizes both ways: re-running tops up;
@@ -110,9 +112,15 @@ atelierd device status                              # bank + physical devices, s
   A machine missing one toolchain provisions the other side, warns, and
   exits 0.
 - **States** — a virtual device is `off`, `on`, `recycling` or `broken`.
-  The LEASE column of `status` always starts with the holding session's id
+  `status` lists one row per device with `NAME PLATFORM TYPE STATE ID
+  LEASE`: ID is the targetable id (`flutter run -d`), followed by the
+  serial when it differs; a physical device is named without its transport
+  and listed once, by its USB transport, even when adb also sees it over
+  wifi. The LEASE column always starts with the holding session's id
   (`session S, on since 15:04, renewed 12s ago` · `session S, suspended
-  since 15:20` · `session S, device died — restarts at next lease`).
+  since 15:20` · `session S, device died — restarts at next lease`); a
+  physical device shows `not leasable: wireless only` or `restore pending
+  since 15:04 (<last error>)` when that applies.
 - **Ignition limit** — at most `bank limit` virtual devices are on at the
   same time, all sessions and platforms together (default `1`: a running
   AVD takes ~9 GB). A suspended lease does not count; a recycling device
@@ -128,19 +136,49 @@ atelierd device status                              # bank + physical devices, s
   posted. A device that fails to boot goes to recycling; it keeps counting
   toward the limit until its power-off is confirmed, so another device is
   tried as soon as the limit allows, within `--wait`.
-  Exit codes: `0` leased, `10` not served within the wait (bank exhausted or
-  limit reached), `11` bank not initialized. A connected physical device is
-  leased only when the platform has no virtual device left to power on.
+  Exit codes: `0` leased, `10` not served within the wait (bank exhausted,
+  limit reached, or no physical device available under `--type physical`),
+  `11` bank not initialized.
+- **Physical devices** — `--type` says which devices a lease admits:
+  `virtual` (default), `any`, or `physical`. Without `--type`, a physical
+  device is never returned. Under `any` the lease returns a physical device
+  plugged by cable and free first, then a virtual device through the
+  queue; under `physical` it never queues and exits `10`. A physical device
+  is available when it is plugged by USB with debugging allowed on this
+  machine; one reachable only without cable (adb wifi, Wi-Fi pairing to
+  Xcode) is skipped, since its screen locks and its connection can drop.
+  Physical devices do not count toward the ignition limit, and the lease
+  powers nothing on. Leasing one needs `--app-id`, the run's application
+  id: when that app is already installed and is neither a developer build
+  nor named `[D] …` (a Store build, say), the device is unavailable for the
+  lease and nothing on it is touched — `flutter run` would uninstall it with
+  its data. A developer build or a `[D] …` app may be overwritten; when it
+  was signed on another machine, `flutter run` reinstalls it and its dev
+  data is lost. Each skipped device is named on stderr; stdout stays the id
+  alone.
+- **On a physical device** the bank never erases, resets, powers off or
+  recycles anything. An Android device gets `stay_on_while_plugged_in` set
+  to `3` for the lease, after its previous value and installed packages are
+  recorded; nothing else is changed. An iPhone is left as it is (set its
+  Auto-Lock to Never by hand).
 - **`pause`** suspends the session's leases: each virtual device is powered
   off with its installed app and data kept, and the session's next `lease`
   powers the same device back on (through the queue when the limit is
-  reached). A physical lease is left as it is.
+  reached). A physical Android device gets back its `stay_on` value, set to
+  `3` again by the next `lease`; a physical iPhone is left as it is. A
+  physical device unplugged meanwhile loses the lease, and the next `lease`
+  chooses again.
 - **`release`** returns immediately — a detached worker powers the virtual
   device off and erases it **without booting it**: it is `off` again within
   5 min (an AVD is wiped by `-wipe-data` on its next boot). A recycle that
   fails twice leaves the device `broken`, its reason shown by `status`, and
   never leased again until `bank init` repairs it. A physical device is
-  leasable again on the spot.
+  restored by a detached worker instead: its `stay_on` value from before
+  the lease is put back, its `adb reverse` rules removed, and the developer
+  builds installed during the lease uninstalled — never an app present
+  before, nor a Store app installed meanwhile. It is leasable again once the
+  restore succeeds; an unreachable device keeps its restore pending, retried
+  by any later command once it is connected again, by any transport.
 - **AVDs start with 4 GB of RAM** (`-memory 4096`), whatever they were
   provisioned with.
 - **Lease lifecycle** — every `atelierd emit` and every `device` command
@@ -151,7 +189,8 @@ atelierd device status                              # bank + physical devices, s
   by hand is `off` (a leased one restarts at the session's next lease), and
   a virtual device on without a lease is powered off. There is no resident
   daemon: these checks run when a command runs, and the only background
-  process is the detached recycle worker a release spawns, bounded to 5 min.
+  processes are the detached recycle and restore workers a release spawns,
+  bounded to 5 min.
 - **`frn` integration** — the picker suffixes bank devices with their lease
   state (e.g. `atelier-ios-1 — bank, on, session abc123 · def456 waiting 12
   min`) so a human avoids stepping on a running forge. frn never takes a

@@ -51,6 +51,89 @@ func TestStatusShowsOnSinceAndQueue(t *testing.T) {
 	}
 }
 
+func TestStatusPhysicalRowNameAndID(t *testing.T) {
+	now := time.Date(2026, 10, 17, 15, 30, 0, 0, time.Local)
+	rows := []devicebank.StatusRow{
+		{Name: "atelier-android-1", Platform: devicebank.PlatformAndroid, State: devicebank.StateOff, ID: "emulator-5560",
+			Device: &devicebank.Device{Name: "atelier-android-1", State: devicebank.StateOff}},
+		{Name: "Pixel 7 Pro", Platform: devicebank.PlatformAndroid, Physical: true, State: devicebank.StateOn, ID: "P7SERIAL", Serial: "P7SERIAL", Wired: true,
+			Lease: &devicebank.Lease{SessionID: "S1", AcquiredAt: now.Add(-time.Minute), RenewedAt: now.Add(-5 * time.Second)}},
+		{Name: "iPhone 12 Mini", Platform: devicebank.PlatformIOS, Physical: true, State: devicebank.StateOff, ID: "00008101-0011649C3EB8001E", Serial: "00008101-0011649C3EB8001E", Wired: true,
+			Lease: &devicebank.Lease{SessionID: "S2", SuspendedAt: now.Add(-10 * time.Minute)}},
+		{Name: "Galaxy", Platform: devicebank.PlatformAndroid, Physical: true, State: devicebank.StateOff, ID: "192.168.1.30:5555", Serial: "R5CT1234"},
+		{Name: "Pixel 6", Platform: devicebank.PlatformAndroid, Physical: true, State: devicebank.StateOff, ID: "P6SERIAL", Serial: "P6SERIAL", Absent: true,
+			Restore: &devicebank.PendingRestore{EndedAt: now.Add(-26 * time.Minute), LastError: "Pixel 6 is not connected"}},
+	}
+	var out bytes.Buffer
+	if err := renderStatus(&out, rows, nil, now); err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(out.String(), "\n")
+	if fields := strings.Fields(lines[0]); strings.Join(fields, " ") != "NAME PLATFORM TYPE STATE ID LEASE" {
+		t.Fatalf("header = %q", lines[0])
+	}
+	pixelRows := 0
+	for _, line := range lines {
+		if strings.HasPrefix(line, "Pixel 7 Pro") {
+			pixelRows++
+			if got := strings.Join(strings.Fields(line)[:8], " "); got != "Pixel 7 Pro android physical on P7SERIAL session" {
+				t.Errorf("Pixel row = %q", line)
+			}
+		}
+	}
+	if pixelRows != 1 {
+		t.Errorf("the Pixel is listed once, got %d rows", pixelRows)
+	}
+	for _, want := range []string{
+		"emulator-5560",
+		"session S1, age 1m0s, renewed 5s ago",
+		"session S2, suspended since 15:20",
+		"192.168.1.30:5555 (serial R5CT1234)",
+		"not leasable: wireless only",
+		"restore pending since 15:04 (Pixel 6 is not connected)",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("status output lacks %q:\n%s", want, out.String())
+		}
+	}
+	if strings.Contains(out.String(), "(usb)") {
+		t.Errorf("a physical name carries no transport:\n%s", out.String())
+	}
+}
+
+func executeDevice(args ...string) (string, string, error) {
+	command := NewDeviceCmd()
+	var stdout, stderr bytes.Buffer
+	command.SetOut(&stdout)
+	command.SetErr(&stderr)
+	command.SetArgs(args)
+	command.SilenceErrors = true
+	command.SilenceUsage = true
+	err := command.Execute()
+	return stdout.String(), stderr.String(), err
+}
+
+func TestLeaseTypeFlag(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if err := devicebank.WithLock(func(s *devicebank.State) error {
+		s.Config = devicebank.Config{Android: 1}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, err := executeDevice("lease", "--platform", "android", "--session", "S1", "--type", "both"); err == nil || !strings.Contains(err.Error(), `invalid type "both"`) {
+		t.Fatalf("an unknown type is refused, got %v", err)
+	}
+	stdout, stderr, err := executeDevice("lease", "--platform", "android", "--session", "S1", "--type", "physical")
+	if ExitCode(err) != ExitBankExhausted || stdout != "" {
+		t.Fatalf("physical required and none leasable exits 10 with nothing on stdout, got %v %q", err, stdout)
+	}
+	if !strings.Contains(stderr, "no --app-id given") {
+		t.Fatalf("stderr says why, got %q", stderr)
+	}
+}
+
 func seedHolderAndWaiter(t *testing.T) {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())

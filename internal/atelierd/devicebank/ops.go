@@ -7,20 +7,19 @@ import (
 	"io"
 	"strings"
 	"time"
-
-	"github.com/valian-ca/homebrew-tools/internal/device"
 )
 
 // Sentinel errors the CLI maps to distinct exit codes (10 and 11).
 var (
-	ErrExhausted      = errors.New("no device of the platform could be powered on within the wait: every device is leased, recycling or broken, or the ignition limit is reached")
+	ErrExhausted      = errors.New("no device of the platform could be leased within the wait: every device is leased, recycling or broken, the ignition limit is reached, or no physical device is plugged, free and available")
 	ErrNotInitialized = errors.New("device bank not initialized — run `atelierd device bank init` first")
-	ErrLeaseLost      = errors.New("the lease was released while its device was booting")
+	ErrLeaseLost      = errors.New("the lease was released while its device was being prepared")
 )
 
 func reapLocked(ctx context.Context, s *State, now time.Time) bool {
 	changed := reapExpired(s, now)
 	changed = reapStuckRecycles(s, now) || changed
+	changed = reapRestores(ctx, s, now) || changed
 	return reconcile(ctx, s, now) || changed
 }
 
@@ -131,10 +130,13 @@ func Reap(ctx context.Context) error {
 }
 
 type grant struct {
-	lease  *Lease
-	boot   *Device
-	wipe   bool
-	notify *Waiter
+	lease        *Lease
+	boot         *Device
+	wipe         bool
+	notify       *Waiter
+	take         *PhysicalDevice
+	resumeStayOn bool
+	notes        []string
 }
 
 // takeWipe consumes a pending wipe when its boot is granted: once the
@@ -147,44 +149,64 @@ func takeWipe(d *Device) bool {
 	return wipe
 }
 
-func grantLocked(s *State, session, workdir string, platform Platform, physical []PhysicalDevice, now, deadline time.Time) (g grant, changed bool) {
+// grantLocked takes the whole decision under the lock: a physical device on
+// the cable when the requirement admits one, else a virtual device through
+// the ignition limit and the queue. A physical device never joins the queue,
+// and a requirement without physical never returns one.
+func grantLocked(s *State, req LeaseRequest, probe physicalProbe, excluded map[string]string, now, deadline time.Time) (g grant, changed bool) {
+	session, platform := req.Session, req.Platform
 	if l := s.FindLease(session, platform); l != nil {
 		if l.Physical {
-			g.lease = l
-			return g, false
-		}
-		switch d := s.FindDevice(l.DeviceName); {
-		case d != nil && d.State == StateOn:
-			g.lease = l
-			return g, removeWaiters(s, session, platform)
-		case d != nil && d.State == StateOff:
-			if fairReservation(s, session, platform) == d {
-				powerUp(s, d, l, now, "resume")
-				removeWaiters(s, session, platform)
-				g.lease, g.boot, g.wipe = l, d, takeWipe(d)
-				return g, true
+			wasSuspended := l.Suspended()
+			if kept, resume := holdPhysical(l, probe); kept {
+				g.lease, g.resumeStayOn = l, resume
+				return g, removeWaiters(s, session, platform) || wasSuspended != l.Suspended()
 			}
-			return queueCaller(s, session, platform, now, deadline)
-		default:
-			removeLease(s, l)
+			g.notes = append(g.notes, fmt.Sprintf("note: %s (%s) is no longer connected by cable — lease dropped, choosing again", l.DeviceName, l.serial()))
+			dropLease(s, l, now, "unplugged")
+			changed = true
+		} else {
+			switch d := s.FindDevice(l.DeviceName); {
+			case d != nil && d.State == StateOn:
+				g.lease = l
+				return g, removeWaiters(s, session, platform)
+			case d != nil && d.State == StateOff:
+				if fairReservation(s, session, platform) == d {
+					powerUp(s, d, l, now, "resume")
+					removeWaiters(s, session, platform)
+					g.lease, g.boot, g.wipe = l, d, takeWipe(d)
+					return g, true
+				}
+				return queueCaller(s, session, platform, now, deadline)
+			default:
+				removeLease(s, l)
+				changed = true
+			}
 		}
 	}
+	if req.Type.admitsPhysical() {
+		if req.AppID == "" {
+			g.notes = append(g.notes, "note: no --app-id given — physical devices are not leased")
+		} else if p := pickPhysical(s, platform, probe.devices, excluded, &g.notes); p != nil {
+			l := commitLease(s, &Candidate{Physical: p}, session, req.Workdir, platform, now)
+			l.AppID = req.AppID
+			removeWaiters(s, session, platform)
+			g.lease, g.take = l, p
+			return g, true
+		}
+	}
+	if !req.Type.admitsVirtual() {
+		return g, changed
+	}
 	if d := fairReservation(s, session, platform); d != nil {
-		g.lease = commitLease(s, &Candidate{Device: d}, session, workdir, platform, now)
+		g.lease = commitLease(s, &Candidate{Device: d}, session, req.Workdir, platform, now)
 		removeWaiters(s, session, platform)
 		g.boot, g.wipe = d, takeWipe(d)
 		return g, true
 	}
-	// Physical fallback only when the platform has no virtual device to
-	// power on at all: a limit-blocked caller waits for the virtual one.
-	if !hasVirtualCandidate(s, platform) && !waiterAhead(s, session, platform) {
-		if p := pickPhysical(s, platform, physical); p != nil {
-			g.lease = commitLease(s, &Candidate{Physical: p}, session, workdir, platform, now)
-			removeWaiters(s, session, platform)
-			return g, true
-		}
-	}
-	return queueCaller(s, session, platform, now, deadline)
+	q, queued := queueCaller(s, session, platform, now, deadline)
+	q.notes = g.notes
+	return q, queued || changed
 }
 
 func queueCaller(s *State, session string, platform Platform, now, deadline time.Time) (grant, bool) {
@@ -199,14 +221,33 @@ func queueCaller(s *State, session string, platform Platform, now, deadline time
 }
 
 // Acquire is idempotent per (session, platform): a suspended or dead lease
-// gets its own device back, powered on.
-func Acquire(ctx context.Context, session, workdir string, platform Platform, wait time.Duration, progress io.Writer) (string, error) {
-	deadline := clock().Add(wait)
-	physical := drv.physical(ctx, platform)
+// gets its own device back, powered on. Physical devices are probed again on
+// every attempt, so one plugged or freed during the wait is taken.
+func Acquire(ctx context.Context, req LeaseRequest, progress io.Writer) (string, error) {
+	if req.Type == "" {
+		req.Type = RequireVirtual
+	}
+	session, platform := req.Session, req.Platform
+	deadline := clock().Add(req.Wait)
+	excluded := map[string]string{}
+	printed := map[string]bool{}
+	note := func(lines []string) {
+		for _, line := range lines {
+			if !printed[line] {
+				printed[line] = true
+				fmt.Fprintln(progress, line)
+			}
+		}
+	}
 	for {
 		if err := ctx.Err(); err != nil {
 			leaveQueue(session, platform)
 			return "", err
+		}
+		var probe physicalProbe
+		if req.Type.admitsPhysical() && req.AppID != "" {
+			devices, err := drv.physical(ctx, platform)
+			probe = physicalProbe{ok: err == nil, devices: devices}
 		}
 		var g grant
 		var outcome error
@@ -219,7 +260,7 @@ func Acquire(ctx context.Context, session, workdir string, platform Platform, wa
 				outcome = ErrNotInitialized
 			} else {
 				var granted bool
-				g, granted = grantLocked(s, session, workdir, platform, physical, now, deadline)
+				g, granted = grantLocked(s, req, probe, excluded, now, deadline)
 				changed = granted || changed
 				if g.lease == nil {
 					outcome = ErrExhausted
@@ -233,6 +274,7 @@ func Acquire(ctx context.Context, session, workdir string, platform Platform, wa
 		if err != nil {
 			return "", err
 		}
+		note(g.notes)
 		if g.notify != nil {
 			drv.notify("atelierd device bank",
 				fmt.Sprintf("Session %s has been waiting for an %s device since %s", g.notify.SessionID, g.notify.Platform, g.notify.EnqueuedAt.Local().Format("15:04")))
@@ -250,6 +292,23 @@ func Acquire(ctx context.Context, session, workdir string, platform Platform, wa
 		}
 		if outcome != nil {
 			return "", outcome
+		}
+		if g.take != nil {
+			skip, err := takePhysical(ctx, req, g.lease, *g.take)
+			if err != nil {
+				return "", err
+			}
+			if skip != "" {
+				excluded[g.take.Serial] = skip
+				note([]string{skip})
+				continue
+			}
+			return g.lease.DeviceID, nil
+		}
+		if g.resumeStayOn {
+			if err := drv.setStayOn(ctx, g.lease.DeviceID, "3"); err != nil {
+				fmt.Fprintf(progress, "warning: %s (%s) resumed, but its screen may lock: %v\n", g.lease.DeviceName, g.lease.serial(), firstLine(err))
+			}
 		}
 		if g.boot == nil {
 			return g.lease.DeviceID, nil
@@ -321,7 +380,16 @@ func Pause(ctx context.Context, session string) error {
 		changed := reapLocked(ctx, s, now)
 		changed = touchSession(s, session, now) > 0 || changed
 		for _, l := range s.Leases {
-			if l.SessionID != session || l.Physical || l.Suspended() {
+			if l.SessionID != session || l.Suspended() {
+				continue
+			}
+			if l.Physical {
+				if err := pausePhysical(ctx, l); err != nil {
+					failures = append(failures, err)
+					continue
+				}
+				l.SuspendedAt = now
+				changed = true
 				continue
 			}
 			d := s.FindDevice(l.DeviceName)
@@ -695,15 +763,20 @@ func resizeAndroid(ctx context.Context, s *State, n int, now time.Time, out io.W
 }
 
 // StatusRow is one line of `atelierd device status`: a bank device or a
-// connected physical device, with its lease when held. Device is nil for a
-// physical row.
+// physical device, with its lease or pending restore. Device is nil for a
+// physical row; Absent marks a physical device the probe did not see.
 type StatusRow struct {
 	Name     string
 	Platform Platform
 	Physical bool
 	State    DeviceState
+	ID       string
+	Serial   string
+	Wired    bool
+	Absent   bool
 	Device   *Device
 	Lease    *Lease
+	Restore  *PendingRestore
 }
 
 func StatusRows(ctx context.Context) (rows []StatusRow, queue []*Waiter, err error) {
@@ -711,27 +784,38 @@ func StatusRows(ctx context.Context) (rows []StatusRow, queue []*Waiter, err err
 	if err != nil {
 		return nil, nil, err
 	}
-	leaseByID := map[string]*Lease{}
-	for _, l := range s.Leases {
-		leaseByID[l.DeviceID] = l
-	}
 	for _, d := range s.Devices {
 		rows = append(rows, StatusRow{
-			Name: d.Name, Platform: d.Platform, State: d.State, Device: d, Lease: s.leaseForDevice(d.Name),
+			Name: d.Name, Platform: d.Platform, State: d.State, ID: d.TargetID(), Device: d, Lease: s.leaseForDevice(d.Name),
 		})
 	}
-	res := device.ProbeAll(ctx)
-	for _, d := range res.Physical {
-		p := PlatformAndroid
-		if d.Kind == device.KindIOS {
-			p = PlatformIOS
+	physical, _ := drv.physical(ctx, "")
+	shownLeases := map[*Lease]bool{}
+	shownRestores := map[*PendingRestore]bool{}
+	for i := range physical {
+		p := &physical[i]
+		row := StatusRow{Name: p.Name, Platform: p.Platform, Physical: true, ID: p.ID, Serial: p.Serial, Wired: p.Wired}
+		row.Lease, row.Restore = s.leaseForPhysical(p), s.restoreForPhysical(p)
+		shownLeases[row.Lease], shownRestores[row.Restore] = true, true
+		rows = append(rows, physicalRow(row))
+	}
+	for _, l := range s.Leases {
+		if l.Physical && !shownLeases[l] {
+			rows = append(rows, physicalRow(StatusRow{Name: l.DeviceName, Platform: l.Platform, Physical: true, ID: l.DeviceID, Serial: l.serial(), Absent: true, Lease: l}))
 		}
-		row := StatusRow{Name: d.Label, Platform: p, Physical: true, State: StateOff}
-		if l := leaseByID[d.ID]; l != nil {
-			row.State = StateOn
-			row.Lease = l
+	}
+	for _, r := range s.Restores {
+		if !shownRestores[r] {
+			rows = append(rows, physicalRow(StatusRow{Name: r.Name, Platform: r.Platform, Physical: true, ID: r.DeviceID, Serial: r.Serial, Absent: true, Restore: r}))
 		}
-		rows = append(rows, row)
 	}
 	return rows, s.liveWaiters(clock(), ""), nil
+}
+
+func physicalRow(row StatusRow) StatusRow {
+	row.State = StateOff
+	if row.Lease != nil && !row.Lease.Suspended() {
+		row.State = StateOn
+	}
+	return row
 }

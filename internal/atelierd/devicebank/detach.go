@@ -44,3 +44,13 @@ func SpawnRecycle(deviceName string) error {
 	}
 	return spawnDetached(nil, self, "device", "recycle", deviceName)
 }
+
+// SpawnRestore launches `atelierd device restore <id>` detached, like
+// SpawnRecycle.
+func SpawnRestore(deviceID string) error {
+	self, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	return spawnDetached(nil, self, "device", "restore", deviceID)
+}
