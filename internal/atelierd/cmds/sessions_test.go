@@ -447,7 +447,7 @@ func TestRunSessionReader_StaysAliveWhileAWorkflowAgentStreams(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	oldPoll, oldIdle := treePollInterval, sessionIdleTimeout
 	treePollInterval = 20 * time.Millisecond
-	sessionIdleTimeout = 300 * time.Millisecond
+	sessionIdleTimeout = time.Second
 	t.Cleanup(func() { treePollInterval = oldPoll; sessionIdleTimeout = oldIdle })
 
 	parent := filepath.Join(t.TempDir(), "cs-wf.jsonl")
@@ -463,7 +463,7 @@ func TestRunSessionReader_StaysAliveWhileAWorkflowAgentStreams(t *testing.T) {
 		runSessionReader(ctx, "cs-wf")
 	}()
 
-	for i := 0; i < 8; i++ {
+	for i := 0; i < 15; i++ {
 		time.Sleep(100 * time.Millisecond)
 		appendJSONL(t, agent, lineAt("assistant", recentMinute(1)))
 	}
