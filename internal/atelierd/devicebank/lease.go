@@ -80,7 +80,7 @@ func dropLease(s *State, l *Lease, now time.Time, reason string) {
 	if l.Physical {
 		s.Restores = append(s.Restores, &PendingRestore{
 			DeviceID: l.DeviceID, Serial: l.serial(), Name: l.DeviceName, Platform: l.Platform,
-			Snapshot: l.Snapshot, EndedAt: now, Reason: reason, StartedAt: now,
+			AppID: l.AppID, Snapshot: l.Snapshot, EndedAt: now, Reason: reason, StartedAt: now,
 		})
 		s.spawnRestore(l.DeviceID)
 		return

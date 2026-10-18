@@ -101,6 +101,7 @@ atelierd device lease --platform ios --session <id> [--type any|virtual|physical
 atelierd device pause --session <id>                # power the session's virtual devices off, keep the lease and the data
 atelierd device release --session <id> [--platform ios|android]
 atelierd device status                              # bank + physical devices, states, ids, leases, queue
+atelierd device restore <id> [--forget]             # retry a physical device's pending restore, or drop it
 ```
 
 - **`bank init`** is idempotent and sizes both ways: re-running tops up;
@@ -176,11 +177,15 @@ atelierd device status                              # bank + physical devices, s
   fails twice leaves the device `broken`, its reason shown by `status`, and
   never leased again until `bank init` repairs it. A physical device is
   restored by a detached worker instead: its `stay_on` value from before
-  the lease is put back, its `adb reverse` rules removed, and the developer
-  builds installed during the lease uninstalled — never an app present
-  before, nor a Store app installed meanwhile. It is leasable again once the
-  restore succeeds; an unreachable device keeps its restore pending, retried
-  by any later command once it is connected again, by any transport.
+  the lease is put back (unless the device already holds it), its `adb
+  reverse` rules removed, and the developer build of the run's `--app-id`
+  installed during the lease uninstalled — no other app, since a restore
+  can wait days for its device and the user may install their own builds
+  meanwhile. It is leasable again once the restore succeeds; an unreachable
+  device keeps its restore pending, retried by later `device` commands once
+  it is connected again, by any transport. `atelierd device restore <id>
+  --forget` drops a restore that cannot succeed (a phone that forbids
+  writing the setting) without touching the device.
 - **AVDs start with 4 GB of RAM** (`-memory 4096`), whatever they were
   provisioned with.
 - **Lease lifecycle** — every `atelierd emit` and every `device` command

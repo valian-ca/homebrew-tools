@@ -131,6 +131,7 @@ type PendingRestore struct {
 	Serial        string            `json:"serial"`
 	Name          string            `json:"name"`
 	Platform      Platform          `json:"platform"`
+	AppID         string            `json:"appId,omitempty"`
 	Snapshot      *PhysicalSnapshot `json:"snapshot,omitempty"`
 	EndedAt       time.Time         `json:"endedAt"`
 	Reason        string            `json:"reason"`

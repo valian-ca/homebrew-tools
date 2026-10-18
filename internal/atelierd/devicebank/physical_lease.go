@@ -286,9 +286,9 @@ func runRestore(ctx context.Context, deviceID string, startedAt time.Time) error
 	return restoreErr
 }
 
-// restorePhysical runs on any transport: adb wifi is enough to restore. Only
-// developer builds absent from the snapshot are uninstalled: a Store app the
-// user installed during the lease stays.
+// restorePhysical runs on any transport: adb wifi is enough to restore. It
+// uninstalls the run's app alone: a restore can wait days for its device, and
+// any other app installed meanwhile may be the user's own build.
 func restorePhysical(ctx context.Context, r PendingRestore) error {
 	devices, err := drv.physical(ctx, r.Platform)
 	if err != nil {
@@ -301,31 +301,53 @@ func restorePhysical(ctx context.Context, r PendingRestore) error {
 	dev := devices[i]
 	var errs []error
 	if r.Platform == PlatformAndroid {
-		// Written back whenever recorded: after a crash the bank cannot know
-		// whether the change happened.
 		if r.Snapshot != nil && r.Snapshot.StayOnBefore != nil {
-			errs = append(errs, drv.setStayOn(ctx, dev.ID, *r.Snapshot.StayOnBefore))
+			errs = append(errs, putStayOnBack(ctx, dev.ID, *r.Snapshot.StayOnBefore))
 		}
 		errs = append(errs, drv.removeReverses(ctx, dev.ID))
 	}
-	if r.Snapshot == nil {
+	if r.Snapshot == nil || r.AppID == "" || slices.Contains(r.Snapshot.AppsBefore, r.AppID) {
 		return errors.Join(errs...)
 	}
-	now, err := drv.apps(ctx, dev)
-	if err != nil {
-		return errors.Join(append(errs, err)...)
-	}
-	for _, id := range now {
-		if slices.Contains(r.Snapshot.AppsBefore, id) {
-			continue
-		}
-		app, err := drv.appInfo(ctx, dev, id)
-		switch {
-		case err != nil:
-			errs = append(errs, err)
-		case app.Developer:
-			errs = append(errs, drv.uninstall(ctx, dev, id))
-		}
+	app, err := drv.appInfo(ctx, dev, r.AppID)
+	switch {
+	case err != nil:
+		errs = append(errs, err)
+	case app.Installed && app.Developer:
+		errs = append(errs, drv.uninstall(ctx, dev, r.AppID))
 	}
 	return errors.Join(errs...)
+}
+
+// putStayOnBack writes the recorded value whenever the device holds another
+// one — after a crash the bank cannot know whether its change happened — and
+// never when it already holds it: a device that refuses the write would
+// otherwise keep its restore pending forever.
+func putStayOnBack(ctx context.Context, id, before string) error {
+	if cur, err := drv.stayOn(ctx, id); err == nil && cur == before {
+		return nil
+	}
+	return drv.setStayOn(ctx, id, before)
+}
+
+// ForgetRestore drops a pending restore without touching its device, which
+// becomes leasable again: the way out for a device that refuses its restore.
+func ForgetRestore(device string) error {
+	found := false
+	err := WithLock(func(s *State) error {
+		for _, r := range append([]*PendingRestore(nil), s.Restores...) {
+			if r.DeviceID == device || r.Serial == device {
+				s.removeRestore(r)
+				found = true
+			}
+		}
+		if !found {
+			return errNoChange
+		}
+		return nil
+	})
+	if err == nil && !found {
+		return fmt.Errorf("no pending restore for %q", device)
+	}
+	return err
 }

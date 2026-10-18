@@ -163,7 +163,8 @@ unavailable for this lease and nothing on it is touched. A physical device
 is never erased, powered off or recycled: on Android the lease sets
 stay_on_while_plugged_in to 3, and the return puts back the value from
 before the lease, removes the adb reverses, and uninstalls the developer
-builds installed during the lease. A skipped device is named on stderr.
+build of --app-id installed during the lease. A skipped device is named on
+stderr.
 
 A virtual device that fails to boot goes to recycling and keeps counting
 toward the ignition limit until its power-off is confirmed: another device
@@ -258,9 +259,10 @@ detached worker, and goes back to off within 5 min (an AVD is wiped by
 -wipe-data on its next boot; a recycle that fails twice leaves the device
 broken until bank init). A physical device is never erased nor powered off:
 a detached worker puts back its pre-lease state (stay_on_while_plugged_in,
-adb reverses, developer builds installed during the lease), and the device
-is leasable again once that restore succeeds. An unreachable device keeps
-its restore pending until it is connected again.`,
+adb reverses, the developer build of the run's --app-id installed during
+the lease — no other app), and the device is leasable again once that
+restore succeeds. An unreachable device keeps its restore pending until it
+is connected again; see restore --forget for one that refuses it.`,
 		Example: `  atelierd device release --session abc123
   atelierd device release --session abc123 --platform android`,
 		Args: cobra.NoArgs,
@@ -409,13 +411,29 @@ func newRecycleCmd() *cobra.Command {
 }
 
 func newRestoreCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:    "restore <device-id>",
-		Short:  "Restore worker (spawned detached when a physical lease ends; not for direct use)",
-		Hidden: true,
-		Args:   cobra.ExactArgs(1),
+	var forget bool
+	c := &cobra.Command{
+		Use:   "restore <device-id> [--forget]",
+		Short: "Put back a physical device's pre-lease state, or forget a restore that cannot succeed",
+		Long: `A returned physical device keeps a pending restore until its pre-lease
+state is back, and is not leasable meanwhile. The restore runs on its own,
+in a detached worker spawned when the lease ends and again by later device
+commands; running it by hand retries it now.
+
+--forget drops the pending restore without touching the device, which is
+leasable again: the way out for a device that refuses its restore (a phone
+that forbids writing stay_on_while_plugged_in, say). Put its setting back
+by hand if needed. The device is named by the ID or the serial status shows.`,
+		Example: `  atelierd device restore P7SERIAL
+  atelierd device restore P7SERIAL --forget`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if forget {
+				return devicebank.ForgetRestore(args[0])
+			}
 			return devicebank.RunRestore(cmd.Context(), args[0])
 		},
 	}
+	c.Flags().BoolVar(&forget, "forget", false, "drop the pending restore without touching the device")
+	return c
 }
