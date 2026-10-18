@@ -26,6 +26,7 @@ func TestLeaseAnnotationsComposition(t *testing.T) {
 			{SessionID: "abc123", Platform: PlatformIOS, DeviceName: "atelier-ios-2", DeviceID: "BBB-2222", AcquiredAt: t0, RenewedAt: t0},
 			{SessionID: "ghi789", Platform: PlatformIOS, DeviceName: "atelier-ios-3", DeviceID: "CCC-3333", AcquiredAt: t0, RenewedAt: t0, SuspendedAt: t0},
 			{SessionID: "def456", Platform: PlatformAndroid, DeviceID: "serial-9", DeviceName: "Pixel", Physical: true, AcquiredAt: t0, RenewedAt: t0},
+			{SessionID: "jkl000", Platform: PlatformIOS, DeviceID: "udid-phys", DeviceName: "My iPhone", Physical: true, AcquiredAt: t0, RenewedAt: t0, SuspendedAt: t0},
 		},
 		Queue: []*Waiter{{SessionID: "zzz999", Platform: PlatformIOS, EnqueuedAt: t0, ExpiresAt: t0.Add(time.Hour)}},
 	})
@@ -41,6 +42,7 @@ func TestLeaseAnnotationsComposition(t *testing.T) {
 		{" Android (emulator)", "emulator-5642", " Android (emulator) — bank, recycling"},
 		{" Pixel 7 (usb)", "serial-9", " Pixel 7 (usb) — leased, session def456"},
 		{" My iPhone (wifi)", "unrelated-udid", " My iPhone (wifi)"},
+		{" My iPhone (usb)", "udid-phys", " My iPhone (usb) — leased, suspended, session jkl000"},
 	}
 	for _, tt := range tests {
 		if got := AnnotateLabel(ann, tt.label, tt.id); got != tt.want {

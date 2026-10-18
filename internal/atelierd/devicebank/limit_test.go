@@ -22,7 +22,7 @@ func TestConcurrentSessionsNeverExceedLimit(t *testing.T) {
 			go func() {
 				defer wg.Done()
 				for range 4 {
-					if _, err := Acquire(context.Background(), sp.session, "/wd", sp.platform, 10*time.Second, discard{}); err != nil {
+					if _, err := Acquire(context.Background(), LeaseRequest{Session: sp.session, Workdir: "/wd", Platform: sp.platform, Wait: 10 * time.Second}, discard{}); err != nil {
 						t.Error(err)
 						return
 					}

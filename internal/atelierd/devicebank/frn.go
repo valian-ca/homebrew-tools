@@ -24,6 +24,8 @@ func LeaseAnnotations() map[string]string {
 	}
 	for _, l := range s.Leases {
 		switch {
+		case l.Physical && l.Suspended():
+			out[l.DeviceID] = fmt.Sprintf(" — leased, suspended, session %s", l.SessionID)
 		case l.Physical:
 			out[l.DeviceID] = fmt.Sprintf(" — leased, session %s", l.SessionID)
 		case l.Suspended():

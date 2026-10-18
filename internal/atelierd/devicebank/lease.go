@@ -5,12 +5,6 @@ import (
 	"time"
 )
 
-type PhysicalDevice struct {
-	ID       string
-	Name     string
-	Platform Platform
-}
-
 // Candidate is the lease selector's pick: exactly one of Device (virtual
 // bank entry) or Physical is set.
 type Candidate struct {
@@ -43,6 +37,7 @@ func commitLease(s *State, c *Candidate, session, workdir string, platform Platf
 	} else {
 		l.DeviceID = c.Physical.ID
 		l.DeviceName = c.Physical.Name
+		l.Serial = c.Physical.Serial
 		l.Physical = true
 	}
 	s.Leases = append(s.Leases, l)
@@ -83,6 +78,11 @@ func removeLease(s *State, l *Lease) {
 func dropLease(s *State, l *Lease, now time.Time, reason string) {
 	removeLease(s, l)
 	if l.Physical {
+		s.Restores = append(s.Restores, &PendingRestore{
+			DeviceID: l.DeviceID, Serial: l.serial(), Name: l.DeviceName, Platform: l.Platform,
+			AppID: l.AppID, Snapshot: l.Snapshot, EndedAt: now, Reason: reason, StartedAt: now,
+		})
+		s.spawnRestore(l.DeviceID)
 		return
 	}
 	d := s.FindDevice(l.DeviceName)

@@ -104,32 +104,6 @@ func fairReservation(s *State, session string, platform Platform) *Device {
 	return deviceToPowerOn(s, session, platform, taken)
 }
 
-func hasVirtualCandidate(s *State, platform Platform) bool {
-	return deviceToPowerOn(s, "", platform, nil) != nil
-}
-
-func waiterAhead(s *State, session string, platform Platform) bool {
-	for _, w := range s.orderedQueue() {
-		if w.SessionID == session && w.Platform == platform {
-			return false
-		}
-		if w.Platform == platform {
-			return true
-		}
-	}
-	return false
-}
-
-func pickPhysical(s *State, platform Platform, physical []PhysicalDevice) *PhysicalDevice {
-	for i := range physical {
-		p := &physical[i]
-		if p.Platform == platform && s.LeaseForDeviceID(p.ID) == nil {
-			return p
-		}
-	}
-	return nil
-}
-
 func (s *State) heldOnDevice(session string) *Device {
 	for _, l := range s.Leases {
 		if l.SessionID != session || l.Physical || l.Suspended() || l.DeviceDied {

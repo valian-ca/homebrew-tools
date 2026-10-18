@@ -35,12 +35,16 @@ func spawnDetached(env []string, name string, args ...string) error {
 	return cmd.Process.Release()
 }
 
-// SpawnRecycle launches `atelierd device recycle <name>` detached, using the
-// current binary so the worker always matches the caller's version.
-func SpawnRecycle(deviceName string) error {
+func SpawnRecycle(deviceName string) error { return spawnSelf("device", "recycle", deviceName) }
+
+func SpawnRestore(deviceID string) error { return spawnSelf("device", "restore", deviceID) }
+
+// spawnSelf runs the current binary so a worker always matches the caller's
+// version.
+func spawnSelf(args ...string) error {
 	self, err := os.Executable()
 	if err != nil {
 		return err
 	}
-	return spawnDetached(nil, self, "device", "recycle", deviceName)
+	return spawnDetached(nil, self, args...)
 }

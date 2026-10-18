@@ -28,8 +28,9 @@ func TestReleaseSessionRecyclesVirtualOnly(t *testing.T) {
 	commitLease(s, &Candidate{Physical: &PhysicalDevice{ID: "serial-1", Name: "Pixel", Platform: PlatformAndroid}}, "sess-a", "/wd", PlatformAndroid, t0)
 
 	releaseSession(s, "sess-a", "", t0.Add(time.Minute), "release")
-	if len(s.spawns) != 1 || s.spawns[0] != "atelier-ios-1" {
-		t.Fatalf("only the virtual device recycles, got %v", s.spawns)
+	want := []spawnJob{{target: "atelier-ios-1"}, {restore: true, target: "serial-1"}}
+	if len(s.spawns) != 2 || s.spawns[0] != want[0] || s.spawns[1] != want[1] {
+		t.Fatalf("the virtual device recycles, the physical one is restored, got %v", s.spawns)
 	}
 	if s.Devices[0].State != StateRecycling || s.Devices[0].PowerOffConfirmed {
 		t.Fatalf("a released on device is recycling, not yet confirmed off, got %+v", s.Devices[0])
@@ -98,7 +99,7 @@ func TestConcurrentLeaseUnderFlock(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			id, err := Acquire(context.Background(), session, "/wd", PlatformIOS, 0, discard{})
+			id, err := Acquire(context.Background(), LeaseRequest{Session: session, Workdir: "/wd", Platform: PlatformIOS}, discard{})
 			if err != nil {
 				t.Error(err)
 			}

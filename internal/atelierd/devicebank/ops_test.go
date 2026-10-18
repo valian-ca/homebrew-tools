@@ -134,7 +134,7 @@ func TestReleaseNoChangeAndPhysicalDrop(t *testing.T) {
 		}
 	})
 
-	t.Run("physical lease drop persists without a recycle", func(t *testing.T) {
+	t.Run("physical lease drop leaves a pending restore, no recycle", func(t *testing.T) {
 		f := useFake(t)
 		seed(t, &State{Config: Config{IOS: 1}})
 		if err := WithLock(func(s *State) error {
@@ -147,8 +147,12 @@ func TestReleaseNoChangeAndPhysicalDrop(t *testing.T) {
 		if err := Release(context.Background(), "sess-a", ""); err != nil {
 			t.Fatal(err)
 		}
-		if load(t).FindLease("sess-a", PlatformAndroid) != nil {
+		s := load(t)
+		if s.FindLease("sess-a", PlatformAndroid) != nil {
 			t.Fatal("physical lease must be gone after release")
+		}
+		if len(s.Restores) != 1 || len(f.restores) != 1 {
+			t.Fatalf("an unplugged device keeps its restore pending, got %+v spawned %v", s.Restores, f.restores)
 		}
 		if len(f.spawned) != 0 || f.count("") != 0 {
 			t.Fatalf("a physical device is never recycled nor powered off, got %v %v", f.spawned, f.calls)

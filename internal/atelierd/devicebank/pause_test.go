@@ -77,7 +77,8 @@ func TestLeaseResumesSameDeviceWithoutWipe(t *testing.T) {
 
 func TestPauseIdempotentNoLeaseAndPhysical(t *testing.T) {
 	f := useFake(t)
-	f.phys = []PhysicalDevice{{ID: "serial-9", Name: "Pixel", Platform: PlatformAndroid}}
+	f.phys = []PhysicalDevice{pixel}
+	f.stayOnVal[pixel.Serial] = "0"
 	seed(t, bank(iosDevice(1)))
 	lease(t, "sess-a", PlatformIOS)
 	pause(t, "sess-a")
@@ -100,12 +101,14 @@ func TestPauseIdempotentNoLeaseAndPhysical(t *testing.T) {
 		t.Fatal("pause without a lease must leave the state untouched")
 	}
 
-	if id := lease(t, "sess-p", PlatformAndroid); id != "serial-9" {
-		t.Fatalf("expected the physical fallback, got %q", id)
+	if id := leaseAny(t, "sess-p", PlatformAndroid); id != pixel.ID {
+		t.Fatalf("expected the physical device, got %q", id)
 	}
 	pause(t, "sess-p")
-	if l := load(t).FindLease("sess-p", PlatformAndroid); l == nil || l.Suspended() {
-		t.Fatalf("pause leaves a physical lease as it is, got %+v", l)
+	f.resetCalls()
+	pause(t, "sess-p")
+	if l := load(t).FindLease("sess-p", PlatformAndroid); l == nil || !l.Suspended() || f.count("setStayOn") != 0 {
+		t.Fatalf("a physical lease is suspended once, got %+v %v", l, f.calls)
 	}
 }
 

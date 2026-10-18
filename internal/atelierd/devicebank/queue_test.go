@@ -130,7 +130,7 @@ func TestCrossPlatformHeadDoesNotBlock(t *testing.T) {
 
 func TestLimitBlockedNeverFallsBackToPhysical(t *testing.T) {
 	f := useFake(t)
-	f.phys = []PhysicalDevice{{ID: "serial-9", Name: "Pixel", Platform: PlatformAndroid}}
+	f.phys = []PhysicalDevice{pixel}
 	seed(t, bank(iosDevice(1), androidDevice(1)))
 	lease(t, "sess-1", PlatformIOS)
 
@@ -141,8 +141,8 @@ func TestLimitBlockedNeverFallsBackToPhysical(t *testing.T) {
 	f2 := useFake(t)
 	f2.phys = f.phys
 	seed(t, bank(iosDevice(1)))
-	if id := lease(t, "sess-2", PlatformAndroid); id != "serial-9" {
-		t.Fatalf("without any android virtual device the physical one is leased, got %q", id)
+	if err := leaseErr("sess-2", PlatformAndroid); !errors.Is(err, ErrExhausted) {
+		t.Fatalf("without --type a physical device is never leased, even with no android virtual device, got %v", err)
 	}
 }
 
@@ -153,7 +153,7 @@ func TestLeaseWaitsForItsTurn(t *testing.T) {
 
 	got := make(chan error, 1)
 	go func() {
-		_, err := Acquire(context.Background(), "sess-2", "/wd", PlatformIOS, 5*time.Second, discard{})
+		_, err := Acquire(context.Background(), LeaseRequest{Session: "sess-2", Workdir: "/wd", Platform: PlatformIOS, Wait: 5 * time.Second}, discard{})
 		got <- err
 	}()
 	time.Sleep(50 * time.Millisecond)
@@ -187,7 +187,7 @@ func TestAcquireWaitHonoursCancel(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 	start := time.Now()
-	_, err := Acquire(ctx, "sess-2", "/wd", PlatformIOS, 5*time.Second, discard{})
+	_, err := Acquire(ctx, LeaseRequest{Session: "sess-2", Workdir: "/wd", Platform: PlatformIOS, Wait: 5 * time.Second}, discard{})
 	if !errors.Is(err, context.DeadlineExceeded) || time.Since(start) > 2*time.Second {
 		t.Fatalf("a cancelled wait returns promptly with the context error, got %v after %s", err, time.Since(start))
 	}
@@ -209,7 +209,7 @@ func TestBootOutcomeOfALostLeaseTouchesNoLaterBoot(t *testing.T) {
 			}
 		}
 
-		if _, err := Acquire(context.Background(), "sess-a", "/wd", PlatformIOS, 0, discard{}); !errors.Is(err, ErrLeaseLost) {
+		if _, err := Acquire(context.Background(), LeaseRequest{Session: "sess-a", Workdir: "/wd", Platform: PlatformIOS}, discard{}); !errors.Is(err, ErrLeaseLost) {
 			t.Fatalf("bootFails=%v: a lease released mid-boot hands back no device id, got %v", bootFails, err)
 		}
 		s := load(t)
@@ -230,7 +230,7 @@ func TestCancelledBootIsNotAFailure(t *testing.T) {
 	f.onBoot = cancel
 	f.fail["bootIOS"] = 1
 
-	if _, err := Acquire(ctx, "sess-1", "/wd", PlatformIOS, 0, discard{}); !errors.Is(err, context.Canceled) {
+	if _, err := Acquire(ctx, LeaseRequest{Session: "sess-1", Workdir: "/wd", Platform: PlatformIOS}, discard{}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("an interrupted lease returns the context error, got %v", err)
 	}
 	s := load(t)
@@ -251,7 +251,7 @@ func TestWipeConsumedWhenItsBootIsGranted(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	f.onBoot = cancel
 
-	_, _ = Acquire(ctx, "sess-1", "/wd", PlatformAndroid, 0, discard{})
+	_, _ = Acquire(ctx, LeaseRequest{Session: "sess-1", Workdir: "/wd", Platform: PlatformAndroid}, discard{})
 	if f.count("startAVD atelier-android-1 wipe=true") != 1 {
 		t.Fatalf("the granted boot wipes, got %v", f.calls)
 	}

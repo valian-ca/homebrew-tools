@@ -653,8 +653,19 @@ func TestStartPrunesOldRuns(t *testing.T) {
 	}
 }
 
+// patientRunLock lets every contender of a concurrency test wait its turn:
+// a busy CI runner can hold twelve of them past the production deadline,
+// which these tests do not measure.
+func patientRunLock(t *testing.T) {
+	t.Helper()
+	prev := runLockWait
+	runLockWait = 5 * time.Second
+	t.Cleanup(func() { runLockWait = prev })
+}
+
 func TestWaveAndPassConcurrency(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	patientRunLock(t)
 	runID := startTestRun(t, 1)
 	campaign := writeTestFile(t, "campaign.json", `{"schemaVersion":2,"axes":[{"title":"A","scenarios":[{"title":"S","steps":["Do"],"expected":"Done","rank":5,"access":"readonly"}]}]}`)
 	if err := SaveCampaign(runID, campaign); err != nil {
@@ -726,6 +737,7 @@ func TestWaveAndPassConcurrency(t *testing.T) {
 
 func TestCampaignlessWaveAndPassConcurrency(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	patientRunLock(t)
 	runID := startTestRun(t, 1)
 	if _, err := OpenWave(runID); err != nil {
 		t.Fatalf("OpenWave: %v", err)

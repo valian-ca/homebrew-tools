@@ -3,8 +3,6 @@ package devicebank
 import (
 	"context"
 	"time"
-
-	"github.com/valian-ca/homebrew-tools/internal/device"
 )
 
 // driver is every toolchain call the lease lifecycle makes. Provisioning
@@ -18,15 +16,24 @@ type driver interface {
 	waitAVDReady(ctx context.Context, serial string) error
 	killAVD(ctx context.Context, serial string) error
 	poweredOn(ctx context.Context, ios, android bool) (map[string]bool, error)
-	physical(ctx context.Context, platform Platform) []PhysicalDevice
+	physical(ctx context.Context, platform Platform) ([]PhysicalDevice, error)
+	stayOn(ctx context.Context, id string) (string, error)
+	setStayOn(ctx context.Context, id, value string) error
+	removeReverses(ctx context.Context, id string) error
+	apps(ctx context.Context, p PhysicalDevice) ([]string, error)
+	appInfo(ctx context.Context, p PhysicalDevice, appID string) (AppInfo, error)
+	androidLabel(ctx context.Context, id, pkg string) (string, error)
+	uninstall(ctx context.Context, p PhysicalDevice, appID string) error
 	spawnRecycle(name string) error
+	spawnRestore(deviceID string) error
 	notify(title, body string)
 }
 
 var (
-	drv       driver = execDriver{}
-	clock            = time.Now
-	queuePoll        = 2 * time.Second
+	drv              driver = execDriver{}
+	clock                   = time.Now
+	queuePoll               = 2 * time.Second
+	unpluggedRecheck        = 2 * time.Second
 )
 
 type execDriver struct{}
@@ -80,25 +87,39 @@ func (execDriver) poweredOn(ctx context.Context, ios, android bool) (map[string]
 	return on, nil
 }
 
-// physical converts frn's physical-device probe into lease candidates for
-// one platform. Bank AVDs show up in adb as emulators, not physical, so the
-// probe never aliases a bank device.
-func (execDriver) physical(ctx context.Context, platform Platform) []PhysicalDevice {
-	res := device.ProbeAll(ctx)
-	var out []PhysicalDevice
-	for _, d := range res.Physical {
-		p := PlatformAndroid
-		if d.Kind == device.KindIOS {
-			p = PlatformIOS
-		}
-		if p == platform {
-			out = append(out, PhysicalDevice{ID: d.ID, Name: d.Label, Platform: p})
-		}
-	}
-	return out
+func (execDriver) physical(ctx context.Context, platform Platform) ([]PhysicalDevice, error) {
+	return probePhysical(ctx, platform)
+}
+
+func (execDriver) stayOn(ctx context.Context, id string) (string, error) { return readStayOn(ctx, id) }
+
+func (execDriver) setStayOn(ctx context.Context, id, value string) error {
+	return writeStayOn(ctx, id, value)
+}
+
+func (execDriver) removeReverses(ctx context.Context, id string) error {
+	return removeAdbReverses(ctx, id)
+}
+
+func (execDriver) apps(ctx context.Context, p PhysicalDevice) ([]string, error) {
+	return installedApps(ctx, p)
+}
+
+func (execDriver) appInfo(ctx context.Context, p PhysicalDevice, appID string) (AppInfo, error) {
+	return appInfo(ctx, p, appID)
+}
+
+func (execDriver) androidLabel(ctx context.Context, id, pkg string) (string, error) {
+	return androidLabel(ctx, id, pkg)
+}
+
+func (execDriver) uninstall(ctx context.Context, p PhysicalDevice, appID string) error {
+	return uninstallApp(ctx, p, appID)
 }
 
 func (execDriver) spawnRecycle(name string) error { return SpawnRecycle(name) }
+
+func (execDriver) spawnRestore(deviceID string) error { return SpawnRestore(deviceID) }
 
 func (execDriver) notify(title, body string) { Notify(title, body) }
 

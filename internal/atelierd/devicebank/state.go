@@ -56,8 +56,6 @@ type Config struct {
 	MaxOn   int `json:"maxOn,omitempty"`
 }
 
-// Device is one provisioned virtual bank device. Physical devices are never
-// stored here — they are probed live and tracked only through leases.
 type Device struct {
 	Name              string      `json:"name"`
 	Platform          Platform    `json:"platform"`
@@ -97,16 +95,49 @@ func (d *Device) mayBeOn() bool {
 }
 
 type Lease struct {
-	SessionID   string    `json:"sessionId"`
-	Platform    Platform  `json:"platform"`
-	DeviceName  string    `json:"deviceName,omitempty"`
-	DeviceID    string    `json:"deviceId"`
-	Physical    bool      `json:"physical"`
-	Workdir     string    `json:"workdir"`
-	AcquiredAt  time.Time `json:"acquiredAt"`
-	RenewedAt   time.Time `json:"renewedAt"`
-	SuspendedAt time.Time `json:"suspendedAt,omitzero"`
-	DeviceDied  bool      `json:"deviceDied,omitempty"`
+	SessionID   string            `json:"sessionId"`
+	Platform    Platform          `json:"platform"`
+	DeviceName  string            `json:"deviceName,omitempty"`
+	DeviceID    string            `json:"deviceId"`
+	Physical    bool              `json:"physical"`
+	Serial      string            `json:"serial,omitempty"`
+	AppID       string            `json:"appId,omitempty"`
+	Snapshot    *PhysicalSnapshot `json:"snapshot,omitempty"`
+	Workdir     string            `json:"workdir"`
+	AcquiredAt  time.Time         `json:"acquiredAt"`
+	RenewedAt   time.Time         `json:"renewedAt"`
+	SuspendedAt time.Time         `json:"suspendedAt,omitzero"`
+	DeviceDied  bool              `json:"deviceDied,omitempty"`
+}
+
+// serial falls back to the target id for a lease written before the bank
+// recorded serials.
+func (l *Lease) serial() string {
+	if l.Serial != "" {
+		return l.Serial
+	}
+	return l.DeviceID
+}
+
+type PhysicalSnapshot struct {
+	TakenAt      time.Time `json:"takenAt"`
+	StayOnBefore *string   `json:"stayOnBefore,omitempty"`
+	AppsBefore   []string  `json:"appsBefore"`
+}
+
+// PendingRestore keeps its device out of every lease until it succeeds.
+type PendingRestore struct {
+	DeviceID      string            `json:"deviceId"`
+	Serial        string            `json:"serial"`
+	Name          string            `json:"name"`
+	Platform      Platform          `json:"platform"`
+	AppID         string            `json:"appId,omitempty"`
+	Snapshot      *PhysicalSnapshot `json:"snapshot,omitempty"`
+	EndedAt       time.Time         `json:"endedAt"`
+	Reason        string            `json:"reason"`
+	StartedAt     time.Time         `json:"startedAt,omitzero"`
+	LastAttemptAt time.Time         `json:"lastAttemptAt,omitzero"`
+	LastError     string            `json:"lastError,omitempty"`
 }
 
 func (l *Lease) Suspended() bool { return !l.SuspendedAt.IsZero() }
@@ -121,13 +152,21 @@ type Waiter struct {
 
 // State is the on-disk shape of ~/.atelier/devices.json.
 type State struct {
-	Config  Config    `json:"config"`
-	Devices []*Device `json:"devices"`
-	Leases  []*Lease  `json:"leases"`
-	Queue   []*Waiter `json:"queue,omitempty"`
+	Config   Config            `json:"config"`
+	Devices  []*Device         `json:"devices"`
+	Leases   []*Lease          `json:"leases"`
+	Queue    []*Waiter         `json:"queue,omitempty"`
+	Restores []*PendingRestore `json:"restores,omitempty"`
 
 	transitions []Transition
-	spawns      []string
+	// Spawned only once the state is saved and the lock released: a worker's
+	// first act is to take the same lock.
+	spawns []spawnJob
+}
+
+type spawnJob struct {
+	restore bool
+	target  string
 }
 
 func (s *State) Initialized() bool {
@@ -161,6 +200,42 @@ func (s *State) LeaseForDeviceID(id string) *Lease {
 	return nil
 }
 
+func (s *State) leaseForPhysical(p *PhysicalDevice) *Lease {
+	for _, l := range s.Leases {
+		if l.Physical && (l.DeviceID == p.ID || l.serial() == p.Serial) {
+			return l
+		}
+	}
+	return nil
+}
+
+func (s *State) findRestore(deviceID string) *PendingRestore {
+	for _, r := range s.Restores {
+		if r.DeviceID == deviceID {
+			return r
+		}
+	}
+	return nil
+}
+
+func (s *State) restoreForPhysical(p *PhysicalDevice) *PendingRestore {
+	for _, r := range s.Restores {
+		if r.DeviceID == p.ID || r.Serial == p.Serial {
+			return r
+		}
+	}
+	return nil
+}
+
+func (s *State) removeRestore(r *PendingRestore) {
+	for i, cur := range s.Restores {
+		if cur == r {
+			s.Restores = append(s.Restores[:i], s.Restores[i+1:]...)
+			return
+		}
+	}
+}
+
 func (s *State) leaseForDevice(name string) *Lease {
 	for _, l := range s.Leases {
 		if !l.Physical && l.DeviceName == name {
@@ -187,10 +262,12 @@ func (s *State) poweredOnCount() int {
 	return n
 }
 
-// spawnRecycle defers the detached worker until the state is saved and the
-// lock released: the worker's first act is to take the same lock.
 func (s *State) spawnRecycle(name string) {
-	s.spawns = append(s.spawns, name)
+	s.spawns = append(s.spawns, spawnJob{target: name})
+}
+
+func (s *State) spawnRestore(deviceID string) {
+	s.spawns = append(s.spawns, spawnJob{restore: true, target: deviceID})
 }
 
 // migrate rewrites a 0.20 state in place. A legacy free device was booted
@@ -218,8 +295,7 @@ func Exists() bool {
 	return err == nil
 }
 
-// Load reads the state snapshot without taking the lock. Display paths
-// (status, frn) use this; mutations go through WithLock.
+// Load takes no lock: never write back what it returns, go through WithLock.
 func Load() (*State, error) {
 	data, err := os.ReadFile(paths.Devices())
 	if err != nil {
@@ -287,8 +363,12 @@ func WithLock(fn func(s *State) error) error {
 	}
 	writeJournal(s.transitions)
 	_ = lock.Unlock()
-	for _, name := range s.spawns {
-		_ = drv.spawnRecycle(name)
+	for _, job := range s.spawns {
+		if job.restore {
+			_ = drv.spawnRestore(job.target)
+		} else {
+			_ = drv.spawnRecycle(job.target)
+		}
 	}
 	return nil
 }
