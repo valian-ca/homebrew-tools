@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -23,6 +24,7 @@ const (
 	ForgeWaveOpen          Type = "forge:wave-open"
 	HookSessionStart       Type = "hook:session-start"
 	HookSessionEnd         Type = "hook:session-end"
+	SessionRole            Type = "session:role"
 	ShipCIRound            Type = "ship:ci-round"
 	ShipPRLinked           Type = "ship:pr-linked"
 	ShipRunStart           Type = "ship:run-start"
@@ -55,6 +57,7 @@ func All() []Type {
 		ForgeWaveOpen,
 		HookSessionEnd,
 		HookSessionStart,
+		SessionRole,
 		ShipCIRound,
 		ShipPRLinked,
 		ShipRunStart,
@@ -76,6 +79,20 @@ func IsValid(s string) bool {
 		}
 	}
 	return false
+}
+
+var SessionRoles = []string{"vigie", "none"}
+
+func ValidateSessionRole(payload map[string]any) error {
+	raw, present := payload["role"]
+	if role, ok := raw.(string); ok && slices.Contains(SessionRoles, role) {
+		return nil
+	}
+	err := fmt.Errorf("%s requires --data role=%s or --data role=%s", SessionRole, SessionRoles[0], SessionRoles[1])
+	if !present {
+		return err
+	}
+	return fmt.Errorf("%w, got role=%v (%T)", err, raw, raw)
 }
 
 func ParsePayload(args []string) (map[string]any, error) {
