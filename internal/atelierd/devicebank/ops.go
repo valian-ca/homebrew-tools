@@ -339,6 +339,8 @@ func Acquire(ctx context.Context, req LeaseRequest, progress io.Writer) (string,
 		if g.resumeStayOn {
 			if err := drv.setStayOn(ctx, g.lease.DeviceID, "3"); err != nil {
 				fmt.Fprintf(progress, "warning: %s (%s) resumed, but its screen may lock: %v\n", g.lease.DeviceName, g.lease.serial(), firstLine(err))
+			} else if err := confirmStayOn(ctx, g.lease); err != nil {
+				return "", err
 			}
 		}
 		if g.boot == nil {

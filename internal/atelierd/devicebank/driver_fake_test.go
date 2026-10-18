@@ -23,6 +23,7 @@ type fakeDriver struct {
 	physErr   error
 	blindFor  int
 	onApps    func()
+	onStayOn  func(value string)
 	installed map[string]map[string]AppInfo
 	stayOnVal map[string]string
 	reverses  map[string]int
@@ -274,6 +275,11 @@ func (f *fakeDriver) stayOn(_ context.Context, id string) (string, error) {
 }
 
 func (f *fakeDriver) setStayOn(_ context.Context, id, value string) error {
+	if f.onStayOn != nil {
+		hook := f.onStayOn
+		f.onStayOn = nil
+		hook(value)
+	}
 	if err := f.call("setStayOn", id+" "+value); err != nil {
 		return err
 	}

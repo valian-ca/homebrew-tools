@@ -212,8 +212,50 @@ func takePhysical(ctx context.Context, taken *Lease, p PhysicalDevice) (skip str
 		if err := drv.setStayOn(ctx, p.ID, "3"); err != nil {
 			return giveUp(fmt.Sprintf("could not keep its screen on (%s)", firstLine(err)), true)
 		}
+		held := *taken
+		held.Snapshot = snap
+		if err := confirmStayOn(ctx, &held); err != nil {
+			return "", err
+		}
 	}
 	return "", nil
+}
+
+// confirmStayOn runs after the unlocked write of 3. A return that ran in
+// between may have put the value back first: its restore runs again, so the
+// value from before the lease wins. A pause that ran in between gets its
+// value back the same way.
+func confirmStayOn(ctx context.Context, held *Lease) error {
+	lost, paused := false, false
+	err := WithLock(func(s *State) error {
+		cur := s.FindLease(held.SessionID, held.Platform)
+		if cur != nil && cur.Physical && cur.DeviceID == held.DeviceID && cur.AcquiredAt.Equal(held.AcquiredAt) {
+			paused = cur.Suspended()
+			return errNoChange
+		}
+		lost = true
+		now := clock()
+		r := s.findRestore(held.DeviceID)
+		if r == nil {
+			r = &PendingRestore{
+				DeviceID: held.DeviceID, Serial: held.serial(), Name: held.DeviceName, Platform: held.Platform,
+				AppID: held.AppID, Snapshot: held.Snapshot, EndedAt: now, Reason: "released-during-prepare",
+			}
+			s.Restores = append(s.Restores, r)
+		}
+		r.StartedAt = now
+		s.spawnRestore(held.DeviceID)
+		return nil
+	})
+	switch {
+	case err != nil:
+		return err
+	case lost:
+		return ErrLeaseLost
+	case paused:
+		return pausePhysical(ctx, held)
+	}
+	return nil
 }
 
 func pausePhysical(ctx context.Context, l *Lease) error {
