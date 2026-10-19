@@ -114,6 +114,26 @@ func liveInstall(t *testing.T, name string, args ...string) {
 	}
 }
 
+func liveFresh(t *testing.T, session string, platform Platform) bool {
+	t.Helper()
+	l := load(t).FindLease(session, platform)
+	return l != nil && l.freshInstall()
+}
+
+// The bank keeps the run's builds: the run removes its own fixtures so the
+// next one starts without them.
+func liveUninstall(t *testing.T, p PhysicalDevice, appID string) {
+	t.Helper()
+	args := []string{"-s", p.ID, "uninstall", appID}
+	name := "adb"
+	if p.Platform == PlatformIOS {
+		name, args = "xcrun", []string{"devicectl", "device", "uninstall", "app", "--device", p.ID, appID}
+	}
+	if _, err := runBounded(context.Background(), name, args...); err != nil {
+		t.Logf("cleanup could not uninstall %s from %s: %v", appID, p.Name, err)
+	}
+}
+
 func assertNoPendingRestore(t *testing.T) {
 	t.Helper()
 	if r := load(t).Restores; len(r) != 0 {
@@ -148,6 +168,10 @@ func TestPhysicalLive(t *testing.T) {
 		for _, s := range []string{"live-ios", "live-android", "live-kill", "live-conflict"} {
 			_ = Release(context.Background(), s, "")
 		}
+		liveUninstall(t, pixel, fitApp)
+		if iosApp != "" {
+			liveUninstall(t, iphone, fitIOSApp)
+		}
 		if v, err := readStayOn(context.Background(), pixel.ID); err == nil && v != stayOnBefore {
 			_ = writeStayOn(context.Background(), pixel.ID, stayOnBefore)
 			t.Errorf("cleanup had to put stay_on back to %s (was %s)", stayOnBefore, v)
@@ -163,6 +187,9 @@ func TestPhysicalLive(t *testing.T) {
 		}
 		if got := liveStayOn(t, pixel); got != "3" {
 			t.Fatalf("stay_on during the lease = %s, want 3", got)
+		}
+		if !liveFresh(t, "live-ios", PlatformIOS) || !liveFresh(t, "live-android", PlatformAndroid) {
+			t.Fatal("both apps are absent before the run: both leases are fresh installs")
 		}
 	})
 
@@ -187,7 +214,7 @@ func TestPhysicalLive(t *testing.T) {
 			t.Fatal("the APK must be installed")
 		}
 		if iosApp == "" {
-			t.Log("no ATELIERFIT_IOS_APP: the iPhone uninstall rests on the fake driver")
+			t.Log("no ATELIERFIT_IOS_APP: the iPhone install kept at the return rests on the fake driver")
 			return
 		}
 		liveInstall(t, "xcrun", "devicectl", "device", "install", "app", "--device", iphone.ID, iosApp)
@@ -222,16 +249,23 @@ func TestPhysicalLive(t *testing.T) {
 		}
 	})
 
-	t.Run("return uninstalls the debug builds only", func(t *testing.T) {
+	t.Run("return keeps every app, the debug builds included", func(t *testing.T) {
 		if err := Release(context.Background(), "live-ios", ""); err != nil {
 			t.Fatal(err)
 		}
 		assertNoPendingRestore(t)
-		if got := liveApps(t, pixel); !slices.Equal(got, pixelApps) {
-			t.Fatalf("the Pixel's packages must be back to the pre-lease list, diff %v", symmetricDiff(got, pixelApps))
+		wantPixel := append(slices.Clone(pixelApps), fitApp)
+		slices.Sort(wantPixel)
+		if got := liveApps(t, pixel); !slices.Equal(got, wantPixel) {
+			t.Fatalf("the Pixel keeps its packages and the debug build, diff %v", symmetricDiff(got, wantPixel))
 		}
-		if got := liveApps(t, iphone); !slices.Equal(got, iphoneApps) {
-			t.Fatalf("the iPhone's apps must be back to the pre-lease list, diff %v", symmetricDiff(got, iphoneApps))
+		wantIPhone := slices.Clone(iphoneApps)
+		if iosApp != "" {
+			wantIPhone = append(wantIPhone, fitIOSApp)
+			slices.Sort(wantIPhone)
+		}
+		if got := liveApps(t, iphone); !slices.Equal(got, wantIPhone) {
+			t.Fatalf("the iPhone keeps its apps and the debug build, diff %v", symmetricDiff(got, wantIPhone))
 		}
 	})
 

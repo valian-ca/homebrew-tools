@@ -250,9 +250,53 @@ func queueCaller(s *State, session string, platform Platform, now, deadline time
 	return g, changed
 }
 
+// Leased is what a lease hands its caller: lease --json prints it.
+type Leased struct {
+	ID       string   `json:"id"`
+	Name     string   `json:"name"`
+	Serial   string   `json:"serial"`
+	Platform Platform `json:"platform"`
+	Physical bool     `json:"physical"`
+	AppID    string   `json:"appId"`
+	// FreshInstall holds for the whole lease, pauses included: the app was
+	// not on the physical device when the lease began, so its first launch
+	// raises the system permission alerts.
+	FreshInstall bool `json:"freshInstall"`
+}
+
 // Acquire is idempotent per (session, platform): a suspended or dead
 // virtual lease gets its own device back, powered on.
 func Acquire(ctx context.Context, req LeaseRequest, progress io.Writer) (string, error) {
+	l, err := AcquireLease(ctx, req, progress)
+	return l.ID, err
+}
+
+// AcquireLease is Acquire with the lease's details. A fresh install is named
+// on progress at every call of its lease.
+func AcquireLease(ctx context.Context, req LeaseRequest, progress io.Writer) (Leased, error) {
+	l, err := acquire(ctx, req, progress)
+	if err != nil {
+		return Leased{}, err
+	}
+	out := Leased{ID: l.DeviceID, Name: l.DeviceName, Serial: l.serial(), Platform: l.Platform, Physical: l.Physical, AppID: l.AppID}
+	if l.Physical {
+		// A parallel call may have prepared the lease: its snapshot is read
+		// back from the state.
+		s, err := Load()
+		if err != nil {
+			return Leased{}, err
+		}
+		if cur := s.FindLease(l.SessionID, l.Platform); cur != nil && cur.DeviceID == l.DeviceID {
+			out.FreshInstall = cur.freshInstall()
+		}
+	}
+	if out.FreshInstall {
+		fmt.Fprintf(progress, "fresh install: %s was not installed on %s (%s) when the lease began: its first launch raises the system permission alerts (Local Network on iOS, …)\n", out.AppID, out.Name, out.Serial)
+	}
+	return out, nil
+}
+
+func acquire(ctx context.Context, req LeaseRequest, progress io.Writer) (*Lease, error) {
 	if req.Type == "" {
 		req.Type = RequireVirtual
 	}
@@ -271,14 +315,14 @@ func Acquire(ctx context.Context, req LeaseRequest, progress io.Writer) (string,
 	for {
 		if err := ctx.Err(); err != nil {
 			leaveQueue(session, platform)
-			return "", err
+			return nil, err
 		}
 		// Probed on every attempt, not once before the loop: a device plugged
 		// or freed during the wait must be taken.
 		probe, err := probeForLease(ctx, req)
 		if err != nil {
 			leaveQueue(session, platform)
-			return "", err
+			return nil, err
 		}
 		var g grant
 		var outcome error
@@ -303,7 +347,7 @@ func Acquire(ctx context.Context, req LeaseRequest, progress io.Writer) (string,
 			return nil
 		})
 		if err != nil {
-			return "", err
+			return nil, err
 		}
 		note(g.notes)
 		if g.notify != nil {
@@ -315,53 +359,53 @@ func Acquire(ctx context.Context, req LeaseRequest, progress io.Writer) (string,
 				select {
 				case <-ctx.Done():
 					leaveQueue(session, platform)
-					return "", ctx.Err()
+					return nil, ctx.Err()
 				case <-time.After(min(queuePoll, remaining)):
 				}
 				continue
 			}
 		}
 		if outcome != nil {
-			return "", outcome
+			return nil, outcome
 		}
 		if g.take != nil {
 			skip, err := takePhysical(ctx, g.lease, *g.take)
 			if err != nil {
-				return "", err
+				return nil, err
 			}
 			if skip != "" {
 				excluded[g.take.Serial] = true
 				note([]string{skip})
 				continue
 			}
-			return g.lease.DeviceID, nil
+			return g.lease, nil
 		}
 		if g.resumeStayOn {
 			if err := drv.setStayOn(ctx, g.lease.DeviceID, "3"); err != nil {
 				fmt.Fprintf(progress, "warning: %s (%s) resumed, but its screen may lock: %v\n", g.lease.DeviceName, g.lease.serial(), firstLine(err))
 			} else if err := confirmStayOn(ctx, g.lease); err != nil {
-				return "", err
+				return nil, err
 			}
 		}
 		if g.boot == nil {
-			return g.lease.DeviceID, nil
+			return g.lease, nil
 		}
 		bootErr := boot(ctx, g.boot, g.wipe)
 		// An interrupted boot is not the device's fault: the lease stays,
 		// still booting, and the reap past bootTimeout decides whether the
 		// device came up or died.
 		if err := ctx.Err(); err != nil {
-			return "", err
+			return nil, err
 		}
 		mine, err := settleBoot(session, platform, g.boot.Name, g.boot.PoweredOnAt, bootErr)
 		if err != nil {
-			return "", err
+			return nil, err
 		}
 		if !mine {
-			return "", ErrLeaseLost
+			return nil, ErrLeaseLost
 		}
 		if bootErr == nil {
-			return g.lease.DeviceID, nil
+			return g.lease, nil
 		}
 		fmt.Fprintf(progress, "%s failed to boot (%v), recycling it; another device is tried as soon as the limit allows\n", g.boot.Name, bootErr)
 	}

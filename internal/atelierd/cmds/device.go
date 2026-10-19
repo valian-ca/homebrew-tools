@@ -1,6 +1,7 @@
 package cmds
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -140,12 +141,17 @@ recycling device counts until its power-off is confirmed.`, devicebank.DefaultMa
 func newLeaseCmd() *cobra.Command {
 	var platformFlag, session, typeFlag, appID string
 	var wait time.Duration
+	var asJSON bool
 	c := &cobra.Command{
-		Use:   "lease --platform ios|android --session <id> [--type any|virtual|physical] [--app-id <id>] [--wait <duration>]",
+		Use:   "lease --platform ios|android --session <id> [--type any|virtual|physical] [--app-id <id>] [--wait <duration>] [--json]",
 		Short: "Lease a device of the platform for the session",
 		Long: `Select a device of the platform, record the lease, and print the
 targetable identifier (simulator UDID, Android serial, or physical device
-id for flutter run -d) alone on stdout.
+id for flutter run -d) alone on stdout. With --json, stdout is instead one
+JSON object on one line:
+  {"id":"…","name":"…","serial":"…","platform":"ios","physical":true,
+   "appId":"…","freshInstall":true}
+where id is the targetable identifier and serial the one status shows.
 
 --type says which devices the lease admits: virtual (default), any
 (physical or virtual), or physical. Within the platform the lease returns,
@@ -162,9 +168,19 @@ developer build nor named "[D] …" (a Store build, say), the device is
 unavailable for this lease and nothing on it is touched. A physical device
 is never erased, powered off or recycled: on Android the lease sets
 stay_on_while_plugged_in to 3, and the return puts back the value from
-before the lease, removes the adb reverses, and uninstalls the developer
-build of --app-id installed during the lease. A skipped device is named on
-stderr.
+before the lease and removes the adb reverses. No app is ever uninstalled:
+the build of --app-id stays installed after the return, so the next run
+installs over it and keeps its permissions (iOS asks again for Local
+Network, location and notifications after an install from scratch). A
+skipped device is named on stderr.
+
+Fresh install: when --app-id was not installed on the physical device as
+the lease began, freshInstall is true and stderr carries a line starting
+with "fresh install: ". The app's first launch then raises the system
+permission alerts, among them the iOS Local Network alert that cuts it off
+from emulators reached over the LAN until accepted. The signal belongs to
+the lease: every call of the same lease repeats it, pauses included, and
+a new lease (after a release) finds the app kept and does not.
 
 A virtual device that fails to boot goes to recycling and keeps counting
 toward the ignition limit until its power-off is confirmed: another device
@@ -187,10 +203,11 @@ the session never queues: it exits 10 when no physical device is plugged,
 free and available within --wait.
 
 Exit codes: 0 leased, 10 not served within the wait, 11 bank not
-initialized.`,
+initialized. On any exit but 0, --json prints nothing on stdout.`,
 		Example: `  atelierd device lease --platform android --session abc123
   atelierd device lease --platform ios --session abc123 --wait 15m
-  atelierd device lease --platform android --session abc123 --type any --app-id com.example.app.development`,
+  atelierd device lease --platform android --session abc123 --type any --app-id com.example.app.development
+  atelierd device lease --platform ios --session abc123 --type any --app-id com.example.app.development --json`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			platform, err := devicebank.ParsePlatform(platformFlag)
@@ -202,14 +219,13 @@ initialized.`,
 				return err
 			}
 			workdir, _ := os.Getwd()
-			id, err := devicebank.Acquire(cmd.Context(), devicebank.LeaseRequest{
+			l, err := devicebank.AcquireLease(cmd.Context(), devicebank.LeaseRequest{
 				Session: session, Workdir: workdir, Platform: platform, Type: req, AppID: appID, Wait: wait,
 			}, cmd.ErrOrStderr())
 			if err != nil {
 				return err
 			}
-			fmt.Fprintln(cmd.OutOrStdout(), id)
-			return nil
+			return printLeased(cmd.OutOrStdout(), l, asJSON)
 		},
 	}
 	c.Flags().StringVar(&platformFlag, "platform", "", "ios or android (required)")
@@ -217,9 +233,18 @@ initialized.`,
 	c.Flags().StringVar(&typeFlag, "type", string(devicebank.RequireVirtual), "devices the lease admits: any, virtual or physical")
 	c.Flags().StringVar(&appID, "app-id", "", "application id of the run (required to lease a physical device)")
 	c.Flags().DurationVar(&wait, "wait", 0, "how long to wait in the queue before exiting 10")
+	c.Flags().BoolVar(&asJSON, "json", false, "print the lease as one JSON object, freshInstall included")
 	_ = c.MarkFlagRequired("platform")
 	_ = c.MarkFlagRequired("session")
 	return c
+}
+
+func printLeased(out io.Writer, l devicebank.Leased, asJSON bool) error {
+	if !asJSON {
+		_, err := fmt.Fprintln(out, l.ID)
+		return err
+	}
+	return json.NewEncoder(out).Encode(l)
 }
 
 func newPauseCmd() *cobra.Command {
@@ -258,11 +283,13 @@ virtual device is powered off and erased, without being booted, by a
 detached worker, and goes back to off within 5 min (an AVD is wiped by
 -wipe-data on its next boot; a recycle that fails twice leaves the device
 broken until bank init). A physical device is never erased nor powered off:
-a detached worker puts back its pre-lease state (stay_on_while_plugged_in,
-adb reverses, the developer build of the run's --app-id installed during
-the lease — no other app), and the device is leasable again once that
-restore succeeds. An unreachable device keeps its restore pending until it
-is connected again; see restore --forget for one that refuses it.`,
+a detached worker puts back its pre-lease state on Android
+(stay_on_while_plugged_in, adb reverses), and the device is leasable again
+once that restore succeeds. No app is uninstalled, the run's --app-id build
+included: it stays installed for the next run. An iPhone has nothing to put
+back and is leasable again at once. An unreachable Android device keeps its
+restore pending until it is connected again; see restore --forget for one
+that refuses it.`,
 		Example: `  atelierd device release --session abc123
   atelierd device release --session abc123 --platform android`,
 		Args: cobra.NoArgs,
@@ -415,8 +442,10 @@ func newRestoreCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "restore <device-id> [--forget]",
 		Short: "Put back a physical device's pre-lease state, or forget a restore that cannot succeed",
-		Long: `A returned physical device keeps a pending restore until its pre-lease
-state is back, and is not leasable meanwhile. The restore runs on its own,
+		Long: `A returned physical Android device keeps a pending restore until its
+pre-lease state is back (stay_on_while_plugged_in, adb reverses; no app is
+ever uninstalled), and is not leasable meanwhile. An iPhone's restore has
+nothing to put back and succeeds at once. The restore runs on its own,
 in a detached worker spawned when the lease ends and again by later device
 commands; running it by hand retries it now.
 

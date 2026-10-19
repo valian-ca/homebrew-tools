@@ -23,7 +23,6 @@ type driver interface {
 	apps(ctx context.Context, p PhysicalDevice) ([]string, error)
 	appInfo(ctx context.Context, p PhysicalDevice, appID string) (AppInfo, error)
 	androidLabel(ctx context.Context, id, pkg string) (string, error)
-	uninstall(ctx context.Context, p PhysicalDevice, appID string) error
 	spawnRecycle(name string) error
 	spawnRestore(deviceID string) error
 	notify(title, body string)
@@ -111,10 +110,6 @@ func (execDriver) appInfo(ctx context.Context, p PhysicalDevice, appID string) (
 
 func (execDriver) androidLabel(ctx context.Context, id, pkg string) (string, error) {
 	return androidLabel(ctx, id, pkg)
-}
-
-func (execDriver) uninstall(ctx context.Context, p PhysicalDevice, appID string) error {
-	return uninstallApp(ctx, p, appID)
 }
 
 func (execDriver) spawnRecycle(name string) error { return SpawnRecycle(name) }

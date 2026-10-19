@@ -8,52 +8,43 @@ import (
 	"time"
 )
 
-func TestDeferredRestoreUninstallsOnlyTheRunsApp(t *testing.T) {
-	for _, dev := range []PhysicalDevice{pixel, iphone} {
-		t.Run(dev.Name, func(t *testing.T) {
-			f := useFake(t)
-			c := useClock(t, t0)
-			f.plug(dev)
-			seed(t, bank(iosDevice(1), androidDevice(1)))
-			leaseAny(t, "sess-1", dev.Platform)
-			f.install(dev.Serial, runApp, AppInfo{Developer: true})
-			f.install(dev.Serial, "com.other.during", AppInfo{Developer: true})
+func TestDeferredRestoreKeepsTheRunsApp(t *testing.T) {
+	f := useFake(t)
+	c := useClock(t, t0)
+	f.plug(pixel)
+	seed(t, bank(androidDevice(1)))
+	leaseAny(t, "sess-1", PlatformAndroid)
+	f.install(pixel.Serial, runApp, AppInfo{Developer: true})
 
-			f.plug()
-			release(t, "sess-1")
-			f.plug(dev)
-			f.install(dev.Serial, "com.user.own.development", AppInfo{Developer: true})
-			c.advance(restoreReapAfter + time.Minute)
-			if err := Reap(context.Background()); err != nil {
-				t.Fatal(err)
-			}
-
-			if len(load(t).Restores) != 0 || f.hasApp(dev.Serial, runApp) {
-				t.Fatalf("the run's debug build is gone once the device is back, got %+v", load(t).Restores)
-			}
-			for _, kept := range []string{"com.other.during", "com.user.own.development"} {
-				if !f.hasApp(dev.Serial, kept) {
-					t.Fatalf("%s must stay: only the run's app is uninstalled", kept)
-				}
-			}
-		})
+	f.plug()
+	release(t, "sess-1")
+	if len(load(t).Restores) != 1 {
+		t.Fatalf("an unplugged Pixel keeps its restore pending, got %+v", load(t).Restores)
+	}
+	f.plug(pixel)
+	c.advance(restoreReapAfter + time.Minute)
+	if err := Reap(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(load(t).Restores) != 0 || !f.hasApp(pixel.Serial, runApp) || f.count("removeReverses") != 1 {
+		t.Fatalf("once back, the Pixel is restored with the run's debug build kept, got %+v %v", load(t).Restores, f.calls)
 	}
 }
 
-func TestRestoreWithoutAppIDUninstallsNothing(t *testing.T) {
+func TestIPhoneRestoreNeedsNoDevice(t *testing.T) {
 	f := useFake(t)
-	f.plug(pixel)
-	f.install(pixel.Serial, runApp, AppInfo{Developer: true})
-	s := bank(androidDevice(1))
-	s.Restores = []*PendingRestore{{DeviceID: pixel.ID, Serial: pixel.Serial, Name: pixel.Name, Platform: PlatformAndroid,
-		Snapshot: &PhysicalSnapshot{AppsBefore: []string{}}, EndedAt: t0, StartedAt: t0}}
-	seed(t, s)
+	f.plug(iphone)
+	seed(t, bank(iosDevice(1)))
+	leaseAny(t, "sess-1", PlatformIOS)
 
-	if err := RunRestore(context.Background(), pixel.ID); err != nil {
-		t.Fatal(err)
+	f.plug()
+	release(t, "sess-1")
+	if len(load(t).Restores) != 0 {
+		t.Fatalf("an iPhone has nothing to put back: its restore succeeds unplugged, got %+v", load(t).Restores)
 	}
-	if !f.hasApp(pixel.Serial, runApp) || f.count("uninstall") != 0 || len(load(t).Restores) != 0 {
-		t.Fatalf("a restore written before the run's app was recorded uninstalls nothing, got %v", f.calls)
+	f.plug(iphone)
+	if id := leaseAny(t, "sess-2", PlatformIOS); id != iphone.ID {
+		t.Fatalf("the iPhone is leasable as soon as it is back, got %q", id)
 	}
 }
 

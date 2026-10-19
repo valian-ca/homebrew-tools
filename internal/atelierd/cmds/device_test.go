@@ -139,6 +139,39 @@ func TestLeaseTypeFlag(t *testing.T) {
 	if !strings.Contains(stderr, "no --app-id given") {
 		t.Fatalf("stderr says why, got %q", stderr)
 	}
+	if stdout, _, err := executeDevice("lease", "--platform", "android", "--session", "S1", "--type", "physical", "--json"); ExitCode(err) != ExitBankExhausted || stdout != "" {
+		t.Fatalf("--json prints nothing on stdout when no lease is made, got %v %q", err, stdout)
+	}
+}
+
+func TestPrintLeased(t *testing.T) {
+	l := devicebank.Leased{ID: "00008101-0011649C3EB8001E", Name: "iPhone 12 Mini", Serial: "00008101-0011649C3EB8001E",
+		Platform: devicebank.PlatformIOS, Physical: true, AppID: "com.example.app.development", FreshInstall: true}
+
+	var text bytes.Buffer
+	if err := printLeased(&text, l, false); err != nil {
+		t.Fatal(err)
+	}
+	if text.String() != l.ID+"\n" {
+		t.Fatalf("without --json stdout is the id alone, got %q", text.String())
+	}
+
+	var out bytes.Buffer
+	if err := printLeased(&out, l, true); err != nil {
+		t.Fatal(err)
+	}
+	want := `{"id":"00008101-0011649C3EB8001E","name":"iPhone 12 Mini","serial":"00008101-0011649C3EB8001E","platform":"ios","physical":true,"appId":"com.example.app.development","freshInstall":true}` + "\n"
+	if out.String() != want {
+		t.Fatalf("--json prints one object on one line:\n got %s\nwant %s", out.String(), want)
+	}
+
+	out.Reset()
+	if err := printLeased(&out, devicebank.Leased{ID: "emulator-5560", Name: "atelier-android-1", Serial: "emulator-5560", Platform: devicebank.PlatformAndroid}, true); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), `"physical":false,"appId":"","freshInstall":false}`) {
+		t.Fatalf("a virtual lease still carries every field, freshInstall false, got %s", out.String())
+	}
 }
 
 func seedHolderAndWaiter(t *testing.T) {

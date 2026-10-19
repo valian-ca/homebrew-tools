@@ -328,10 +328,21 @@ func runRestore(ctx context.Context, deviceID string, startedAt time.Time) error
 	return restoreErr
 }
 
+// freshInstall says the run's app was not on the device when the lease
+// began: a lease prepared before the bank recorded its apps says nothing.
+func (l *Lease) freshInstall() bool {
+	return l.Physical && l.AppID != "" && l.Snapshot != nil && !slices.Contains(l.Snapshot.AppsBefore, l.AppID)
+}
+
 // restorePhysical runs on any transport: adb wifi is enough to restore. It
-// uninstalls the run's app alone: a restore can wait days for its device, and
-// any other app installed meanwhile may be the user's own build.
+// never uninstalls an app, the run's included: each install from scratch
+// resets the iOS permissions, and the Local Network alert, invisible to the
+// test driver, cuts the app off from the emulators until it is accepted.
 func restorePhysical(ctx context.Context, r PendingRestore) error {
+	// An iPhone has nothing to put back: it need not even be reachable.
+	if r.Platform != PlatformAndroid {
+		return nil
+	}
 	devices, err := drv.physical(ctx, r.Platform)
 	if err != nil {
 		return err
@@ -342,22 +353,10 @@ func restorePhysical(ctx context.Context, r PendingRestore) error {
 	}
 	dev := devices[i]
 	var errs []error
-	if r.Platform == PlatformAndroid {
-		if r.Snapshot != nil && r.Snapshot.StayOnBefore != nil {
-			errs = append(errs, putStayOnBack(ctx, dev.ID, *r.Snapshot.StayOnBefore))
-		}
-		errs = append(errs, drv.removeReverses(ctx, dev.ID))
+	if r.Snapshot != nil && r.Snapshot.StayOnBefore != nil {
+		errs = append(errs, putStayOnBack(ctx, dev.ID, *r.Snapshot.StayOnBefore))
 	}
-	if r.Snapshot == nil || r.AppID == "" || slices.Contains(r.Snapshot.AppsBefore, r.AppID) {
-		return errors.Join(errs...)
-	}
-	app, err := drv.appInfo(ctx, dev, r.AppID)
-	switch {
-	case err != nil:
-		errs = append(errs, err)
-	case app.Installed && app.Developer:
-		errs = append(errs, drv.uninstall(ctx, dev, r.AppID))
-	}
+	errs = append(errs, drv.removeReverses(ctx, dev.ID))
 	return errors.Join(errs...)
 }
 
