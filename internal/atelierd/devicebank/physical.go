@@ -429,12 +429,3 @@ func appInfo(ctx context.Context, p PhysicalDevice, appID string) (AppInfo, erro
 	}
 	return AppInfo{Installed: true, Developer: debuggable}, nil
 }
-
-func uninstallApp(ctx context.Context, p PhysicalDevice, appID string) error {
-	if p.Platform == PlatformIOS {
-		_, err := runBounded(ctx, "xcrun", "devicectl", "device", "uninstall", "app", "--device", p.ID, appID)
-		return err
-	}
-	_, err := runBounded(ctx, "adb", "-s", p.ID, "uninstall", appID)
-	return err
-}

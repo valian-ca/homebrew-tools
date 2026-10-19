@@ -283,7 +283,7 @@ func TestConflictFallsToNextRank(t *testing.T) {
 	if !strings.Contains(stderr, runApp+" already installed and is neither a developer build nor named [D]") {
 		t.Fatalf("stderr says why, got %q", stderr)
 	}
-	if f.count("setStayOn") != 0 || f.count("uninstall") != 0 || f.count("apps") != 0 || f.count("removeReverses") != 0 {
+	if f.count("setStayOn") != 0 || f.count("apps") != 0 || f.count("removeReverses") != 0 {
 		t.Fatalf("nothing is touched on the Pixel, got %v", f.calls)
 	}
 	if !f.hasApp(pixel.Serial, runApp) || f.stayOnOf(pixel.Serial) != "0" {
@@ -338,20 +338,6 @@ func TestUnreadableSignalIsConflict(t *testing.T) {
 		}
 		if !strings.Contains(stderr, "skipped: could not read "+runApp) {
 			t.Fatalf("%s: stderr says why, got %q", op, stderr)
-		}
-	}
-}
-
-func TestOverwritableNeverUninstalled(t *testing.T) {
-	for _, dev := range []PhysicalDevice{pixel, iphone} {
-		f := useFake(t)
-		f.plug(dev)
-		f.install(dev.Serial, runApp, AppInfo{Developer: true, Name: "[D] Example"})
-		seed(t, bank(iosDevice(1), androidDevice(1)))
-		leaseAny(t, "sess-1", dev.Platform)
-		release(t, "sess-1")
-		if !f.hasApp(dev.Serial, runApp) || f.count("uninstall") != 0 {
-			t.Fatalf("%s: the app present before the lease stays, got %v", dev.Name, f.calls)
 		}
 	}
 }
@@ -419,7 +405,7 @@ func TestPauseRestoresStayOnResumeReapplies(t *testing.T) {
 	if l := load(t).FindLease("sess-1", PlatformAndroid); !l.Suspended() {
 		t.Fatal("the lease is suspended")
 	}
-	if f.count("removeReverses") != 0 || f.count("uninstall") != 0 {
+	if f.count("removeReverses") != 0 {
 		t.Fatalf("pause touches neither reverses nor apps, got %v", f.calls)
 	}
 	if id := leaseAny(t, "sess-1", PlatformAndroid); id != pixel.ID {
@@ -532,7 +518,7 @@ func TestCrashBeforeSnapshotRemovesReversesOnly(t *testing.T) {
 	seed(t, s)
 
 	release(t, "sess-1")
-	if f.count("removeReverses") != 1 || f.count("setStayOn") != 0 || f.count("uninstall") != 0 || f.count("apps") != 0 {
+	if f.count("removeReverses") != 1 || f.count("setStayOn") != 0 || f.count("apps") != 0 {
 		t.Fatalf("without a snapshot only the reverses are removed, got %v", f.calls)
 	}
 	if len(load(t).Restores) != 0 {
@@ -584,7 +570,7 @@ func TestVanishedDuringPauseChoosesAgain(t *testing.T) {
 	}
 }
 
-func TestRestoreUninstallsOnlyNewDeveloperBuilds(t *testing.T) {
+func TestReturnKeepsEveryApp(t *testing.T) {
 	for _, dev := range []PhysicalDevice{pixel, iphone} {
 		f := useFake(t)
 		f.plug(dev)
@@ -597,15 +583,78 @@ func TestRestoreUninstallsOnlyNewDeveloperBuilds(t *testing.T) {
 		f.install(dev.Serial, "com.store.new", AppInfo{Name: "New"})
 		release(t, dev.Serial)
 
-		if f.hasApp(dev.Serial, runApp) {
-			t.Fatalf("%s: the debug build installed during the lease is gone", dev.Name)
-		}
-		for _, kept := range []string{"com.user.bank", "com.user.devtool", "com.store.new"} {
+		for _, kept := range []string{runApp, "com.user.bank", "com.user.devtool", "com.store.new"} {
 			if !f.hasApp(dev.Serial, kept) {
-				t.Fatalf("%s: %s must stay", dev.Name, kept)
+				t.Fatalf("%s: %s must stay, the run's debug build included", dev.Name, kept)
 			}
 		}
+		if len(load(t).Restores) != 0 {
+			t.Fatalf("%s: the restore must have succeeded, got %+v", dev.Name, load(t).Restores)
+		}
 	}
+}
+
+func TestFreshInstallSignal(t *testing.T) {
+	lease := func(t *testing.T, session string, platform Platform, typ Requirement) (Leased, string) {
+		t.Helper()
+		var out strings.Builder
+		l, err := AcquireLease(context.Background(), LeaseRequest{Session: session, Workdir: "/wd", Platform: platform, Type: typ, AppID: runApp}, &out)
+		if err != nil {
+			t.Fatalf("lease %s %s: %v (%s)", session, platform, err, out.String())
+		}
+		return l, out.String()
+	}
+	const line = "fresh install: " + runApp + " was not installed on "
+
+	for _, dev := range []PhysicalDevice{pixel, iphone} {
+		t.Run(dev.Name+" app absent: fresh for the whole lease", func(t *testing.T) {
+			f := useFake(t)
+			f.plug(dev)
+			seed(t, bank(iosDevice(1), androidDevice(1)))
+
+			l, stderr := lease(t, "sess-1", dev.Platform, RequireAny)
+			want := Leased{ID: dev.ID, Name: dev.Name, Serial: dev.Serial, Platform: dev.Platform, Physical: true, AppID: runApp, FreshInstall: true}
+			if l != want {
+				t.Fatalf("got %+v, want %+v", l, want)
+			}
+			if !strings.Contains(stderr, line+dev.Name+" ("+dev.Serial+") when the lease began") {
+				t.Fatalf("stderr names the fresh install, got %q", stderr)
+			}
+
+			f.install(dev.Serial, runApp, AppInfo{Developer: true})
+			if l, stderr := lease(t, "sess-1", dev.Platform, RequireAny); !l.FreshInstall || !strings.Contains(stderr, line) {
+				t.Fatalf("an idempotent call keeps the signal, got %+v %q", l, stderr)
+			}
+			pause(t, "sess-1")
+			if l, _ := lease(t, "sess-1", dev.Platform, RequireAny); !l.FreshInstall {
+				t.Fatalf("a resumed lease keeps the signal, got %+v", l)
+			}
+
+			release(t, "sess-1")
+			if l, stderr := lease(t, "sess-2", dev.Platform, RequireAny); l.FreshInstall || strings.Contains(stderr, "fresh install") {
+				t.Fatalf("the next lease finds the app kept: not fresh, got %+v %q", l, stderr)
+			}
+		})
+	}
+
+	t.Run("debug build already installed", func(t *testing.T) {
+		f := useFake(t)
+		f.plug(iphone)
+		f.install(iphone.Serial, runApp, AppInfo{Developer: true})
+		seed(t, bank(iosDevice(1)))
+		if l, stderr := lease(t, "sess-1", PlatformIOS, RequireAny); l.FreshInstall || stderr != "" {
+			t.Fatalf("an app already there is not fresh, got %+v %q", l, stderr)
+		}
+	})
+
+	t.Run("virtual device", func(t *testing.T) {
+		useFake(t)
+		seed(t, bank(androidDevice(1)))
+		l, stderr := lease(t, "sess-1", PlatformAndroid, RequireVirtual)
+		if l.Physical || l.FreshInstall || l.ID != emulator(1) || strings.Contains(stderr, "fresh install") {
+			t.Fatalf("a virtual lease never signals a fresh install, got %+v %q", l, stderr)
+		}
+	})
 }
 
 func TestDedupBySerialPrefersUSB(t *testing.T) {
@@ -743,7 +792,7 @@ func TestPreviousStateWithPhysicalLeaseLoads(t *testing.T) {
 		t.Fatalf("without a recorded value the screen setting is never changed, got %q %v", id, f.calls)
 	}
 	release(t, "sess-1")
-	if f.count("removeReverses") != 1 || f.count("setStayOn") != 0 || f.count("uninstall") != 0 {
+	if f.count("removeReverses") != 1 || f.count("setStayOn") != 0 {
 		t.Fatalf("a lease without snapshot is restored by removing reverses only, got %v", f.calls)
 	}
 	var raw map[string]any

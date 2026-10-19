@@ -349,17 +349,6 @@ func (f *fakeDriver) androidLabel(_ context.Context, id, pkg string) (string, er
 	return f.installed[serial][pkg].Name, nil
 }
 
-func (f *fakeDriver) uninstall(_ context.Context, p PhysicalDevice, appID string) error {
-	if err := f.call("uninstall", p.ID+" "+appID); err != nil {
-		return err
-	}
-	serial := f.serialOf(p.ID)
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	delete(f.installed[serial], appID)
-	return nil
-}
-
 func (f *fakeDriver) spawnRestore(deviceID string) error {
 	f.mu.Lock()
 	f.restores = append(f.restores, deviceID)

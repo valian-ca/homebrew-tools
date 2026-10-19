@@ -96,8 +96,8 @@ other — or on you.
 ```sh
 atelierd device bank init [--ios N] [--android N]   # provision atelier-ios-1..N / atelier-android-1..N (default 2 + 2)
 atelierd device bank limit [N]                      # print or set how many virtual devices may be on at once (default 1)
-atelierd device lease --platform ios --session <id> [--type any|virtual|physical] [--app-id <id>] [--wait 15m]
-                                                    # print a targetable UDID/serial alone on stdout
+atelierd device lease --platform ios --session <id> [--type any|virtual|physical] [--app-id <id>] [--wait 15m] [--json]
+                                                    # print a targetable UDID/serial alone on stdout (or the lease as JSON)
 atelierd device pause --session <id>                # power the session's virtual devices off, keep the lease and the data
 atelierd device release --session <id> [--platform ios|android]
 atelierd device status                              # bank + physical devices, states, ids, leases, queue
@@ -159,6 +159,20 @@ atelierd device restore <id> [--forget]             # retry a physical device's 
   was signed on another machine, `flutter run` reinstalls it and its dev
   data is lost. Each skipped device is named on stderr; stdout stays the id
   alone.
+- **`lease --json`** prints the lease as one JSON object on one line
+  instead of the bare id:
+  `{"id":"…","name":"iPhone 12 Mini","serial":"…","platform":"ios","physical":true,"appId":"…","freshInstall":true}`.
+  `id` is the targetable id, `serial` the one `status` shows. Nothing is
+  printed on stdout when the lease fails.
+- **Fresh install** — `freshInstall` is `true` when `--app-id` was not
+  installed on the physical device as the lease began, and stderr then
+  carries a line starting with `fresh install: `. The app's first launch
+  raises the system permission alerts, among them the iOS Local Network
+  alert, which a test driver cannot see and which cuts the app off from the
+  Firebase emulators reached over the Mac's LAN IP until it is accepted.
+  The signal belongs to the lease: every call of the same lease repeats it,
+  pauses included; a new lease, after a release, finds the app kept and
+  does not. It is always `false` on a virtual device.
 - **On a physical device** the bank never erases, resets, powers off or
   recycles anything. An Android device gets `stay_on_while_plugged_in` set
   to `3` for the lease, after its previous value and installed packages are
@@ -176,16 +190,18 @@ atelierd device restore <id> [--forget]             # retry a physical device's 
   5 min (an AVD is wiped by `-wipe-data` on its next boot). A recycle that
   fails twice leaves the device `broken`, its reason shown by `status`, and
   never leased again until `bank init` repairs it. A physical device is
-  restored by a detached worker instead: its `stay_on` value from before
-  the lease is put back (unless the device already holds it), its `adb
-  reverse` rules removed, and the developer build of the run's `--app-id`
-  installed during the lease uninstalled — no other app, since a restore
-  can wait days for its device and the user may install their own builds
-  meanwhile. It is leasable again once the restore succeeds; an unreachable
-  device keeps its restore pending, retried by later `device` commands once
-  it is connected again, by any transport. `atelierd device restore <id>
-  --forget` drops a restore that cannot succeed (a phone that forbids
-  writing the setting) without touching the device.
+  restored by a detached worker instead: on Android its `stay_on` value
+  from before the lease is put back (unless the device already holds it)
+  and its `adb reverse` rules removed. No app is ever uninstalled, the
+  run's `--app-id` build included: an install from scratch resets the iOS
+  permissions (Local Network, location, notifications), while the next run
+  installs over the kept build and keeps them. An iPhone has nothing to put
+  back and is leasable again at once. An Android device is leasable again
+  once the restore succeeds; an unreachable one keeps its restore pending,
+  retried by later `device` commands once it is connected again, by any
+  transport. `atelierd device restore <id> --forget` drops a restore that
+  cannot succeed (a phone that forbids writing the setting) without
+  touching the device.
 - **AVDs start with 4 GB of RAM** (`-memory 4096`), whatever they were
   provisioned with.
 - **Lease lifecycle** — every `atelierd emit` and every `device` command
