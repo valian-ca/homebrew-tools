@@ -337,6 +337,11 @@ func acquire(ctx context.Context, req LeaseRequest, progress io.Writer) (*Lease,
 	if req.Type == "" {
 		req.Type = RequireAny
 	}
+	if req.AppID != "" {
+		if err := checkAppID(req.AppID); err != nil {
+			return nil, err
+		}
+	}
 	session, platform := req.Session, req.Platform
 	deadline := clock().Add(req.Wait)
 	excluded, vetted := map[string]bool{}, map[string]bool{}

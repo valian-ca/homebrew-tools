@@ -79,6 +79,48 @@ func TestPrepareRefusesWithoutHeldPhysicalAndroidLease(t *testing.T) {
 	}
 }
 
+func TestLeaseRefusesMalformedAppIDBeforeAnyDeviceCall(t *testing.T) {
+	f := useFake(t)
+	f.plug(pixel)
+	seed(t, bank(androidDevice(1)))
+
+	for _, appID := range []string{"x;rm -rf /sdcard/DCIM", "com.example app", "com.$(id).app", "-com.example", "com"} {
+		f.resetCalls()
+		_, _, err := acquireAs("sess-1", PlatformAndroid, RequireAny, appID)
+		if err == nil || !strings.Contains(err.Error(), "invalid --app-id") {
+			t.Fatalf("%q: want an invalid --app-id error, got %v", appID, err)
+		}
+		if len(f.calls) != 0 {
+			t.Fatalf("%q: no device is touched, got %v", appID, f.calls)
+		}
+		if l := load(t).FindLease("sess-1", PlatformAndroid); l != nil {
+			t.Fatalf("%q: no lease is recorded, got %+v", appID, l)
+		}
+	}
+}
+
+func TestPrepareRefusesLeaseWithMalformedAppID(t *testing.T) {
+	f := useFake(t)
+	f.plug(pixel)
+	seed(t, bank(androidDevice(1)))
+	leaseAny(t, "sess-1", PlatformAndroid)
+	if err := WithLock(func(s *State) error {
+		s.FindLease("sess-1", PlatformAndroid).AppID = "x;rm -rf /sdcard/DCIM"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f.resetCalls()
+
+	err := prepare("sess-1", PlatformAndroid, Preparation{Clear: true, Grants: []string{"android.permission.CAMERA"}})
+	if err == nil || !strings.Contains(err.Error(), "invalid app id") {
+		t.Fatalf("want an invalid app id error, got %v", err)
+	}
+	if len(f.calls) != 0 {
+		t.Fatalf("nothing reaches the phone, got %v", f.calls)
+	}
+}
+
 func TestPausePlatformSuspendsOnlyThatPlatform(t *testing.T) {
 	f := useFake(t)
 	seed(t, bank(iosDevice(1), androidDevice(1)))

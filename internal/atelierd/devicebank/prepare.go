@@ -15,7 +15,19 @@ type Preparation struct {
 	Grants   []string
 }
 
-var permissionName = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$`)
+var (
+	permissionName = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$`)
+	appIDName      = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_-]*(\.[A-Za-z0-9_-]+)+$`)
+)
+
+// checkAppID admits Android package names and iOS bundle ids only: adb
+// shell hands its arguments to the phone's sh as one line.
+func checkAppID(appID string) error {
+	if !appIDName.MatchString(appID) {
+		return fmt.Errorf("invalid --app-id %q (want a package name or bundle id such as com.example.app)", appID)
+	}
+	return nil
+}
 
 func checkReverse(spec string) error {
 	port, ok := strings.CutPrefix(spec, "tcp:")
@@ -54,6 +66,8 @@ func Prepare(ctx context.Context, session string, platform Platform, prep Prepar
 			return fmt.Errorf("the lease on %s is suspended: lease again first", l.DeviceName)
 		case l.AppID == "":
 			return fmt.Errorf("the lease on %s has no --app-id", l.DeviceName)
+		case checkAppID(l.AppID) != nil:
+			return fmt.Errorf("the lease on %s carries an invalid app id %q", l.DeviceName, l.AppID)
 		}
 		held = *l
 		return nil
