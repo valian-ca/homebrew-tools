@@ -141,12 +141,15 @@ atelierd device restore <id> [--forget]             # retry a physical device's 
   limit reached, or no physical device available under `--type physical`),
   `11` bank not initialized.
 - **Physical devices** — `--type` says which devices a lease admits:
-  `virtual` (default), `any`, or `physical`. Without `--type`, a new
-  physical device is never leased; a physical lease the session already
-  holds is returned and resumed whatever `--type` says. Under `any` the
-  lease returns a physical device
-  plugged by cable and free first, then a virtual device through the
-  queue; under `physical` it never queues and exits `10`. A physical device
+  `any` (default), `virtual`, or `physical`. Under `any` the lease returns
+  a physical device plugged by cable and free first, then a virtual device
+  through the queue; under `physical` it never queues and exits `10`.
+  Without `--app-id`, no new physical device is leased, whatever `--type`
+  says. A held lease whose kind `--type` no longer admits ends as `release`
+  ends it, and the choice is made again: `--type virtual` always returns a
+  virtual device. A suspended virtual lease gives way to a free physical
+  device when `--type` admits one and `--app-id` is given — the virtual
+  device is recycled — while a powered-on one is kept. A physical device
   is available when it is plugged by USB with debugging allowed on this
   machine; one reachable only without cable (adb wifi, Wi-Fi pairing to
   Xcode) is skipped, since its screen locks and its connection can drop.
@@ -181,8 +184,9 @@ atelierd device restore <id> [--forget]             # retry a physical device's 
 - **`pause`** suspends the session's leases: each virtual device is powered
   off with its installed app and data kept, and the session's next `lease`
   powers the same device back on (through the queue when the limit is
-  reached). A physical Android device gets back its `stay_on` value, set to
-  `3` again by the next `lease`; a physical iPhone is left as it is. A
+  reached), unless a free physical device takes its place. A physical
+  Android device gets back its `stay_on` value, set to `3` again by the
+  next `lease`; a physical iPhone is left as it is. A
   physical device unplugged meanwhile loses the lease, and the next `lease`
   chooses again.
 - **`release`** returns immediately — a detached worker powers the virtual

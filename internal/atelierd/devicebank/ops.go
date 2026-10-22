@@ -134,6 +134,7 @@ type grant struct {
 	wipe         bool
 	notify       *Waiter
 	take         *PhysicalDevice
+	vet          *PhysicalDevice
 	resumeStayOn bool
 	notes        []string
 }
@@ -148,9 +149,13 @@ func takeWipe(d *Device) bool {
 	return wipe
 }
 
-func grantLocked(s *State, req LeaseRequest, probe physicalProbe, excluded map[string]bool, now, deadline time.Time) (g grant, changed bool) {
+func grantLocked(s *State, req LeaseRequest, probe physicalProbe, excluded, vetted map[string]bool, now, deadline time.Time) (g grant, changed bool) {
 	session, platform := req.Session, req.Platform
-	if l := s.FindLease(session, platform); l != nil {
+	if l := s.FindLease(session, platform); l != nil && !req.Type.admits(l) {
+		g.notes = append(g.notes, fmt.Sprintf("note: --type %s ends the lease on %s (%s) — choosing again", req.Type, l.DeviceName, l.serial()))
+		dropLease(s, l, now, "type-"+string(req.Type))
+		changed = true
+	} else if l != nil {
 		if l.Physical {
 			wasSuspended := l.Suspended()
 			decision, dev, resume := holdPhysical(l, probe)
@@ -170,6 +175,16 @@ func grantLocked(s *State, req LeaseRequest, probe physicalProbe, excluded map[s
 				g.lease = l
 				return g, removeWaiters(s, session, platform)
 			case d != nil && d.State == StateOff:
+				if p := pickYield(s, req, probe, excluded); p != nil {
+					if !vetted[p.Serial] {
+						g.vet = p
+						return g, changed
+					}
+					g.notes = append(g.notes, fmt.Sprintf("note: %s (%s) is plugged and free — the lease on %s ends", p.Name, p.Serial, d.Name))
+					dropLease(s, l, now, "yield-physical")
+					g.lease, g.take = leasePhysical(s, req, p, now), p
+					return g, true
+				}
 				if fairReservation(s, session, platform) == d {
 					powerUp(s, d, l, now, "resume")
 					removeWaiters(s, session, platform)
@@ -187,10 +202,7 @@ func grantLocked(s *State, req LeaseRequest, probe physicalProbe, excluded map[s
 		if req.AppID == "" {
 			g.notes = append(g.notes, "note: no --app-id given — physical devices are not leased")
 		} else if p := pickPhysical(s, platform, probe.devices, excluded, &g.notes); p != nil {
-			l := commitLease(s, &Candidate{Physical: p}, session, req.Workdir, platform, now)
-			l.AppID = req.AppID
-			removeWaiters(s, session, platform)
-			g.lease, g.take = l, p
+			g.lease, g.take = leasePhysical(s, req, p, now), p
 			return g, true
 		}
 	}
@@ -208,18 +220,38 @@ func grantLocked(s *State, req LeaseRequest, probe physicalProbe, excluded map[s
 	return q, queued || changed
 }
 
-// probeForLease probes whenever the session holds a physical lease, whatever
-// the requirement, so a held lease is checked on the cable and resumed. A
-// held device the probe no longer sees is probed once more before its lease
-// ends: right after an adb server restart, adb lists nothing.
+// pickYield is silent on the devices it skips: a suspended virtual lease is
+// resumed after every pause, and the same skip would be printed each time.
+func pickYield(s *State, req LeaseRequest, probe physicalProbe, excluded map[string]bool) *PhysicalDevice {
+	if !req.Type.admitsPhysical() || req.AppID == "" {
+		return nil
+	}
+	var skipped []string
+	return pickPhysical(s, req.Platform, probe.devices, excluded, &skipped)
+}
+
+func leasePhysical(s *State, req LeaseRequest, p *PhysicalDevice, now time.Time) *Lease {
+	l := commitLease(s, &Candidate{Physical: p}, req.Session, req.Workdir, req.Platform, now)
+	l.AppID = req.AppID
+	removeWaiters(s, req.Session, req.Platform)
+	return l
+}
+
+// probeForLease probes for a held physical lease the requirement still
+// admits, so it is checked on the cable and resumed. A held device the probe
+// no longer sees is probed once more before its lease ends: right after an
+// adb server restart, adb lists nothing.
 func probeForLease(ctx context.Context, req LeaseRequest) (physicalProbe, error) {
+	if !req.Type.admitsPhysical() {
+		return physicalProbe{}, nil
+	}
 	var held *Lease
 	if s, err := Load(); err == nil {
 		if l := s.FindLease(req.Session, req.Platform); l != nil && l.Physical {
 			held = l
 		}
 	}
-	if held == nil && (!req.Type.admitsPhysical() || req.AppID == "") {
+	if held == nil && req.AppID == "" {
 		return physicalProbe{}, nil
 	}
 	probe := probePhysicals(ctx, req.Platform)
@@ -264,8 +296,6 @@ type Leased struct {
 	FreshInstall bool `json:"freshInstall"`
 }
 
-// Acquire is idempotent per (session, platform): a suspended or dead
-// virtual lease gets its own device back, powered on.
 func Acquire(ctx context.Context, req LeaseRequest, progress io.Writer) (string, error) {
 	l, err := AcquireLease(ctx, req, progress)
 	return l.ID, err
@@ -298,11 +328,11 @@ func AcquireLease(ctx context.Context, req LeaseRequest, progress io.Writer) (Le
 
 func acquire(ctx context.Context, req LeaseRequest, progress io.Writer) (*Lease, error) {
 	if req.Type == "" {
-		req.Type = RequireVirtual
+		req.Type = RequireAny
 	}
 	session, platform := req.Session, req.Platform
 	deadline := clock().Add(req.Wait)
-	excluded := map[string]bool{}
+	excluded, vetted := map[string]bool{}, map[string]bool{}
 	printed := map[string]bool{}
 	note := func(lines []string) {
 		for _, line := range lines {
@@ -335,9 +365,9 @@ func acquire(ctx context.Context, req LeaseRequest, progress io.Writer) (*Lease,
 				outcome = ErrNotInitialized
 			} else {
 				var granted bool
-				g, granted = grantLocked(s, req, probe, excluded, now, deadline)
+				g, granted = grantLocked(s, req, probe, excluded, vetted, now, deadline)
 				changed = granted || changed
-				if g.lease == nil {
+				if g.lease == nil && g.vet == nil {
 					outcome = ErrExhausted
 				}
 			}
@@ -367,6 +397,18 @@ func acquire(ctx context.Context, req LeaseRequest, progress io.Writer) (*Lease,
 		}
 		if outcome != nil {
 			return nil, outcome
+		}
+		if g.vet != nil {
+			skip := vetPhysical(ctx, *g.vet, req.AppID)
+			switch {
+			case ctx.Err() != nil:
+			case skip != "":
+				excluded[g.vet.Serial] = true
+				note([]string{skip})
+			default:
+				vetted[g.vet.Serial] = true
+			}
+			continue
 		}
 		if g.take != nil {
 			skip, err := takePhysical(ctx, g.lease, *g.take)

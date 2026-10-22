@@ -153,12 +153,12 @@ JSON object on one line:
    "appId":"…","freshInstall":true}
 where id is the targetable identifier and serial the one status shows.
 
---type says which devices the lease admits: virtual (default), any
-(physical or virtual), or physical. Within the platform the lease returns,
-in order:
+--type says which devices the lease admits: any (default: physical or
+virtual), virtual, or physical. Within the platform the lease returns, in
+order:
   1. a physical device plugged by cable and free (any, physical);
   2. a virtual device through the queue (any, virtual).
-Without --type, a new physical device is never leased.
+Without --app-id, no new physical device is leased, whatever --type says.
 
 A physical device is available when it is plugged by USB with debugging
 allowed on this machine. One reachable only without cable (adb wifi, Wi-Fi
@@ -188,10 +188,17 @@ is tried as soon as the limit allows, within --wait.
 
 Idempotent per (session, platform): a session that already holds a lease
 gets the same device back. A suspended lease (see pause), or one whose
-device died, gets its own device back, data kept; this holds for a
-physical lease whatever --type says, the lease call checking it is still on
-the cable. A physical lease whose device is no longer on the cable (checked
-twice, 2 s apart) is dropped and the choice is made again.
+device died, gets its own device back, data kept; a physical lease is
+first checked to be still on the cable. A physical lease whose device is
+no longer on the cable (checked twice, 2 s apart) is dropped and the choice
+is made again.
+
+A held lease whose kind --type no longer admits ends as release ends it,
+and the choice is made again: a physical lease ends under --type virtual,
+a virtual one under --type physical. A suspended virtual lease gives way
+to a free physical device when --type admits one and --app-id is given:
+the virtual device is recycled and the physical one leased. A powered-on
+virtual lease is kept.
 
 Powering a virtual device on obeys the ignition limit (bank limit) and a
 first-come queue: when no device can be served, the session waits its turn
@@ -204,10 +211,9 @@ free and available within --wait.
 
 Exit codes: 0 leased, 10 not served within the wait, 11 bank not
 initialized. On any exit but 0, --json prints nothing on stdout.`,
-		Example: `  atelierd device lease --platform android --session abc123
-  atelierd device lease --platform ios --session abc123 --wait 15m
-  atelierd device lease --platform android --session abc123 --type any --app-id com.example.app.development
-  atelierd device lease --platform ios --session abc123 --type any --app-id com.example.app.development --json`,
+		Example: `  atelierd device lease --platform android --session abc123 --app-id com.example.app.development
+  atelierd device lease --platform ios --session abc123 --app-id com.example.app.development --json
+  atelierd device lease --platform ios --session abc123 --type virtual --wait 15m`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			platform, err := devicebank.ParsePlatform(platformFlag)
@@ -230,7 +236,7 @@ initialized. On any exit but 0, --json prints nothing on stdout.`,
 	}
 	c.Flags().StringVar(&platformFlag, "platform", "", "ios or android (required)")
 	c.Flags().StringVar(&session, "session", "", "Claude session ID holding the lease (required)")
-	c.Flags().StringVar(&typeFlag, "type", string(devicebank.RequireVirtual), "devices the lease admits: any, virtual or physical")
+	c.Flags().StringVar(&typeFlag, "type", string(devicebank.RequireAny), "devices the lease admits: any, virtual or physical")
 	c.Flags().StringVar(&appID, "app-id", "", "application id of the run (required to lease a physical device)")
 	c.Flags().DurationVar(&wait, "wait", 0, "how long to wait in the queue before exiting 10")
 	c.Flags().BoolVar(&asJSON, "json", false, "print the lease as one JSON object, freshInstall included")
@@ -255,7 +261,8 @@ func newPauseCmd() *cobra.Command {
 		Long: `Suspend every lease of the session. A virtual device is powered off with
 its data and installed app kept, and stops counting toward the ignition
 limit; the session keeps the lease. The session's next lease powers the
-same device back on, through the queue when the limit is reached.
+same device back on, through the queue when the limit is reached, unless
+a free physical device takes its place (see lease).
 
 A physical Android device gets back its stay_on_while_plugged_in value from
 before the lease, and the next lease sets it to 3 again. A physical iOS

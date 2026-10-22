@@ -9,8 +9,6 @@ import (
 	"time"
 )
 
-// The zero Requirement is virtual: a caller that says nothing never takes a
-// new physical device, so an old plugin can never touch a plugged phone.
 type Requirement string
 
 const (
@@ -30,6 +28,13 @@ func ParseRequirement(s string) (Requirement, error) {
 func (r Requirement) admitsPhysical() bool { return r == RequireAny || r == RequirePhysical }
 
 func (r Requirement) admitsVirtual() bool { return r != RequirePhysical }
+
+func (r Requirement) admits(l *Lease) bool {
+	if l.Physical {
+		return r.admitsPhysical()
+	}
+	return r.admitsVirtual()
+}
 
 type LeaseRequest struct {
 	Session  string
@@ -155,18 +160,8 @@ func takePhysical(ctx context.Context, taken *Lease, p PhysicalDevice) (skip str
 		return skipNote(&p, why), err
 	}
 
-	appID := taken.AppID
-	app, err := drv.appInfo(ctx, p, appID)
-	if err == nil && app.Installed && !app.Developer && p.Platform == PlatformAndroid {
-		app.Name, err = drv.androidLabel(ctx, p.ID, appID)
-	}
-	if err != nil {
-		return giveUp(fmt.Sprintf("could not read %s on the device (%s)", appID, firstLine(err)), false)
-	}
-	// flutter run would uninstall a Store build to install its own, data
-	// included: the device is given up before anything on it is touched.
-	if !app.overwritable() {
-		return giveUp(appID+" already installed and is neither a developer build nor named [D] …", false)
+	if why := appConflict(ctx, p, taken.AppID); why != "" {
+		return giveUp(why, false)
 	}
 
 	snap := &PhysicalSnapshot{TakenAt: clock()}
@@ -219,6 +214,31 @@ func takePhysical(ctx context.Context, taken *Lease, p PhysicalDevice) (skip str
 		}
 	}
 	return "", nil
+}
+
+// vetPhysical runs before a suspended virtual lease ends for p: a device
+// given up after that would cost the session its virtual device too.
+func vetPhysical(ctx context.Context, p PhysicalDevice, appID string) (skip string) {
+	if why := appConflict(ctx, p, appID); why != "" {
+		return skipNote(&p, why)
+	}
+	return ""
+}
+
+// appConflict gives up a device before anything on it is touched: flutter
+// run would uninstall a Store build to install its own, data included.
+func appConflict(ctx context.Context, p PhysicalDevice, appID string) string {
+	app, err := drv.appInfo(ctx, p, appID)
+	if err == nil && app.Installed && !app.Developer && p.Platform == PlatformAndroid {
+		app.Name, err = drv.androidLabel(ctx, p.ID, appID)
+	}
+	if err != nil {
+		return fmt.Sprintf("could not read %s on the device (%s)", appID, firstLine(err))
+	}
+	if !app.overwritable() {
+		return appID + " already installed and is neither a developer build nor named [D] …"
+	}
+	return ""
 }
 
 // confirmStayOn runs after the unlocked write of 3. A return that ran in
