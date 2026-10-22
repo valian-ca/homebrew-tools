@@ -228,7 +228,7 @@ func TestLiveBank(t *testing.T) {
 		if out, err := run(t, "adb", "-s", serial, "shell", "touch", "/data/local/tmp/atelierfit-marker"); err != nil {
 			t.Fatalf("%v: %s", err, out)
 		}
-		if err := Pause(context.Background(), "live-a"); err != nil {
+		if err := Pause(context.Background(), "live-a", ""); err != nil {
 			t.Fatal(err)
 		}
 		serials, err := AdbSerials(context.Background())
@@ -293,7 +293,7 @@ func TestLiveBank(t *testing.T) {
 		if out, err := run(t, "xcrun", "simctl", "spawn", ios.UDID, "defaults", "write", "com.valian.atelierfit", "marker", "1"); err != nil {
 			t.Fatalf("%v: %s", err, out)
 		}
-		if err := Pause(context.Background(), "live-c"); err != nil {
+		if err := Pause(context.Background(), "live-c", ""); err != nil {
 			t.Fatal(err)
 		}
 		if booted, _ := run(t, "xcrun", "simctl", "list", "devices", "booted"); strings.Contains(booted, ios.UDID) {

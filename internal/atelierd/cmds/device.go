@@ -66,6 +66,7 @@ func NewDeviceCmd() *cobra.Command {
 		newBankCmd(),
 		newLeaseCmd(),
 		newPauseCmd(),
+		newPrepareCmd(),
 		newReleaseCmd(),
 		newDeviceStatusCmd(),
 		newRecycleCmd(),
@@ -153,12 +154,12 @@ JSON object on one line:
    "appId":"…","freshInstall":true}
 where id is the targetable identifier and serial the one status shows.
 
---type says which devices the lease admits: virtual (default), any
-(physical or virtual), or physical. Within the platform the lease returns,
-in order:
+--type says which devices the lease admits: any (default: physical or
+virtual), virtual, or physical. Within the platform the lease returns, in
+order:
   1. a physical device plugged by cable and free (any, physical);
   2. a virtual device through the queue (any, virtual).
-Without --type, a new physical device is never leased.
+Without --app-id, no new physical device is leased, whatever --type says.
 
 A physical device is available when it is plugged by USB with debugging
 allowed on this machine. One reachable only without cable (adb wifi, Wi-Fi
@@ -172,7 +173,9 @@ before the lease and removes the adb reverses. No app is ever uninstalled:
 the build of --app-id stays installed after the return, so the next run
 installs over it and keeps its permissions (iOS asks again for Local
 Network, location and notifications after an install from scratch). A
-skipped device is named on stderr.
+skipped device is named on stderr, except while a suspended virtual lease
+is checked for a physical device to give way to: only a device refused
+for its app or its reads is named then.
 
 Fresh install: when --app-id was not installed on the physical device as
 the lease began, freshInstall is true and stderr carries a line starting
@@ -187,11 +190,18 @@ toward the ignition limit until its power-off is confirmed: another device
 is tried as soon as the limit allows, within --wait.
 
 Idempotent per (session, platform): a session that already holds a lease
-gets the same device back. A suspended lease (see pause), or one whose
-device died, gets its own device back, data kept; this holds for a
-physical lease whatever --type says, the lease call checking it is still on
-the cable. A physical lease whose device is no longer on the cable (checked
-twice, 2 s apart) is dropped and the choice is made again.
+gets the same device back, except as the next paragraph says. A suspended
+lease (see pause), or one whose device died, gets its own device back,
+data kept; a physical lease is first checked to be still on the cable. A
+physical lease whose device is no longer on the cable (checked twice, 2 s
+apart) is dropped and the choice is made again.
+
+A held lease whose kind --type no longer admits ends as release ends it,
+and the choice is made again: a physical lease ends under --type virtual,
+a virtual one under --type physical. A suspended virtual lease gives way
+to a free physical device when --type admits one and --app-id is given:
+the virtual device is recycled and the physical one leased. A powered-on
+virtual lease is kept.
 
 Powering a virtual device on obeys the ignition limit (bank limit) and a
 first-come queue: when no device can be served, the session waits its turn
@@ -204,10 +214,9 @@ free and available within --wait.
 
 Exit codes: 0 leased, 10 not served within the wait, 11 bank not
 initialized. On any exit but 0, --json prints nothing on stdout.`,
-		Example: `  atelierd device lease --platform android --session abc123
-  atelierd device lease --platform ios --session abc123 --wait 15m
-  atelierd device lease --platform android --session abc123 --type any --app-id com.example.app.development
-  atelierd device lease --platform ios --session abc123 --type any --app-id com.example.app.development --json`,
+		Example: `  atelierd device lease --platform android --session abc123 --app-id com.example.app.development
+  atelierd device lease --platform ios --session abc123 --app-id com.example.app.development --json
+  atelierd device lease --platform ios --session abc123 --type virtual --wait 15m`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			platform, err := devicebank.ParsePlatform(platformFlag)
@@ -230,7 +239,7 @@ initialized. On any exit but 0, --json prints nothing on stdout.`,
 	}
 	c.Flags().StringVar(&platformFlag, "platform", "", "ios or android (required)")
 	c.Flags().StringVar(&session, "session", "", "Claude session ID holding the lease (required)")
-	c.Flags().StringVar(&typeFlag, "type", string(devicebank.RequireVirtual), "devices the lease admits: any, virtual or physical")
+	c.Flags().StringVar(&typeFlag, "type", string(devicebank.RequireAny), "devices the lease admits: any, virtual or physical")
 	c.Flags().StringVar(&appID, "app-id", "", "application id of the run (required to lease a physical device)")
 	c.Flags().DurationVar(&wait, "wait", 0, "how long to wait in the queue before exiting 10")
 	c.Flags().BoolVar(&asJSON, "json", false, "print the lease as one JSON object, freshInstall included")
@@ -248,27 +257,86 @@ func printLeased(out io.Writer, l devicebank.Leased, asJSON bool) error {
 }
 
 func newPauseCmd() *cobra.Command {
-	var session string
+	var platformFlag, session string
 	c := &cobra.Command{
-		Use:   "pause --session <id>",
+		Use:   "pause --session <id> [--platform ios|android]",
 		Short: "Suspend the session's leases: power its virtual devices off, keep their data",
-		Long: `Suspend every lease of the session. A virtual device is powered off with
-its data and installed app kept, and stops counting toward the ignition
-limit; the session keeps the lease. The session's next lease powers the
-same device back on, through the queue when the limit is reached.
+		Long: `Suspend every lease of the session, or only the one of --platform. A
+virtual device is powered off with its data and installed app kept, and
+stops counting toward the ignition limit; the session keeps the lease. The
+session's next lease powers the same device back on, through the queue
+when the limit is reached, unless a free physical device takes its place
+(see lease).
 
 A physical Android device gets back its stay_on_while_plugged_in value from
 before the lease, and the next lease sets it to 3 again. A physical iOS
 device is left as it is. Apps, adb reverses and power are never touched.
 
 A session without a lease is a no-op. Idempotent.`,
-		Example: `  atelierd device pause --session abc123`,
-		Args:    cobra.NoArgs,
+		Example: `  atelierd device pause --session abc123
+  atelierd device pause --session abc123 --platform ios`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return devicebank.Pause(cmd.Context(), session)
+			platform, err := optionalPlatform(platformFlag)
+			if err != nil {
+				return err
+			}
+			return devicebank.Pause(cmd.Context(), session, platform)
 		},
 	}
+	c.Flags().StringVar(&platformFlag, "platform", "", "limit the pause to one platform")
 	c.Flags().StringVar(&session, "session", "", "Claude session ID to suspend (required)")
+	_ = c.MarkFlagRequired("session")
+	return c
+}
+
+func optionalPlatform(flag string) (devicebank.Platform, error) {
+	if flag == "" {
+		return "", nil
+	}
+	return devicebank.ParsePlatform(flag)
+}
+
+func newPrepareCmd() *cobra.Command {
+	var platformFlag, session string
+	var reverses, grants []string
+	var clearData bool
+	c := &cobra.Command{
+		Use:   "prepare --session <id> --platform android [--reverse tcp:<port>]... [--clear] [--grant <permission>]...",
+		Short: "Prepare the session's leased physical Android device for its run",
+		Long: `Act on the physical Android device the session leases, and on the
+application id of its lease only (lease --app-id): nothing else on the
+device, and no other device, can be reached through this command.
+
+  --reverse tcp:<port>  adb reverse of that port to the same port on this
+                        Mac, so the app reaches local services; the
+                        lease's return removes every reverse.
+  --clear               pm clear of the lease's app id: wipes its data
+                        and permissions, never another app's.
+  --grant <permission>  pm grant of that runtime permission to the lease's
+                        app id (after --clear when both are given).
+
+The lease must be held, not suspended, and on a physical Android device;
+otherwise nothing is done and the command fails.`,
+		Example: `  atelierd device prepare --session abc123 --platform android --reverse tcp:8080 --reverse tcp:9099
+  atelierd device prepare --session abc123 --platform android --clear --grant android.permission.POST_NOTIFICATIONS`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			platform, err := devicebank.ParsePlatform(platformFlag)
+			if err != nil {
+				return err
+			}
+			return devicebank.Prepare(cmd.Context(), session, platform, devicebank.Preparation{
+				Reverses: reverses, Clear: clearData, Grants: grants,
+			})
+		},
+	}
+	c.Flags().StringVar(&platformFlag, "platform", "", "android (required)")
+	c.Flags().StringVar(&session, "session", "", "Claude session ID holding the lease (required)")
+	c.Flags().StringArrayVar(&reverses, "reverse", nil, "tcp:<port> to reverse to the same port on this Mac (repeatable)")
+	c.Flags().BoolVar(&clearData, "clear", false, "pm clear the lease's app id")
+	c.Flags().StringArrayVar(&grants, "grant", nil, "runtime permission to grant the lease's app id (repeatable)")
+	_ = c.MarkFlagRequired("platform")
 	_ = c.MarkFlagRequired("session")
 	return c
 }

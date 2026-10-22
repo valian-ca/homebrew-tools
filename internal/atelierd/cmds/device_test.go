@@ -129,6 +129,9 @@ func TestLeaseTypeFlag(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	if def := newLeaseCmd().Flags().Lookup("type").DefValue; def != "any" {
+		t.Fatalf("--type defaults to any, got %q", def)
+	}
 	if _, _, err := executeDevice("lease", "--platform", "android", "--session", "S1", "--type", "both"); err == nil || !strings.Contains(err.Error(), `invalid type "both"`) {
 		t.Fatalf("an unknown type is refused, got %v", err)
 	}

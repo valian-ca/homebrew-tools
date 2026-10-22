@@ -98,7 +98,10 @@ atelierd device bank init [--ios N] [--android N]   # provision atelier-ios-1..N
 atelierd device bank limit [N]                      # print or set how many virtual devices may be on at once (default 1)
 atelierd device lease --platform ios --session <id> [--type any|virtual|physical] [--app-id <id>] [--wait 15m] [--json]
                                                     # print a targetable UDID/serial alone on stdout (or the lease as JSON)
-atelierd device pause --session <id>                # power the session's virtual devices off, keep the lease and the data
+atelierd device pause --session <id> [--platform ios|android]
+                                                    # power the session's virtual devices off, keep the lease and the data
+atelierd device prepare --session <id> --platform android [--reverse tcp:<port>]... [--clear] [--grant <permission>]...
+                                                    # adb reverse, pm clear, pm grant on the leased phone and its app id only
 atelierd device release --session <id> [--platform ios|android]
 atelierd device status                              # bank + physical devices, states, ids, leases, queue
 atelierd device restore <id> [--forget]             # retry a physical device's pending restore, or drop it
@@ -141,12 +144,15 @@ atelierd device restore <id> [--forget]             # retry a physical device's 
   limit reached, or no physical device available under `--type physical`),
   `11` bank not initialized.
 - **Physical devices** — `--type` says which devices a lease admits:
-  `virtual` (default), `any`, or `physical`. Without `--type`, a new
-  physical device is never leased; a physical lease the session already
-  holds is returned and resumed whatever `--type` says. Under `any` the
-  lease returns a physical device
-  plugged by cable and free first, then a virtual device through the
-  queue; under `physical` it never queues and exits `10`. A physical device
+  `any` (default), `virtual`, or `physical`. Under `any` the lease returns
+  a physical device plugged by cable and free first, then a virtual device
+  through the queue; under `physical` it never queues and exits `10`.
+  Without `--app-id`, no new physical device is leased, whatever `--type`
+  says. A held lease whose kind `--type` no longer admits ends as `release`
+  ends it, and the choice is made again: `--type virtual` always returns a
+  virtual device. A suspended virtual lease gives way to a free physical
+  device when `--type` admits one and `--app-id` is given — the virtual
+  device is recycled — while a powered-on one is kept. A physical device
   is available when it is plugged by USB with debugging allowed on this
   machine; one reachable only without cable (adb wifi, Wi-Fi pairing to
   Xcode) is skipped, since its screen locks and its connection can drop.
@@ -157,8 +163,10 @@ atelierd device restore <id> [--forget]             # retry a physical device's 
   lease and nothing on it is touched — `flutter run` would uninstall it with
   its data. A developer build or a `[D] …` app may be overwritten; when it
   was signed on another machine, `flutter run` reinstalls it and its dev
-  data is lost. Each skipped device is named on stderr; stdout stays the id
-  alone.
+  data is lost. Each skipped device is named on stderr — except while a
+  suspended virtual lease is checked for a physical device to give way to,
+  when only a device refused for its app or its reads is named; stdout
+  stays the id alone.
 - **`lease --json`** prints the lease as one JSON object on one line
   instead of the bare id:
   `{"id":"…","name":"iPhone 12 Mini","serial":"…","platform":"ios","physical":true,"appId":"…","freshInstall":true}`.
@@ -178,11 +186,21 @@ atelierd device restore <id> [--forget]             # retry a physical device's 
   to `3` for the lease, after its previous value and installed packages are
   recorded; nothing else is changed. An iPhone is left as it is (set its
   Auto-Lock to Never by hand).
-- **`pause`** suspends the session's leases: each virtual device is powered
+- **`prepare`** acts on the physical Android device the session leases, and
+  on its lease's `--app-id` only: `--reverse tcp:<port>` reverses that port
+  to the same port on the Mac (the return removes every reverse), `--clear`
+  runs `pm clear` on the lease's app id, `--grant <permission>` runs `pm
+  grant` for it. No other device or package can be reached through it, so
+  a skill can allowlist `atelierd device *` rather than raw `adb`, whose
+  wildcards would approve any shell command. A missing, virtual, iOS or
+  suspended lease does nothing and fails.
+- **`pause`** suspends the session's leases — or only the one of
+  `--platform`: each virtual device is powered
   off with its installed app and data kept, and the session's next `lease`
   powers the same device back on (through the queue when the limit is
-  reached). A physical Android device gets back its `stay_on` value, set to
-  `3` again by the next `lease`; a physical iPhone is left as it is. A
+  reached), unless a free physical device takes its place. A physical
+  Android device gets back its `stay_on` value, set to `3` again by the
+  next `lease`; a physical iPhone is left as it is. A
   physical device unplugged meanwhile loses the lease, and the next `lease`
   chooses again.
 - **`release`** returns immediately — a detached worker powers the virtual

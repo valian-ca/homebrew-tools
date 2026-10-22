@@ -41,7 +41,7 @@ func TestFailedProbeKeepsPhysicalLease(t *testing.T) {
 	}
 }
 
-func TestNoTypeCallResumesHeldPhysical(t *testing.T) {
+func TestNoTypeNoAppIDCallResumesHeldPhysical(t *testing.T) {
 	f := useFake(t)
 	f.plug(pixel)
 	f.stayOnVal[pixel.Serial] = "0"
@@ -50,7 +50,7 @@ func TestNoTypeCallResumesHeldPhysical(t *testing.T) {
 	pause(t, "sess-1")
 
 	if id := lease(t, "sess-1", PlatformAndroid); id != pixel.ID {
-		t.Fatalf("a held physical lease is returned to a call without --type, got %q", id)
+		t.Fatalf("a held physical lease is returned to a call without --type nor --app-id, got %q", id)
 	}
 	if l := load(t).FindLease("sess-1", PlatformAndroid); l.Suspended() || f.stayOnOf(pixel.Serial) != "3" {
 		t.Fatalf("and resumed, got %+v stay_on %q", l, f.stayOnOf(pixel.Serial))
@@ -58,7 +58,7 @@ func TestNoTypeCallResumesHeldPhysical(t *testing.T) {
 
 	f.plug()
 	if id := lease(t, "sess-1", PlatformAndroid); id != emulator(1) {
-		t.Fatalf("a call without --type checks the cable too, got %q", id)
+		t.Fatalf("such a call checks the cable too, then falls to a virtual device, got %q", id)
 	}
 }
 

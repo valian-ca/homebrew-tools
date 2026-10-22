@@ -105,25 +105,68 @@ func TestWaitReprobesPhysicals(t *testing.T) {
 	}
 }
 
-func TestNoTypeNeverPhysical(t *testing.T) {
-	for _, typ := range []Requirement{"", RequireVirtual} {
-		f := useFake(t)
-		f.plug(pixel, iphone)
-		seed(t, bank(iosDevice(1), androidDevice(1)))
-		if err := SetMaxOn(2); err != nil {
-			t.Fatal(err)
+func TestNoTypeLeasesWiredPhysical(t *testing.T) {
+	f := useFake(t)
+	f.plug(pixel, iphone)
+	seed(t, bank(iosDevice(1), androidDevice(1)))
+	if err := SetMaxOn(2); err != nil {
+		t.Fatal(err)
+	}
+	for _, dev := range []PhysicalDevice{iphone, pixel} {
+		if id, stderr, err := acquireAs("sess-1", dev.Platform, "", runApp); err != nil || id != dev.ID {
+			t.Fatalf("without --type, the free %s comes before the virtual device, got %q %v (%s)", dev.Name, id, err, stderr)
 		}
-		ios, _, err := acquireAs("sess-1", PlatformIOS, typ, runApp)
-		if err != nil || ios != "UDID-1" {
-			t.Fatalf("type %q: a simulator even with the iPhone free, got %q %v", typ, ios, err)
-		}
-		android, _, err := acquireAs("sess-1", PlatformAndroid, typ, runApp)
-		if err != nil || android != emulator(1) {
-			t.Fatalf("type %q: an AVD even with the Pixel free, got %q %v", typ, android, err)
-		}
-		if f.count("apps") != 0 || f.count("appInfo") != 0 || f.count("setStayOn") != 0 {
-			t.Fatalf("type %q: no physical device is even inspected, got %v", typ, f.calls)
-		}
+	}
+	release(t, "sess-1")
+
+	id, stderr, err := acquireAs("sess-2", PlatformIOS, "", "")
+	if err != nil || id != "UDID-1" {
+		t.Fatalf("without --app-id, a simulator even with the iPhone free, got %q %v", id, err)
+	}
+	if !strings.Contains(stderr, "no --app-id given") {
+		t.Fatalf("stderr says why, got %q", stderr)
+	}
+}
+
+func TestVirtualTypeNeverInspectsPhysical(t *testing.T) {
+	f := useFake(t)
+	f.plug(pixel, iphone)
+	seed(t, bank(iosDevice(1), androidDevice(1)))
+	if err := SetMaxOn(2); err != nil {
+		t.Fatal(err)
+	}
+	ios, _, err := acquireAs("sess-1", PlatformIOS, RequireVirtual, runApp)
+	if err != nil || ios != "UDID-1" {
+		t.Fatalf("a simulator even with the iPhone free, got %q %v", ios, err)
+	}
+	android, _, err := acquireAs("sess-1", PlatformAndroid, RequireVirtual, runApp)
+	if err != nil || android != emulator(1) {
+		t.Fatalf("an AVD even with the Pixel free, got %q %v", android, err)
+	}
+	if f.count("apps") != 0 || f.count("appInfo") != 0 || f.count("setStayOn") != 0 {
+		t.Fatalf("no physical device is even inspected, got %v", f.calls)
+	}
+}
+
+func TestStoreBuildOfOtherIDDoesNotBlock(t *testing.T) {
+	const storeApp = "com.example.app"
+	f := useFake(t)
+	f.plug(pixel)
+	f.stayOnVal[pixel.Serial] = "0"
+	f.install(pixel.Serial, storeApp, AppInfo{Name: "Example"})
+	seed(t, bank(androidDevice(1)))
+
+	l, err := AcquireLease(context.Background(), LeaseRequest{Session: "sess-1", Workdir: "/wd", Platform: PlatformAndroid, AppID: runApp}, discard{})
+	if err != nil || l.ID != pixel.ID || !l.FreshInstall {
+		t.Fatalf("the Store build of another id leaves the Pixel available, the run's app fresh, got %+v %v", l, err)
+	}
+	if f.stayOnOf(pixel.Serial) != "3" {
+		t.Fatalf("stay_on is 3 during the lease, got %q", f.stayOnOf(pixel.Serial))
+	}
+	f.install(pixel.Serial, runApp, AppInfo{Developer: true})
+	release(t, "sess-1")
+	if f.stayOnOf(pixel.Serial) != "0" || !f.hasApp(pixel.Serial, storeApp) || !f.hasApp(pixel.Serial, runApp) {
+		t.Fatalf("the return puts stay_on back to 0 and keeps every app, got %q %v", f.stayOnOf(pixel.Serial), f.installed[pixel.Serial])
 	}
 }
 

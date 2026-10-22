@@ -23,7 +23,9 @@ type fakeDriver struct {
 	physErr   error
 	blindFor  int
 	onApps    func()
+	onAppInfo func()
 	onStayOn  func(value string)
+	probes    int
 	installed map[string]map[string]AppInfo
 	stayOnVal map[string]string
 	reverses  map[string]int
@@ -207,6 +209,7 @@ func (f *fakeDriver) poweredOn(context.Context, bool, bool) (map[string]bool, er
 func (f *fakeDriver) physical(_ context.Context, platform Platform) ([]PhysicalDevice, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.probes++
 	if f.physErr != nil {
 		return nil, f.physErr
 	}
@@ -305,6 +308,25 @@ func (f *fakeDriver) removeReverses(_ context.Context, id string) error {
 	return nil
 }
 
+func (f *fakeDriver) addReverse(_ context.Context, id, spec string) error {
+	if err := f.call("addReverse", id+" "+spec); err != nil {
+		return err
+	}
+	serial := f.serialOf(id)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.reverses[serial]++
+	return nil
+}
+
+func (f *fakeDriver) clearApp(_ context.Context, id, pkg string) error {
+	return f.call("clearApp", id+" "+pkg)
+}
+
+func (f *fakeDriver) grantPermission(_ context.Context, id, pkg, perm string) error {
+	return f.call("grantPermission", id+" "+pkg+" "+perm)
+}
+
 func (f *fakeDriver) apps(_ context.Context, p PhysicalDevice) ([]string, error) {
 	if f.onApps != nil {
 		hook := f.onApps
@@ -326,6 +348,11 @@ func (f *fakeDriver) apps(_ context.Context, p PhysicalDevice) ([]string, error)
 }
 
 func (f *fakeDriver) appInfo(_ context.Context, p PhysicalDevice, appID string) (AppInfo, error) {
+	if f.onAppInfo != nil {
+		hook := f.onAppInfo
+		f.onAppInfo = nil
+		hook()
+	}
 	if err := f.call("appInfo", p.ID+" "+appID); err != nil {
 		return AppInfo{}, err
 	}
