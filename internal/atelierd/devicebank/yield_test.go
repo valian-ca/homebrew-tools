@@ -158,6 +158,68 @@ func TestVirtualTypeEndsHeldPhysical(t *testing.T) {
 	}
 }
 
+func TestVirtualTypeNeverProbesPhysical(t *testing.T) {
+	f := useFake(t)
+	f.plug(pixel)
+	seed(t, bank(androidDevice(1)))
+	leaseAny(t, "sess-1", PlatformAndroid)
+	f.plug()
+	f.runSpawns = false
+	f.probes = 0
+
+	if id, _, err := acquireAs("sess-1", PlatformAndroid, RequireVirtual, runApp); err != nil || id != emulator(1) {
+		t.Fatalf("--type virtual gives a virtual device, got %q %v", id, err)
+	}
+	if f.probes != 0 {
+		t.Fatalf("under --type virtual no physical device is probed, not even the held one, got %d probes", f.probes)
+	}
+}
+
+func TestVetReadFailureKeepsSuspendedVirtual(t *testing.T) {
+	f := useFake(t)
+	seed(t, bank(androidDevice(1)))
+	leaseAny(t, "sess-1", PlatformAndroid)
+	pause(t, "sess-1")
+	f.plug(pixel)
+	f.fail["apps"] = 1
+
+	id, stderr, err := acquireAs("sess-1", PlatformAndroid, RequireAny, runApp)
+	if err != nil || id != emulator(1) {
+		t.Fatalf("a Pixel whose apps cannot be listed leaves the emulator resumed, got %q %v", id, err)
+	}
+	if !strings.Contains(stderr, "Pixel 7 Pro (P7SERIAL) skipped: could not list its apps") {
+		t.Fatalf("stderr says why the Pixel was not taken, got %q", stderr)
+	}
+	if len(f.spawned) != 0 {
+		t.Fatalf("the emulator keeps its data, got %v", f.spawned)
+	}
+}
+
+func TestCancelDuringVetKeepsSuspendedVirtual(t *testing.T) {
+	f := useFake(t)
+	seed(t, bank(iosDevice(1)))
+	leaseAny(t, "sess-1", PlatformIOS)
+	pause(t, "sess-1")
+	f.plug(iphone)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	f.onAppInfo = cancel
+	_, err := Acquire(ctx, LeaseRequest{Session: "sess-1", Workdir: "/wd", Platform: PlatformIOS, Type: RequireAny, AppID: runApp}, discard{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("a cancelled vet returns the cancellation, got %v", err)
+	}
+	s := load(t)
+	if l := s.FindLease("sess-1", PlatformIOS); l == nil || l.DeviceName != "atelier-ios-1" || !l.Suspended() {
+		t.Fatalf("the suspended simulator lease is kept, got %+v", l)
+	}
+	if len(f.spawned) != 0 || findWaiter(s, "sess-1", PlatformIOS) != nil {
+		t.Fatalf("nothing is recycled and no waiter is left, got %v %+v", f.spawned, s.Queue)
+	}
+	if id := leaseAny(t, "sess-1", PlatformIOS); id != iphone.ID {
+		t.Fatalf("the iPhone was not excluded: the next lease takes it, got %q", id)
+	}
+}
+
 func TestPhysicalTypeEndsHeldVirtual(t *testing.T) {
 	f := useFake(t)
 	seed(t, bank(iosDevice(1)))

@@ -20,6 +20,9 @@ type driver interface {
 	stayOn(ctx context.Context, id string) (string, error)
 	setStayOn(ctx context.Context, id, value string) error
 	removeReverses(ctx context.Context, id string) error
+	addReverse(ctx context.Context, id, spec string) error
+	clearApp(ctx context.Context, id, pkg string) error
+	grantPermission(ctx context.Context, id, pkg, perm string) error
 	apps(ctx context.Context, p PhysicalDevice) ([]string, error)
 	appInfo(ctx context.Context, p PhysicalDevice, appID string) (AppInfo, error)
 	androidLabel(ctx context.Context, id, pkg string) (string, error)
@@ -98,6 +101,16 @@ func (execDriver) setStayOn(ctx context.Context, id, value string) error {
 
 func (execDriver) removeReverses(ctx context.Context, id string) error {
 	return removeAdbReverses(ctx, id)
+}
+
+func (execDriver) addReverse(ctx context.Context, id, spec string) error {
+	return addAdbReverse(ctx, id, spec)
+}
+
+func (execDriver) clearApp(ctx context.Context, id, pkg string) error { return pmClear(ctx, id, pkg) }
+
+func (execDriver) grantPermission(ctx context.Context, id, pkg, perm string) error {
+	return pmGrant(ctx, id, pkg, perm)
 }
 
 func (execDriver) apps(ctx context.Context, p PhysicalDevice) ([]string, error) {

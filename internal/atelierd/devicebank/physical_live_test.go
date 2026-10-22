@@ -194,7 +194,7 @@ func TestPhysicalLive(t *testing.T) {
 	})
 
 	t.Run("iPhone pause touches nothing", func(t *testing.T) {
-		if err := Pause(context.Background(), "live-ios"); err != nil {
+		if err := Pause(context.Background(), "live-ios", ""); err != nil {
 			t.Fatal(err)
 		}
 		if got := liveApps(t, iphone); !slices.Equal(got, iphoneApps) {
@@ -224,7 +224,7 @@ func TestPhysicalLive(t *testing.T) {
 	})
 
 	t.Run("Pixel stay_on through pause, resume and return", func(t *testing.T) {
-		if err := Pause(context.Background(), "live-android"); err != nil {
+		if err := Pause(context.Background(), "live-android", ""); err != nil {
 			t.Fatal(err)
 		}
 		if got := liveStayOn(t, pixel); got != stayOnBefore {

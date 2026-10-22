@@ -151,52 +151,30 @@ func takeWipe(d *Device) bool {
 
 func grantLocked(s *State, req LeaseRequest, probe physicalProbe, excluded, vetted map[string]bool, now, deadline time.Time) (g grant, changed bool) {
 	session, platform := req.Session, req.Platform
-	if l := s.FindLease(session, platform); l != nil && !req.Type.admits(l) {
+	switch l := s.FindLease(session, platform); {
+	case l == nil:
+	case !req.Type.admits(l):
 		g.notes = append(g.notes, fmt.Sprintf("note: --type %s ends the lease on %s (%s) — choosing again", req.Type, l.DeviceName, l.serial()))
 		dropLease(s, l, now, "type-"+string(req.Type))
 		changed = true
-	} else if l != nil {
-		if l.Physical {
-			wasSuspended := l.Suspended()
-			decision, dev, resume := holdPhysical(l, probe)
-			switch decision {
-			case holdKeep, holdRetake:
-				g.lease, g.take, g.resumeStayOn = l, dev, resume
-				return g, removeWaiters(s, session, platform) || wasSuspended != l.Suspended()
-			case holdWait:
-				return g, wasSuspended != l.Suspended()
-			}
-			g.notes = append(g.notes, fmt.Sprintf("note: %s (%s) is no longer connected by cable — lease dropped, choosing again", l.DeviceName, l.serial()))
-			dropLease(s, l, now, "unplugged")
-			changed = true
-		} else {
-			switch d := s.FindDevice(l.DeviceName); {
-			case d != nil && d.State == StateOn:
-				g.lease = l
-				return g, removeWaiters(s, session, platform)
-			case d != nil && d.State == StateOff:
-				if p := pickYield(s, req, probe, excluded); p != nil {
-					if !vetted[p.Serial] {
-						g.vet = p
-						return g, changed
-					}
-					g.notes = append(g.notes, fmt.Sprintf("note: %s (%s) is plugged and free — the lease on %s ends", p.Name, p.Serial, d.Name))
-					dropLease(s, l, now, "yield-physical")
-					g.lease, g.take = leasePhysical(s, req, p, now), p
-					return g, true
-				}
-				if fairReservation(s, session, platform) == d {
-					powerUp(s, d, l, now, "resume")
-					removeWaiters(s, session, platform)
-					g.lease, g.boot, g.wipe = l, d, takeWipe(d)
-					return g, true
-				}
-				return queueCaller(s, session, platform, now, deadline)
-			default:
-				removeLease(s, l)
-				changed = true
-			}
+	case l.Physical:
+		wasSuspended := l.Suspended()
+		decision, dev, resume := holdPhysical(l, probe)
+		switch decision {
+		case holdKeep, holdRetake:
+			g.lease, g.take, g.resumeStayOn = l, dev, resume
+			return g, removeWaiters(s, session, platform) || wasSuspended != l.Suspended()
+		case holdWait:
+			return g, wasSuspended != l.Suspended()
 		}
+		g.notes = append(g.notes, fmt.Sprintf("note: %s (%s) is no longer connected by cable — lease dropped, choosing again", l.DeviceName, l.serial()))
+		dropLease(s, l, now, "unplugged")
+		changed = true
+	default:
+		if held, done, heldChanged := grantHeldVirtual(s, req, l, probe, excluded, vetted, now, deadline); done {
+			return held, heldChanged
+		}
+		changed = true
 	}
 	if req.Type.admitsPhysical() {
 		if req.AppID == "" {
@@ -220,6 +198,39 @@ func grantLocked(s *State, req LeaseRequest, probe physicalProbe, excluded, vett
 	return q, queued || changed
 }
 
+// grantHeldVirtual is not done only when the held lease's device is gone:
+// its lease is removed, and the caller chooses again.
+func grantHeldVirtual(s *State, req LeaseRequest, l *Lease, probe physicalProbe, excluded, vetted map[string]bool, now, deadline time.Time) (g grant, done, changed bool) {
+	session, platform := req.Session, req.Platform
+	d := s.FindDevice(l.DeviceName)
+	switch {
+	case d != nil && d.State == StateOn:
+		g.lease = l
+		return g, true, removeWaiters(s, session, platform)
+	case d != nil && d.State == StateOff:
+		if p := pickYield(s, req, probe, excluded); p != nil {
+			if !vetted[p.Serial] {
+				g.vet = p
+				return g, true, false
+			}
+			g.notes = append(g.notes, fmt.Sprintf("note: %s (%s) is plugged and free — the lease on %s ends", p.Name, p.Serial, d.Name))
+			dropLease(s, l, now, "yield-physical")
+			g.lease, g.take = leasePhysical(s, req, p, now), p
+			return g, true, true
+		}
+		if fairReservation(s, session, platform) == d {
+			powerUp(s, d, l, now, "resume")
+			removeWaiters(s, session, platform)
+			g.lease, g.boot, g.wipe = l, d, takeWipe(d)
+			return g, true, true
+		}
+		g, changed = queueCaller(s, session, platform, now, deadline)
+		return g, true, changed
+	}
+	removeLease(s, l)
+	return grant{}, false, true
+}
+
 // pickYield is silent on the devices it skips: a suspended virtual lease is
 // resumed after every pause, and the same skip would be printed each time.
 func pickYield(s *State, req LeaseRequest, probe physicalProbe, excluded map[string]bool) *PhysicalDevice {
@@ -237,10 +248,6 @@ func leasePhysical(s *State, req LeaseRequest, p *PhysicalDevice, now time.Time)
 	return l
 }
 
-// probeForLease probes for a held physical lease the requirement still
-// admits, so it is checked on the cable and resumed. A held device the probe
-// no longer sees is probed once more before its lease ends: right after an
-// adb server restart, adb lists nothing.
 func probeForLease(ctx context.Context, req LeaseRequest) (physicalProbe, error) {
 	if !req.Type.admitsPhysical() {
 		return physicalProbe{}, nil
@@ -258,6 +265,8 @@ func probeForLease(ctx context.Context, req LeaseRequest) (physicalProbe, error)
 	if held == nil || !probe.ok || probe.wired(held) != nil {
 		return probe, nil
 	}
+	// Right after an adb server restart adb lists nothing: a held device the
+	// first probe misses gets a second look before its lease ends.
 	select {
 	case <-ctx.Done():
 		return physicalProbe{}, ctx.Err()
@@ -301,8 +310,6 @@ func Acquire(ctx context.Context, req LeaseRequest, progress io.Writer) (string,
 	return l.ID, err
 }
 
-// AcquireLease is Acquire with the lease's details. A fresh install is named
-// on progress at every call of its lease.
 func AcquireLease(ctx context.Context, req LeaseRequest, progress io.Writer) (Leased, error) {
 	l, err := acquire(ctx, req, progress)
 	if err != nil {
@@ -492,14 +499,14 @@ func firstLine(err error) string {
 	return msg
 }
 
-func Pause(ctx context.Context, session string) error {
+func Pause(ctx context.Context, session string, platform Platform) error {
 	var failures []error
 	err := WithLock(func(s *State) error {
 		now := clock()
 		changed := reapLocked(ctx, s, now)
 		changed = touchSession(s, session, now) > 0 || changed
 		for _, l := range s.Leases {
-			if l.SessionID != session || l.Suspended() {
+			if l.SessionID != session || l.Suspended() || (platform != "" && l.Platform != platform) {
 				continue
 			}
 			if l.Physical {

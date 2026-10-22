@@ -36,6 +36,7 @@ type AppInfo struct {
 
 const devBuildNamePrefix = "[D]"
 
+// flutter run uninstalls a Store build to install its own, data included.
 func (a AppInfo) overwritable() bool {
 	return !a.Installed || a.Developer || strings.HasPrefix(a.Name, devBuildNamePrefix)
 }
@@ -276,6 +277,27 @@ func writeStayOn(ctx context.Context, id, value string) error {
 
 func removeAdbReverses(ctx context.Context, id string) error {
 	_, err := runBounded(ctx, "adb", "-s", id, "reverse", "--remove-all")
+	return err
+}
+
+func addAdbReverse(ctx context.Context, id, spec string) error {
+	_, err := runBounded(ctx, "adb", "-s", id, "reverse", spec, spec)
+	return err
+}
+
+func pmClear(ctx context.Context, id, pkg string) error {
+	out, err := adbShell(ctx, id, "pm", "clear", pkg)
+	if err != nil {
+		return err
+	}
+	if out != "Success" {
+		return fmt.Errorf("pm clear %s: %s", pkg, out)
+	}
+	return nil
+}
+
+func pmGrant(ctx context.Context, id, pkg, perm string) error {
+	_, err := adbShell(ctx, id, "pm", "grant", pkg, perm)
 	return err
 }
 

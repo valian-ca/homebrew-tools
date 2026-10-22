@@ -216,17 +216,27 @@ func takePhysical(ctx context.Context, taken *Lease, p PhysicalDevice) (skip str
 	return "", nil
 }
 
-// vetPhysical runs before a suspended virtual lease ends for p: a device
-// given up after that would cost the session its virtual device too.
+// vetPhysical runs takePhysical's reads before a suspended virtual lease
+// ends for p: a device given up after that would cost the session its
+// virtual device too. Only the stay_on write cannot be tried in advance.
 func vetPhysical(ctx context.Context, p PhysicalDevice, appID string) (skip string) {
-	if why := appConflict(ctx, p, appID); why != "" {
+	why := appConflict(ctx, p, appID)
+	if why == "" {
+		if _, err := drv.apps(ctx, p); err != nil {
+			why = fmt.Sprintf("could not list its apps (%s)", firstLine(err))
+		}
+	}
+	if why == "" && p.Platform == PlatformAndroid {
+		if _, err := drv.stayOn(ctx, p.ID); err != nil {
+			why = fmt.Sprintf("could not read %s (%s)", stayOnSetting, firstLine(err))
+		}
+	}
+	if why != "" {
 		return skipNote(&p, why)
 	}
 	return ""
 }
 
-// appConflict gives up a device before anything on it is touched: flutter
-// run would uninstall a Store build to install its own, data included.
 func appConflict(ctx context.Context, p PhysicalDevice, appID string) string {
 	app, err := drv.appInfo(ctx, p, appID)
 	if err == nil && app.Installed && !app.Developer && p.Platform == PlatformAndroid {

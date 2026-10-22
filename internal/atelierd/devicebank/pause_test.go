@@ -12,7 +12,7 @@ import (
 
 func pause(t *testing.T, session string) {
 	t.Helper()
-	if err := Pause(context.Background(), session); err != nil {
+	if err := Pause(context.Background(), session, ""); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -122,7 +122,7 @@ func TestPausePowerOffFailureKeepsLeaseActive(t *testing.T) {
 	lease(t, "sess-a", PlatformAndroid)
 	f.fail["killAVD"] = 1
 
-	err := Pause(context.Background(), "sess-a")
+	err := Pause(context.Background(), "sess-a", "")
 	if err == nil || !strings.Contains(err.Error(), "pause atelier-android-1") {
 		t.Fatalf("a refused power-off is reported, got %v", err)
 	}

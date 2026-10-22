@@ -142,7 +142,7 @@ func TestLimitBlockedNeverFallsBackToPhysical(t *testing.T) {
 	f2.phys = f.phys
 	seed(t, bank(iosDevice(1)))
 	if err := leaseErr("sess-2", PlatformAndroid); !errors.Is(err, ErrExhausted) {
-		t.Fatalf("without --type a physical device is never leased, even with no android virtual device, got %v", err)
+		t.Fatalf("without --app-id a physical device is never leased, even with no android virtual device, got %v", err)
 	}
 }
 
