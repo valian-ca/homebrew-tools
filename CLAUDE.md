@@ -37,7 +37,10 @@ plugin shims anything matching that pattern and routes it to `flutter
 
 **Dependencies.** Declare every runtime dependency via `depends_on` in the
 formula. Assume the user has nothing beyond macOS defaults. `gum`, `jq`,
-`fzf`, `yq` are fine to depend on — they're all in core Homebrew.
+`fzf`, `yq` are fine to depend on — they're all in core Homebrew. A
+formula from a third-party tap is allowed when the tool is in no core tap,
+named fully: `lanes` depends on `f1bonacc1/tap/process-compose`, which
+`brew install` taps on first use.
 
 **Scripts get `set -euo pipefail`** at the top. Use the
 `${arr[@]+"${arr[@]}"}` idiom for optional arrays to stay compatible with
@@ -152,12 +155,25 @@ If they're gone, re-insert via a binary-safe write (Python,
 `printf '\xee\x85\xbb'`, etc.) — not via every editor's UTF-8 "helpful"
 normalisation.
 
+## lanes test data
+
+`lanes` is proven on the demo project in `examples/lanes-demo`, which follows
+the contract in `cmd/lanes/README.md`. `examples/lanes-demo/make-repo.sh <dir>`
+turns it into a throwaway repo with a bare `origin`; the integration suite
+(`internal/lanes/integration`) builds one per test, with its own lanesd,
+state dir and port range through the `LANES_TEST=1` overrides. No account is
+needed.
+
 ## CI
 
 `.github/workflows/lint.yml` runs:
 - `go vet ./...`, `go test ./...`, and `golangci-lint run` on every PR
 - `shellcheck -x bin/*` when `bin/` isn't empty
 - `brew audit --strict --online Formula/*.rb` if any formula changed
+- `go test -tags integration` for lanes on the macOS runner, when a PR
+  touches `cmd/lanes*`, `internal/lanes`, `examples/lanes-demo`,
+  `Formula/lanes.rb` or the workflow. It needs process-compose and cgo
+  (lanes reads processes through libproc).
 
 Keep all jobs mandatory via branch protection on `main`.
 

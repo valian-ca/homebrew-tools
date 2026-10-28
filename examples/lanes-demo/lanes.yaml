@@ -1,0 +1,18 @@
+schema: 1
+ports:
+  block: 10
+  names: [web, extra]
+resources:
+  - scripts:
+      name: demo-store
+      create: tool/lane-store create
+      erase: tool/lane-store erase
+      list: tool/lane-store list
+      owner: tool/lane-store owner
+generate:
+  - template: app.env.tmpl
+setup:
+  - name: deps
+    run: tool/install.sh
+    when_changed: [deps.lock]
+shared: [lanes-demo-shared]

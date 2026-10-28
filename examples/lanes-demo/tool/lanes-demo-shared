@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+exec -a lanes-demo-shared sleep "${1:-3600}"

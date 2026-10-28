@@ -3,3 +3,5 @@
 # Locally built tool binaries (go build ./cmd/<tool> drops these at the repo root)
 /atelierd
 /frn
+/lanes
+/lanesd
