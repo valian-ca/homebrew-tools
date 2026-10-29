@@ -12,6 +12,7 @@ import (
 	"github.com/valian-ca/homebrew-tools/internal/lanes/client"
 	"github.com/valian-ca/homebrew-tools/internal/lanes/config"
 	"github.com/valian-ca/homebrew-tools/internal/lanes/env"
+	"github.com/valian-ca/homebrew-tools/internal/lanes/firebase"
 	"github.com/valian-ca/homebrew-tools/internal/lanes/gitx"
 	"github.com/valian-ca/homebrew-tools/internal/lanes/lane"
 	"github.com/valian-ca/homebrew-tools/internal/lanes/paths"
@@ -128,7 +129,49 @@ func (w *Workspace) setLane(rec lane.Record) {
 		BlockStart: w.Block.Start,
 		BlockSize:  w.Block.Size,
 		PortNames:  w.Cfg.Ports.Names,
+		Host:       rec.Host,
+		Extra:      w.firebaseVars(firebase.Stack),
 	})
+}
+
+// firebaseVars is empty when the base config is unreadable or a port is
+// missing: the generation names the cause.
+func (w *Workspace) firebaseVars(s firebase.Series) env.Vars {
+	fb := w.Cfg.Firebase()
+	if fb == nil {
+		return nil
+	}
+	b, err := firebase.LoadBase(w.WT.Root, fb)
+	if err != nil {
+		return nil
+	}
+	plan := firebase.NewPlan(b, fb, s)
+	ports := firebase.Ports(w.Cfg.Ports.Names, w.Block.Start)
+	if len(firebase.Missing(plan.RequiredPorts(), w.Cfg.Ports.Names)) > 0 {
+		return nil
+	}
+	return firebase.Vars(plan, ports, firebase.ConfigPath(w.WT.Root, fb, s))
+}
+
+func (w *Workspace) TestVars() env.Vars {
+	over := env.Vars{{Name: "TMPDIR", Value: filepath.Join(w.Tmpdir, "test")}}
+	fb := w.Cfg.Firebase()
+	if fb == nil {
+		return w.Vars.With(over)
+	}
+	if b, err := firebase.LoadBase(w.WT.Root, fb); err == nil {
+		plan := firebase.NewPlan(b, fb, firebase.Test)
+		ports := firebase.Ports(w.Cfg.Ports.Names, w.Block.Start)
+		over = append(over, firebase.PortVars(plan, ports)...)
+		over = append(over, w.firebaseVars(firebase.Test)...)
+	}
+	return w.Vars.With(over)
+}
+
+func (w *Workspace) SetHost(host string) {
+	rec := w.Lane
+	rec.Host = host
+	w.setLane(rec)
 }
 
 func (w *Workspace) Environ(base []string) []string { return w.Vars.Environ(base) }

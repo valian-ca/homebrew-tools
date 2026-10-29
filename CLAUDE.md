@@ -166,6 +166,26 @@ turns it into a throwaway repo with a bare `origin`; the integration suite
 state dir and port range through the `LANES_TEST=1` overrides. No account is
 needed.
 
+The demo's Firebase side is the project `demo-lanes`: the `demo-` prefix needs
+no credentials. Its cases need Java 21 and Node 22; without them they skip,
+unless `LANES_REQUIRE_FIREBASE=1`, which CI sets. At most two Firebase stacks
+run at once (`LANES_FIREBASE_PARALLEL` changes it), and the core tests run on
+a copy of the demo without its Firebase side. Two more `LANES_TEST=1` seams
+serve them: `LANES_TMPDIR_ROOT` moves the lanes' `TMPDIR` (the socket-length
+refusal), and `LANES_LAN_PROBE=unreachable` makes `lanes host lan` see no
+network.
+
+The seed (`examples/lanes-demo/seed`: 5 000 documents in `items`,
+`demo/hello`, one Auth user) comes from a dedicated emulator session, never
+from one tests ran against. To rebuild it, from `examples/lanes-demo`, on free
+ports:
+
+```
+rm -rf seed
+npx firebase emulators:exec --config firebase.emulator.json --project demo-lanes \
+  --only auth,firestore --export-on-exit seed "node tool/make-seed.mjs"
+```
+
 ## CI
 
 `.github/workflows/lint.yml` runs:
@@ -175,7 +195,9 @@ needed.
 - `go test -tags integration` for lanes on the macOS runner, when a PR
   touches `cmd/lanes*`, `internal/lanes`, `examples/lanes-demo`,
   `Formula/lanes.rb`, `go.mod`, `go.sum` or the workflow. It needs process-compose and cgo
-  (lanes reads processes through libproc).
+  (lanes reads processes through libproc), and Java 21 and Node 22 for the
+  Firebase cases; the emulators' jars are cached on the demo's firebase-tools
+  version.
 
 Keep all jobs mandatory via branch protection on `main`.
 

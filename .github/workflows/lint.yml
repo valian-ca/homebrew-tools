@@ -121,6 +121,32 @@ jobs:
         if: steps.changed.outputs.lanes == 'true'
         run: brew install f1bonacc1/tap/process-compose
 
+      - uses: actions/setup-java@v4
+        if: steps.changed.outputs.lanes == 'true'
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: actions/setup-node@v4
+        if: steps.changed.outputs.lanes == 'true'
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: examples/lanes-demo/package-lock.json
+
+      - name: Read the demo's firebase-tools version
+        if: steps.changed.outputs.lanes == 'true'
+        id: firebase
+        run: echo "version=$(jq -r '.devDependencies["firebase-tools"]' examples/lanes-demo/package.json)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v4
+        if: steps.changed.outputs.lanes == 'true'
+        with:
+          path: ~/.cache/firebase/emulators
+          key: firebase-emulators-${{ runner.os }}-${{ steps.firebase.outputs.version }}
+
       - name: go test -tags integration
         if: steps.changed.outputs.lanes == 'true'
-        run: go test -tags integration ./internal/lanes/... ./cmd/lanes/... ./cmd/lanesd/...
+        env:
+          LANES_REQUIRE_FIREBASE: "1"
+        run: go test -tags integration -timeout 30m ./internal/lanes/... ./cmd/lanes/... ./cmd/lanesd/...

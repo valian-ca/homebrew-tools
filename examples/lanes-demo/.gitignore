@@ -2,3 +2,10 @@
 app.env
 .env.local
 secrets.local
+node_modules/
+.emu-data
+.emu-data.next
+.emu-data.old
+firebase.lanes.json
+firebase.lanes.test.json
+*-debug.log

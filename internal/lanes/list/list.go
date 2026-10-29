@@ -38,6 +38,7 @@ type Lane struct {
 	Worktree     string         `json:"worktree"`
 	Lane         string         `json:"lane"`
 	Branch       string         `json:"branch"`
+	Host         string         `json:"host"`
 	Block        Block          `json:"block"`
 	Ports        map[string]int `json:"ports"`
 	State        string         `json:"state"`
@@ -102,6 +103,7 @@ func describe(ctx context.Context, e ports.Entry, stacks map[string]proto.StackS
 		Ports:        map[string]int{},
 		State:        StateStopped,
 		Session:      SessionUnknown,
+		Host:         env.DefaultHost,
 		Tmpdir:       tmp,
 		Logs:         paths.Logs(tmp),
 		Pieces:       []Piece{},
@@ -109,6 +111,9 @@ func describe(ctx context.Context, e ports.Entry, stacks map[string]proto.StackS
 	}
 	if rec, err := lane.Load(e.AdminDir); err == nil && rec != nil {
 		l.Lane, l.Branch = rec.ID, rec.Branch
+		if rec.Host != "" {
+			l.Host = rec.Host
+		}
 	}
 	if cfg, err := config.Load(e.Worktree); err == nil {
 		for i, n := range cfg.Ports.Names {
@@ -170,6 +175,7 @@ func WriteText(w io.Writer, r Report) {
 		}
 		fmt.Fprintf(w, "%s  (%s)\n", l.Worktree, l.Project)
 		fmt.Fprintf(w, "  lane      %s  (branch %s)\n", orDash(l.Lane), orDash(l.Branch))
+		fmt.Fprintf(w, "  host      %s\n", l.Host)
 		fmt.Fprintf(w, "  ports     %d-%d%s\n", l.Block.Start, l.Block.End, namedPorts(l.Ports))
 		session := l.Session
 		if l.Session == SessionGrace {

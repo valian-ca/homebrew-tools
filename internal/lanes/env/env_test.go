@@ -19,12 +19,38 @@ func TestBuild(t *testing.T) {
 		"PORT_ADMIN":      "20001",
 		"LANES_PORT_BASE": "20000",
 		"LANES_PORT_SIZE": "10",
-		"LANES_VARS":      "LANE_ID LANES_WORKTREE TMPDIR PORT_WEB PORT_ADMIN LANES_PORT_BASE LANES_PORT_SIZE LANES_VARS",
+		"LANES_HOST":      "127.0.0.1",
+		"LANES_VARS":      "LANE_ID LANES_WORKTREE TMPDIR PORT_WEB PORT_ADMIN LANES_PORT_BASE LANES_PORT_SIZE LANES_HOST LANES_VARS",
 	}
 	for k, v := range want {
 		if m[k] != v {
 			t.Errorf("%s = %q, want %q", k, m[k], v)
 		}
+	}
+}
+
+func TestBuildHostAndExtra(t *testing.T) {
+	l := lane()
+	l.Host = "192.168.1.20"
+	l.Extra = Vars{{"FIRESTORE_EMULATOR_HOST", "127.0.0.1:20003"}}
+	m := Build(l).Map()
+	if m["LANES_HOST"] != "192.168.1.20" || m["FIRESTORE_EMULATOR_HOST"] != "127.0.0.1:20003" {
+		t.Errorf("vars = %v", m)
+	}
+	if !strings.Contains(m["LANES_VARS"], "FIRESTORE_EMULATOR_HOST") {
+		t.Errorf("LANES_VARS = %q", m["LANES_VARS"])
+	}
+}
+
+func TestWith(t *testing.T) {
+	v := Build(lane()).With(Vars{{"TMPDIR", "/tmp/lanes-501-deadbeef/test"}, {"PORT_HUB", "20009"}})
+	m := v.Map()
+	if m["TMPDIR"] != "/tmp/lanes-501-deadbeef/test" || m["PORT_HUB"] != "20009" {
+		t.Errorf("vars = %v", m)
+	}
+	names := v.Names()
+	if names[len(names)-1] != "LANES_VARS" || !strings.Contains(m["LANES_VARS"], "PORT_HUB") || strings.Count(m["LANES_VARS"], "TMPDIR") != 1 {
+		t.Errorf("LANES_VARS = %q", m["LANES_VARS"])
 	}
 }
 
@@ -45,7 +71,9 @@ func TestEnvironOverridesTMPDIR(t *testing.T) {
 // core exported survives --unset, not even a port an earlier lane exported.
 func TestExportsThenUnsetLeaveNothing(t *testing.T) {
 	t.Setenv("LANES_VARS", "PORT_OLD")
-	v := Build(lane())
+	l := lane()
+	l.Extra = Vars{{"FIRESTORE_EMULATOR_HOST", "127.0.0.1:20003"}, {"LANES_FIREBASE_CONFIG", "/w/firebase.lanes.json"}}
+	v := Build(l)
 	script := v.Exports() + `printf '%s|%s\n' "$LANES_WORKTREE" "$PORT_ADMIN"` + "\n" + Unsets(v) + "env\n"
 	c := exec.Command("/bin/bash", "-c", script)
 	c.Env = []string{"PATH=/usr/bin:/bin", "PORT_OLD=1"}
@@ -59,7 +87,7 @@ func TestExportsThenUnsetLeaveNothing(t *testing.T) {
 	}
 	for _, l := range lines[1:] {
 		name, _, _ := strings.Cut(l, "=")
-		if strings.HasPrefix(name, "PORT_") || strings.HasPrefix(name, "LANE") || name == "TMPDIR" {
+		if strings.HasPrefix(name, "PORT_") || strings.HasPrefix(name, "LANE") || strings.Contains(name, "EMULATOR") || name == "TMPDIR" {
 			t.Errorf("%s survived --unset", l)
 		}
 	}

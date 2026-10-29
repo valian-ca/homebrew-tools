@@ -72,7 +72,23 @@ type harness struct {
 	trees    []string
 	children []*exec.Cmd
 	lo       int
+	profile  profile
+	slot     bool
 }
+
+// profile picks how much of the demo's Firebase side a test repo keeps: the
+// core tests run without Java or Node.
+type profile int
+
+const (
+	core profile = iota
+	firebaseLight
+	firebaseFull
+)
+
+func withProfile(p profile) option { return func(h *harness) { h.profile = p } }
+
+func withEnv(kv ...string) option { return func(h *harness) { h.env = append(h.env, kv...) } }
 
 type option func(*harness)
 
@@ -105,8 +121,13 @@ func newHarness(t *testing.T, opts ...option) *harness {
 		h.env = append(h.env, "LANES_GRACE=3s")
 	}
 
-	h.main = h.repo("demo")
+	if h.profile == firebaseFull {
+		requireFirebase(t)
+		firebaseSlots <- struct{}{}
+		h.slot = true
+	}
 	t.Cleanup(h.cleanup)
+	h.main = h.repo("demo")
 	return h
 }
 
@@ -116,6 +137,9 @@ func (h *harness) repo(name string) string {
 	h.t.Helper()
 	dir := filepath.Join(testutil.RealTemp(h.t), name)
 	h.run(filepath.Dir(dir), "../../../examples/lanes-demo/make-repo.sh", dir)
+	if h.profile != firebaseFull {
+		h.trimFirebase(dir)
+	}
 	return dir
 }
 
@@ -286,6 +310,9 @@ func alive(c *exec.Cmd) bool {
 }
 
 func (h *harness) cleanup() {
+	if h.slot {
+		defer func() { <-firebaseSlots }()
+	}
 	for _, c := range h.children {
 		_ = c.Process.Kill()
 	}
@@ -303,6 +330,9 @@ func (h *harness) cleanup() {
 		os.RemoveAll(tmp)
 	}
 	h.stopDaemon()
+	for _, wt := range h.trees {
+		killUnder(wt)
+	}
 	if h.t.Failed() {
 		h.t.Logf("lanesd log:\n%s", h.daemonLog())
 	}

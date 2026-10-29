@@ -287,7 +287,7 @@ func TestListJSON(t *testing.T) {
 		t.Fatalf("report = %+v", r)
 	}
 	run, stop := h.laneOf(running), h.laneOf(stopped)
-	if run.State != "running" || run.Session != "active" || run.LastActivity == nil || run.Logs == "" || len(run.Ports) != 2 {
+	if run.State != "running" || run.Session != "active" || run.LastActivity == nil || run.Logs == "" || run.Ports["PORT_WEB"] == 0 || run.Ports["PORT_EXTRA"] == 0 {
 		t.Fatalf("running lane = %+v", run)
 	}
 	var web int64

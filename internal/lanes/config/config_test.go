@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 const minimal = `
@@ -81,7 +82,13 @@ func TestParseErrors(t *testing.T) {
 		"duplicate step":    minimal + "setup: [{name: a, run: x}, {name: a, run: y}]\n",
 		"trigger escapes":   minimal + "setup: [{name: a, run: x, when_changed: [/etc/passwd]}]\n",
 		"bad size":          minimal + "ram_alert: lots\n",
-		"unknown adapter":   minimal + "resources: [{firebase: {}}]\n",
+		"unknown adapter":   minimal + "resources: [{firestore: {}}]\n",
+		"firebase config":   minimal + "resources: [{firebase: {}}]\n",
+		"firebase escapes":  minimal + "resources: [{firebase: {config: ../f.json}}]\n",
+		"firebase only":     minimal + "resources: [{firebase: {config: f.json, only: [firestor]}}]\n",
+		"firebase test":     minimal + "resources: [{firebase: {config: f.json, test: {only: [hub]}}}]\n",
+		"firebase timeout":  minimal + "resources: [{firebase: {config: f.json, functions_timeout: soon}}]\n",
+		"two adapters":      minimal + "resources: [{scripts: {name: s, create: c, erase: e, list: l, owner: o}, firebase: {config: f.json}}]\n",
 		"unknown scripts k": minimal + "resources: [{scripts: {name: s, create: c, erase: e, list: l, owner: o, oops: 1}}]\n",
 	}
 	for name, doc := range cases {
@@ -102,5 +109,55 @@ func TestByteSize(t *testing.T) {
 	}
 	if DefaultRAMAlert.String() != "4GB" {
 		t.Errorf("String() = %q", DefaultRAMAlert.String())
+	}
+}
+
+func TestParseFirebaseDefaults(t *testing.T) {
+	cfg, err := Parse([]byte(minimal + "resources: [{firebase: {config: firebase.emulator.json}}]\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fb := cfg.Firebase()
+	if fb == nil {
+		t.Fatal("no firebase resource")
+	}
+	if fb.Data != ".emu-data" || fb.JVMHeap != 512<<20 || fb.FunctionsTimeout.Std() != 180*time.Second || fb.ExportTimeout.Std() != 60*time.Second {
+		t.Errorf("defaults = %+v", fb)
+	}
+}
+
+func TestParseFirebaseFull(t *testing.T) {
+	cfg, err := Parse([]byte(minimal + `
+resources:
+  - firebase:
+      config: app/firebase.emulator.json
+      data: .data
+      seed: seed
+      only: [firestore, auth]
+      test: {only: [firestore]}
+      jvm_heap: 1GB
+      functions_timeout: 3m
+      export_timeout: 75s
+      command: npx firebase
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fb := cfg.Firebase()
+	if fb.JVMHeap != 1<<30 || fb.FunctionsTimeout.Std() != 3*time.Minute || fb.ExportTimeout.Std() != 75*time.Second || fb.Test.Only[0] != "firestore" {
+		t.Errorf("firebase = %+v", fb)
+	}
+}
+
+func TestParseFirebaseLimits(t *testing.T) {
+	cases := map[string]string{
+		"resources: [{firebase: {config: a.json}}, {firebase: {config: b.json}}]": "resources[1].firebase: at most one firebase resource per project (first at resources[0])",
+		"resources: [{firebase: {config: a.json, export_timeout: 90s}}]":          "resources[0].firebase.export_timeout: 90s exceeds the 75s limit",
+	}
+	for doc, want := range cases {
+		_, err := Parse([]byte(minimal + doc + "\n"))
+		if err == nil || err.Error() != want {
+			t.Errorf("Parse(%s) = %v, want %q", doc, err, want)
+		}
 	}
 }

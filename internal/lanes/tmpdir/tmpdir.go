@@ -15,7 +15,11 @@ import (
 // under TMPDIR.
 func Path(commonDir, adminDir string) string {
 	sum := sha256.Sum256([]byte(commonDir + "\x00" + adminDir))
-	return filepath.Join("/tmp", fmt.Sprintf("lanes-%d-%s", os.Getuid(), hex.EncodeToString(sum[:4])))
+	base := "/tmp"
+	if v, ok := paths.TestOverride("LANES_TMPDIR_ROOT"); ok {
+		base = v
+	}
+	return filepath.Join(base, fmt.Sprintf("lanes-%d-%s", os.Getuid(), hex.EncodeToString(sum[:4])))
 }
 
 func Ensure(dir string) error {

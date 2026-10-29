@@ -65,6 +65,11 @@ stops after 5 minutes unless a session arrives.`,
 				return err
 			}
 			environ := w.Environ(os.Environ())
+			for _, a := range w.Adapters(environ) {
+				if err := a.Preflight(ctx); err != nil {
+					return err
+				}
+			}
 			if err := w.CreateResources(ctx, environ); err != nil {
 				return err
 			}
@@ -159,6 +164,11 @@ never stopped. Main checkouts never appear.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
+			if dir, err := cwd(); err == nil {
+				if _, _, err := workspace.Locate(ctx, dir); err != nil && !workspace.IsQuiet(err) {
+					return err
+				}
+			}
 			callCtx, cancel := withTimeout(ctx, 5*time.Second)
 			defer cancel()
 			var stacks []proto.StackStatus
@@ -192,8 +202,11 @@ func newEnvCmd() *cobra.Command {
 		Short: "Print this worktree's lane variables as shell exports",
 		Long: `Print the lane's variables as export lines, for eval in a shell or .envrc:
 LANE_ID, LANES_WORKTREE, TMPDIR, PORT_<NAME> for each named port,
-LANES_PORT_BASE, LANES_PORT_SIZE and LANES_VARS. With --unset, print the unset
-line that removes every variable lanes exports.
+LANES_PORT_BASE, LANES_PORT_SIZE, LANES_HOST and LANES_VARS. With a firebase
+resource, also the SDK variable of each emulator that starts, on 127.0.0.1
+(FIRESTORE_EMULATOR_HOST, FIREBASE_AUTH_EMULATOR_HOST…), FIREBASE_EMULATOR_HUB
+and LANES_FIREBASE_CONFIG. With --unset, print the unset line that removes
+every variable lanes exports.
 
 On a main checkout, outside a repository, or without lanes.yaml, it prints
 nothing. It never runs a prep step.`,

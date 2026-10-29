@@ -8,9 +8,16 @@ import (
 	"strings"
 )
 
+const DefaultHost = "127.0.0.1"
+
 // Fixed lists every variable the core may export whatever the project
 // declares, so --unset clears them even from a shell whose LANES_VARS is gone.
-var Fixed = []string{"LANE_ID", "LANES_WORKTREE", "TMPDIR", "LANES_PORT_BASE", "LANES_PORT_SIZE", "LANES_VARS"}
+var Fixed = []string{
+	"LANE_ID", "LANES_WORKTREE", "TMPDIR", "LANES_PORT_BASE", "LANES_PORT_SIZE", "LANES_HOST", "LANES_VARS",
+	"FIRESTORE_EMULATOR_HOST", "FIREBASE_AUTH_EMULATOR_HOST", "FIREBASE_STORAGE_EMULATOR_HOST",
+	"FIREBASE_DATABASE_EMULATOR_HOST", "PUBSUB_EMULATOR_HOST", "CLOUD_TASKS_EMULATOR_HOST",
+	"FIREBASE_EMULATOR_HUB", "LANES_FIREBASE_CONFIG",
+}
 
 type Var struct{ Name, Value string }
 
@@ -23,6 +30,8 @@ type Lane struct {
 	BlockStart int
 	BlockSize  int
 	PortNames  []string
+	Host       string
+	Extra      Vars
 }
 
 func PortVar(name string) string { return "PORT_" + strings.ToUpper(name) }
@@ -36,16 +45,43 @@ func Build(l Lane) Vars {
 	for i, n := range l.PortNames {
 		v = append(v, Var{PortVar(n), strconv.Itoa(l.BlockStart + i)})
 	}
+	host := l.Host
+	if host == "" {
+		host = DefaultHost
+	}
 	v = append(v,
 		Var{"LANES_PORT_BASE", strconv.Itoa(l.BlockStart)},
 		Var{"LANES_PORT_SIZE", strconv.Itoa(l.BlockSize)},
+		Var{"LANES_HOST", host},
 	)
+	v = append(v, l.Extra...)
 	names := make([]string, 0, len(v)+1)
 	for _, x := range v {
 		names = append(names, x.Name)
 	}
 	names = append(names, "LANES_VARS")
 	return append(v, Var{"LANES_VARS", strings.Join(names, " ")})
+}
+
+func (v Vars) With(over Vars) Vars {
+	m := over.Map()
+	out := make(Vars, 0, len(v)+len(over))
+	for _, x := range v {
+		if x.Name == "LANES_VARS" {
+			continue
+		}
+		if val, ok := m[x.Name]; ok {
+			x.Value = val
+			delete(m, x.Name)
+		}
+		out = append(out, x)
+	}
+	for _, x := range over {
+		if _, ok := m[x.Name]; ok {
+			out = append(out, x)
+		}
+	}
+	return append(out, Var{"LANES_VARS", strings.Join(append(out.Names(), "LANES_VARS"), " ")})
 }
 
 func (v Vars) Map() map[string]string {

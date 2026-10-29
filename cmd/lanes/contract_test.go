@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/valian-ca/homebrew-tools/internal/lanes/config"
+	"github.com/valian-ca/homebrew-tools/internal/lanes/firebase"
 )
 
 const demo = "../../examples/lanes-demo/"
@@ -83,5 +84,43 @@ func TestDemoFollowsContract(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("the demo .envrc %q is not the contract's form", envrc)
+	}
+}
+
+func TestDemoFirebaseFollowsContract(t *testing.T) {
+	cfg, err := config.Load(demo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fb := cfg.Firebase()
+	if fb == nil || fb.Seed == "" {
+		t.Fatalf("the demo declares no firebase resource with a seed: %+v", cfg.Resources)
+	}
+	base, err := firebase.LoadBase(demo, fb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range []firebase.Series{firebase.Stack, firebase.Test} {
+		if missing := firebase.Missing(firebase.NewPlan(base, fb, s).RequiredPorts(), cfg.Ports.Names); len(missing) > 0 {
+			t.Errorf("the demo's %s lacks the ports %v", s, missing)
+		}
+	}
+	ignore, err := os.ReadFile(demo + ".gitignore")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{fb.Data, fb.Data + ".next", fb.Data + ".old", firebase.StackConfigName, firebase.TestConfigName} {
+		if !strings.Contains("\n"+string(ignore), "\n"+want+"\n") {
+			t.Errorf("the demo's .gitignore does not ignore %s", want)
+		}
+	}
+	readme, err := os.ReadFile("README.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"### The `firebase` adapter", "### `lanes test-env -- <command>`", "### Lane host", "`LANES_HOST`"} {
+		if !strings.Contains(string(readme), want) {
+			t.Errorf("the contract lacks %s", want)
+		}
 	}
 }

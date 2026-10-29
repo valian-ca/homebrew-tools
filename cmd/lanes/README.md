@@ -44,8 +44,9 @@ than 1.73.0 and names both versions.
 
 lanes serves linked worktrees only. On the main checkout:
 
-- `lanes start`, `up`, `restart`, `stop` and `logs` refuse, and point to the
-  project's own commands;
+- `lanes start`, `up`, `restart`, `stop`, `logs` and `host` refuse, and point
+  to the project's own commands;
+- `lanes test-env -- <command>` runs the command as is;
 - `lanes env` prints nothing;
 - the hooks return at once without doing anything;
 - `lanes list` never shows it.
@@ -62,8 +63,10 @@ A project declares its stack in two files it writes and versions:
 - `process-compose.yaml`, the project's own processes.
 
 lanes never modifies a file git tracks. What it writes in the worktree —
-`.lanes/` and the generated files — must be ignored by git; lanes refuses to
-write a generated file that git tracks.
+`.lanes/`, the generated files, and a `firebase` resource's generated configs
+and data — must be ignored by git; lanes refuses to write a generated file that
+git tracks, and warns when one is not ignored. It never edits `.gitignore` or
+`.git/info/exclude`.
 
 ## `lanes.yaml`, schema 1
 
@@ -79,6 +82,9 @@ resources:                    # adapters, in creation order
       erase: tool/lane-store erase
       list: tool/lane-store list
       owner: tool/lane-store owner
+  - firebase:                 # at most one per project
+      config: firebase.emulator.json
+      seed: seed
 generate:
   - template: config/app.env.tmpl   # renders config/app.env
 setup:
@@ -98,7 +104,7 @@ installed lanes is refused with `brew upgrade valian-ca/tools/lanes`.
 | --- | --- |
 | `ports.block` | Size of the worktree's block. Blocks come from one table shared by every project on the Mac, between 20000 and 48999, below macOS's ephemeral ports. A block is given only when no other worktree holds it and none of its ports is open. |
 | `ports.names` | Named ports, in block order. Each becomes `PORT_<NAME>`. |
-| `resources` | The adapters. The core knows `scripts`; Firebase, MySQL and Postgres adapters come as separate releases. |
+| `resources` | The adapters, one per entry: `scripts` and `firebase`. MySQL and Postgres adapters come as separate releases. |
 | `generate` | Templates rendered with Go's `text/template` and the lane's variables (`{{.PORT_WEB}}`). The output is the template's path without `.tmpl`; it must be ignored by git, and is rewritten only when its content changes. |
 | `setup` | Prep steps, run in order with `/bin/sh -c` from the worktree root and the lane's variables. A step reruns only when one of its `when_changed` files changed since it last succeeded. |
 | `sessions` | Process names that count as a session. |
@@ -121,6 +127,8 @@ with `/<entry>` or `.<entry>` — a JVM daemon's main class, for instance.
 | `TMPDIR` | `/tmp/lanes-<uid>-<8 hex>`, 40 characters at most, the same for the worktree's whole life. It wins over a `TMPDIR` Claude Code sets. |
 | `PORT_<NAME>` | Each named port. |
 | `LANES_PORT_BASE`, `LANES_PORT_SIZE` | The block. |
+| `LANES_HOST` | The host the lane's clients reach its stack by: `127.0.0.1`, or the Mac's network IP after `lanes host lan`. |
+| Firebase variables | With a `firebase` resource, see [below](#the-firebase-adapter). |
 | `LANES_VARS` | The names above, so `lanes env --unset` removes them all. |
 
 The stack's processes, the prep steps, the adapters' commands and the
@@ -248,6 +256,145 @@ the main checkout, with `lanesd`'s environment (Homebrew's `PATH`).
 
 A non-zero exit fails the operation, and its stderr is reported.
 
+### The `firebase` adapter
+
+The Firebase emulators of the lane, common to every project. A project
+declares at most one `firebase` resource; a second is an error of
+`lanes.yaml` that names its path.
+
+```yaml
+resources:
+  - firebase:
+      config: firebase.emulator.json  # required: the versioned base config
+      data: .emu-data                 # default .emu-data: the lane's data, git-ignored
+      seed: seed                      # optional: imported at a lane's first start
+      only: [auth, firestore]         # default: every emulator of the base config
+      test:
+        only: [firestore]             # default: the stack's, UI excepted
+      jvm_heap: 512MB                 # default 512MB
+      functions_timeout: 180s         # default 180s
+      export_timeout: 60s             # default 60s, 75s at most
+      command: npx firebase           # optional: replaces the project's firebase-tools
+```
+
+**Ports.** Each emulator that starts needs a named port, under a reserved
+name: `auth`, `firestore`, `firestore_ws`, `database`, `functions`, `pubsub`,
+`storage`, `eventarc`, `tasks`, `hosting`, `ui`, `hub`, `logging`. The `test_`
+prefix names the test series' (`test_firestore`, `test_hub`…). The required
+ports are those of the emulators that start, plus those Firebase starts with
+them: `hub` always; `ui` and `logging` when the stack runs an emulator the UI
+shows (Auth, Database, Firestore, Functions, Storage) and `ui.enabled` is not
+false; `eventarc` and `tasks` with Functions; `firestore_ws` with Firestore.
+`lanes start` refuses when a stack port is missing, and `lanes test-env` when a
+`test_*` port is, each naming every missing port.
+
+**Generated configs.** From the base config, lanes writes
+`firebase.lanes.json` for the stack and `firebase.lanes.test.json` for the test
+series, beside the base config — firebase-tools resolves the functions source,
+the rules and the hosting files from the config's directory. Each keeps the
+base config, but for the emulators: only the series' remain, each on its port
+of the block and listening on every interface (`0.0.0.0`); the top-level keys
+of the products that do not start go too, so that `--config` alone starts
+exactly the series. The test config disables the UI. The project git-ignores
+both; they are rewritten only when their content changes, at the
+`session-start` and `cwd-changed` hooks, at `lanes start` and at
+`lanes test-env`. When the base config is missing or invalid, or a stack port
+is missing, both are removed: a hook writes the error to stderr and still
+exports the lane, `lanes start` refuses and names the cause. A test series
+short of ports only loses its own config. lanes never writes the base config,
+nor anything on the main checkout.
+
+**The `firebase` process.** The fragment declares a `firebase` process; the
+project completes it in its `process-compose.yaml` — `depends_on` a build,
+`environment` — without declaring it again. lanes runs the first
+`node_modules/.bin/firebase` from the base config's directory up to the
+worktree root; without one, `lanes start` refuses and says to install the
+project's dependencies. `command` replaces it: lanes runs
+`/bin/sh -c '<command> "$@"'` with its arguments, from `.lanes/firebase`.
+firebase-tools runs from `<worktree>/.lanes/firebase`, so its debug logs and an
+export's temporary files never land in the worktree.
+
+- **Readiness.** The piece is ready once firebase-tools prints
+  `All emulators ready` — the import is done and every function is loaded by
+  then — and every required port answers. A
+  `Failed to load function definition` line fails the start at once. A
+  project's own probe, such as a collection its seed must hold, stays the
+  project's: a process that `depends_on` `firebase`.
+- **Stop.** One `SIGTERM` to firebase-tools, which exports into
+  `<data>.next`. Only an export that completes, with its
+  `firebase-export-metadata.json`, replaces `<data>`. After `export_timeout`,
+  the emulators are killed, `<data>` keeps the last complete export, and
+  `lanes logs firebase` says the export was abandoned. process-compose gives
+  the piece `export_timeout` + 15 s.
+- **Functions workers.** Before each start of the piece (`lanes start`,
+  `lanes restart firebase`) and at each stop, lanes ends what an earlier
+  firebase piece left — firebase-tools, its emulators and its functions
+  workers, once their parent is gone. The workers of a running
+  `lanes test-env` keep their parent and are spared.
+- **Sockets.** Before emulators start, for the stack and for `test-env`, lanes
+  computes the longest socket path they open under `TMPDIR`
+  (`fire_emu_<16 hex>.sock`, a functions worker's), and refuses past 104 bytes,
+  naming the path, its length and the limit.
+
+**Data.** At start, a complete export in `data` is imported; otherwise the
+`seed`; without one, the lane starts empty. The stop always exports into
+`data`; the seed is never written. When a new lane is born, the old lane's
+`data` is erased before anything starts: it is a registered resource.
+
+**Caps.** Each emulator JVM, of the stack and of `test-env`, gets
+`JAVA_TOOL_OPTIONS=-Xmx<jvm_heap>`, before any inherited value. Functions get
+`functions_timeout` to load (`FUNCTIONS_DISCOVERY_TIMEOUT`).
+`LANES_FIREBASE_JVM_HEAP` (`768MB`) and `LANES_FIREBASE_FUNCTIONS_TIMEOUT`
+(`300`, or `5m`), when set in the environment of `lanes start` or
+`lanes test-env`, replace the project's values.
+
+**Variables.** For each emulator that starts, `lanes env` exports the SDKs'
+variable on `127.0.0.1` and its port: `FIRESTORE_EMULATOR_HOST`,
+`FIREBASE_AUTH_EMULATOR_HOST`, `FIREBASE_STORAGE_EMULATOR_HOST`,
+`FIREBASE_DATABASE_EMULATOR_HOST`, `PUBSUB_EMULATOR_HOST`,
+`CLOUD_TASKS_EMULATOR_HOST`; plus `FIREBASE_EMULATOR_HUB` and
+`LANES_FIREBASE_CONFIG`, the path of `firebase.lanes.json`. `GCLOUD_PROJECT` is
+never exported. All of them are in `LANES_VARS`, so `lanes env --unset`
+removes them, and `generate` templates see them.
+
+### `lanes test-env -- <command>`
+
+Runs a command in the foreground against the lane's test series. Every
+firebase `PORT_<NAME>`, the SDK variables and `LANES_FIREBASE_CONFIG` point at
+the `test_*` ports and `firebase.lanes.test.json`; `TMPDIR` is `$TMPDIR/test`;
+the caps apply. The command starts the emulators itself:
+
+```sh
+lanes test-env -- firebase emulators:exec --config "$LANES_FIREBASE_CONFIG" "npm test"
+```
+
+The test config lists only `test.only` and the emulators Firebase starts with
+them, without the UI. lanes prepares the worktree as `lanes start` does, then
+imports and exports nothing: the lane's data is never touched. It works
+whether the stack runs or not, and never touches the stack; `lanes stop`
+spares a running `test-env`. One runs at a time in a lane: a second refuses and
+names the PID of the first. On a main checkout, outside a repository or
+without `lanes.yaml`, the command runs as is. The exit status is the
+command's.
+
+### Lane host
+
+A physical device reaches the lane's emulators by the Mac's IP, not by
+`127.0.0.1`. `LANES_HOST` is `127.0.0.1` by default.
+
+- `lanes host lan` switches it to the IP of the interface that carries the
+  default route, read anew at each call. Without a network, it refuses and the
+  host does not change. `lanes host local` brings back `127.0.0.1`.
+  `lanes host` prints it.
+- Switching renders the templates again and never restarts the stack. Shells
+  already open keep the old value, which still works on the Mac.
+- The host lasts as long as the lane: it survives stops and restarts of the
+  stack, and goes back to `127.0.0.1` with a new lane. `lanes list` shows each
+  lane's.
+- It serves any project, with or without Firebase.
+- The emulators listen on every interface even in `local` mode, so the local
+  network reaches them either way.
+
 ## The stack
 
 - `lanes start` is the only way a stack starts: nothing restarts on its own.
@@ -291,6 +438,8 @@ A non-zero exit fails the operation, and its stderr is reported.
 | `lanes up <process>` | Start a process `process-compose.yaml` declares `disabled: true`. |
 | `lanes restart <process>` | Restart one piece; the others keep running. |
 | `lanes logs <piece> [-f] [-n N]` | The end of a piece's log, followed with `-f`. |
+| `lanes test-env -- <command>` | Run a command against the lane's test series of emulators. |
+| `lanes host [lan\|local]` | Show or switch `LANES_HOST`. |
 | `lanes hook session-start\|cwd-changed\|session-end` | The hooks' entry points. |
 
 Every command has `--help`.
@@ -303,5 +452,8 @@ Every command has `--help`.
 | Lane record, prep stamps | `<worktree's git dir>/lanes/`, gone with the worktree |
 | Registry of out-of-worktree resources | `<git common dir>/lanes/registry.json` |
 | Logs, process-compose socket | the lane's `TMPDIR` |
-| Generated fragment | `<worktree>/.lanes/`, which ignores itself |
+| Generated fragment, firebase-tools' working directory | `<worktree>/.lanes/`, which ignores itself |
+| Generated firebase configs | beside the base config, git-ignored by the project |
+| Firebase data | `data`, `.emu-data` by default, git-ignored by the project |
+| `lanes test-env` lock and `TMPDIR` | `$TMPDIR/test` |
 | `lanesd` log | `$(brew --prefix)/var/log/lanes.log` |
