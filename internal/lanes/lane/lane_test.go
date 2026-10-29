@@ -207,3 +207,39 @@ func TestMarkCreated(t *testing.T) {
 		t.Fatalf("created = %v", got.Created)
 	}
 }
+
+func TestSetHost(t *testing.T) {
+	f := newFixture(t, "feat/host")
+	rec, _ := f.check()
+	if err := SetHost(f.wt, rec.ID, "192.168.1.20"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(f.wt.AdminDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Host != "192.168.1.20" {
+		t.Fatalf("host = %q, want 192.168.1.20", got.Host)
+	}
+	if err := SetHost(f.wt, rec.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	got, err = Load(f.wt.AdminDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Host != "" {
+		t.Fatalf("host = %q, want empty", got.Host)
+	}
+	err = SetHost(f.wt, "other_lane_000000", "10.0.0.1")
+	if err == nil || !strings.Contains(err.Error(), "is no longer this worktree's lane") {
+		t.Fatalf("SetHost on another lane: err = %v", err)
+	}
+	got, err = Load(f.wt.AdminDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Host != "" {
+		t.Fatalf("host changed by a stale lane: %q", got.Host)
+	}
+}

@@ -282,9 +282,10 @@ name: `auth`, `firestore`, `firestore_ws`, `database`, `functions`, `pubsub`,
 `storage`, `eventarc`, `tasks`, `hosting`, `ui`, `hub`, `logging`. The `test_`
 prefix names the test series' (`test_firestore`, `test_hub`…). The required
 ports are those of the emulators that start, plus those Firebase starts with
-them: `hub` always; `ui` and `logging` when the stack runs an emulator the UI
-shows (Auth, Database, Firestore, Functions, Storage) and `ui.enabled` is not
-false; `eventarc` and `tasks` with Functions; `firestore_ws` with Firestore.
+them: `hub` and `logging` always (firebase-tools 15 starts the logging
+emulator in every session); `ui` when the stack runs an emulator the UI shows
+(Auth, Database, Firestore, Functions, Storage) and `ui.enabled` is not false;
+`eventarc` and `tasks` with Functions; `firestore_ws` with Firestore.
 `lanes start` refuses when a stack port is missing, and `lanes test-env` when a
 `test_*` port is, each naming every missing port.
 

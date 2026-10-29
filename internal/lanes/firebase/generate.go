@@ -16,12 +16,19 @@ import (
 // config, where firebase-tools resolves the functions source and the rules.
 // A failure removes both, so no stale config outlives a broken base; a test
 // series short of ports only loses its own, since `lanes test-env` names them.
+// A tracked config is refused before anything is touched: lanes never removes
+// or rewrites a file git tracks.
 func Generate(ctx context.Context, root string, cfg *config.Config, blockStart int, log io.Writer) error {
 	fb := cfg.Firebase()
 	if fb == nil {
 		return nil
 	}
 	stackPath, testPath := ConfigPath(root, fb, Stack), ConfigPath(root, fb, Test)
+	for _, s := range []Series{Stack, Test} {
+		if rel := relTo(root, ConfigPath(root, fb, s)); gitx.IsTracked(ctx, root, rel) {
+			return fmt.Errorf("firebase: %s is tracked by git; lanes never writes a tracked file — untrack it and add it to .gitignore", rel)
+		}
+	}
 	err := generate(ctx, root, cfg, fb, blockStart, log)
 	if err != nil {
 		removeAll(stackPath, testPath)
@@ -30,11 +37,6 @@ func Generate(ctx context.Context, root string, cfg *config.Config, blockStart i
 }
 
 func generate(ctx context.Context, root string, cfg *config.Config, fb *config.Firebase, blockStart int, log io.Writer) error {
-	for _, s := range []Series{Stack, Test} {
-		if rel := relTo(root, ConfigPath(root, fb, s)); gitx.IsTracked(ctx, root, rel) {
-			return fmt.Errorf("firebase: %s is tracked by git; lanes never writes a tracked file — untrack it and add it to .gitignore", rel)
-		}
-	}
 	b, err := LoadBase(root, fb)
 	if err != nil {
 		return err

@@ -93,8 +93,7 @@ func Settle(ctx context.Context, dir string) (*Workspace, error) {
 	return w, nil
 }
 
-// Inspect reads a worktree's lane as it stands, without settling identity or
-// allocating anything: the daemon and `lanes list` look, they never decide.
+// Inspect never settles: settling can retire the lane, which stops the very stack its callers serve.
 func Inspect(ctx context.Context, root string) (*Workspace, error) {
 	wt, cfg, err := Locate(ctx, root)
 	if err != nil {
@@ -160,10 +159,21 @@ func (w *Workspace) TestVars() env.Vars {
 		return w.Vars.With(over)
 	}
 	if b, err := firebase.LoadBase(w.WT.Root, fb); err == nil {
-		plan := firebase.NewPlan(b, fb, firebase.Test)
+		test := firebase.NewPlan(b, fb, firebase.Test)
+		stack := firebase.NewPlan(b, fb, firebase.Stack)
 		ports := firebase.Ports(w.Cfg.Ports.Names, w.Block.Start)
-		over = append(over, firebase.PortVars(plan, ports)...)
+		over = append(over, firebase.PortVars(test, ports)...)
 		over = append(over, w.firebaseVars(firebase.Test)...)
+		set := make(map[string]bool, len(over))
+		for _, v := range over {
+			set[v.Name] = true
+		}
+		for _, v := range append(firebase.PortVars(stack, ports), w.firebaseVars(firebase.Stack)...) {
+			if !set[v.Name] {
+				set[v.Name] = true
+				over = append(over, env.Var{Name: v.Name, Value: ""})
+			}
+		}
 	}
 	return w.Vars.With(over)
 }

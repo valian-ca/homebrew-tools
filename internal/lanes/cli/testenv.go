@@ -34,6 +34,8 @@ func newTestEnvCmd() *cobra.Command {
 series: every firebase PORT_<NAME>, the SDK variables and LANES_FIREBASE_CONFIG
 name the test_* ports and firebase.lanes.test.json, TMPDIR is $TMPDIR/test,
 and the JVM heap and function load caps apply as in the stack.
+LANES_FIREBASE_JVM_HEAP and LANES_FIREBASE_FUNCTIONS_TIMEOUT, when set, replace
+the project's caps.
 
 The command starts the emulators itself, for instance with
   firebase emulators:exec --config "$LANES_FIREBASE_CONFIG" "<suite>"

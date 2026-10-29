@@ -90,6 +90,12 @@ func TestParseErrors(t *testing.T) {
 		"firebase timeout":  minimal + "resources: [{firebase: {config: f.json, functions_timeout: soon}}]\n",
 		"two adapters":      minimal + "resources: [{scripts: {name: s, create: c, erase: e, list: l, owner: o}, firebase: {config: f.json}}]\n",
 		"unknown scripts k": minimal + "resources: [{scripts: {name: s, create: c, erase: e, list: l, owner: o, oops: 1}}]\n",
+		"data is worktree":  minimal + "resources: [{firebase: {config: f.json, data: .}}]\n",
+		"data is worktree/": minimal + "resources: [{firebase: {config: f.json, data: ./}}]\n",
+		"data is git":       minimal + "resources: [{firebase: {config: f.json, data: .git}}]\n",
+		"data is lanes dir": minimal + "resources: [{firebase: {config: f.json, data: .lanes/emu}}]\n",
+		"data is seed":      minimal + "resources: [{firebase: {config: f.json, data: seed, seed: seed}}]\n",
+		"data holds config": minimal + "resources: [{firebase: {config: app/f.json, data: app}}]\n",
 	}
 	for name, doc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -123,6 +129,12 @@ func TestParseFirebaseDefaults(t *testing.T) {
 	}
 	if fb.Data != ".emu-data" || fb.JVMHeap != 512<<20 || fb.FunctionsTimeout.Std() != 180*time.Second || fb.ExportTimeout.Std() != 60*time.Second {
 		t.Errorf("defaults = %+v", fb)
+	}
+}
+
+func TestParseFirebaseDataDirAccepted(t *testing.T) {
+	if _, err := Parse([]byte(minimal + "resources: [{firebase: {config: firebase.emulator.json, data: .emu-data, seed: seed}}]\n")); err != nil {
+		t.Fatalf("dedicated data dir rejected: %v", err)
 	}
 }
 

@@ -35,9 +35,14 @@ steps whose trigger changed run first, and templates are rendered. A stack
 that already runs is left untouched.
 
 The command fails, with a non-zero status, when lanesd is not running, when a
-port of the block is held by another process, or when a piece dies — then it
-prints the piece's name and the end of its log. A start may take up to 20
-minutes.
+port of the block is held by another process, when a piece dies — then it
+prints the piece's name and the end of its log — when the firebase resource
+lacks a named port, when firebase-tools is missing from node_modules, or when
+its socket path under TMPDIR is too long. A start may take up to 20 minutes.
+
+With a firebase resource, LANES_FIREBASE_JVM_HEAP (768MB) and
+LANES_FIREBASE_FUNCTIONS_TIMEOUT (300, or 5m), when set, replace the
+project's jvm_heap and functions_timeout.
 
 When no Claude session works in the worktree, the stack still starts, and
 stops after 5 minutes unless a session arrives.`,

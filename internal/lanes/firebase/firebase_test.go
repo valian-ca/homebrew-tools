@@ -28,7 +28,7 @@ const demoBase = `{
 
 var allPorts = []string{
 	"auth", "firestore", "firestore_ws", "functions", "pubsub", "eventarc", "tasks", "hub", "ui", "logging",
-	"test_auth", "test_firestore", "test_firestore_ws", "test_functions", "test_pubsub", "test_eventarc", "test_tasks", "test_hub",
+	"test_auth", "test_firestore", "test_firestore_ws", "test_functions", "test_pubsub", "test_eventarc", "test_tasks", "test_hub", "test_logging",
 }
 
 func base(t *testing.T, data string) Base {
@@ -42,9 +42,9 @@ func base(t *testing.T, data string) Base {
 
 func TestPlanStack(t *testing.T) {
 	p := NewPlan(base(t, demoBase), &config.Firebase{}, Stack)
-	want := []string{"auth", "firestore", "functions", "pubsub", "eventarc", "tasks", "firestore_ws", "hub", "ui", "logging"}
-	if got := p.Started(); !slices.Equal(got, want) {
-		t.Errorf("Started() = %v, want %v", got, want)
+	want := []string{"auth", "firestore", "functions", "pubsub", "eventarc", "tasks", "firestore_ws", "hub", "logging", "ui"}
+	if got := p.UnprefixedPorts(); !slices.Equal(got, want) {
+		t.Errorf("UnprefixedPorts() = %v, want %v", got, want)
 	}
 	if got := strings.Join(p.Only(), ","); got != "auth,firestore,functions,pubsub" {
 		t.Errorf("Only() = %s", got)
@@ -53,14 +53,14 @@ func TestPlanStack(t *testing.T) {
 
 func TestPlanTestSeries(t *testing.T) {
 	p := NewPlan(base(t, demoBase), &config.Firebase{}, Test)
-	if p.UI || slices.Contains(p.Started(), "logging") {
-		t.Errorf("the test series starts the UI: %v", p.Started())
+	if p.UI || slices.Contains(p.UnprefixedPorts(), "ui") || !slices.Contains(p.RequiredPorts(), "test_logging") {
+		t.Errorf("the test series starts the UI: %v", p.UnprefixedPorts())
 	}
 	if !slices.Contains(p.RequiredPorts(), "test_hub") || slices.Contains(p.RequiredPorts(), "hub") {
 		t.Errorf("RequiredPorts() = %v", p.RequiredPorts())
 	}
 	only := NewPlan(base(t, demoBase), &config.Firebase{Test: config.FirebaseTest{Only: []string{"firestore"}}}, Test)
-	if got := only.RequiredPorts(); !slices.Equal(got, []string{"test_firestore", "test_firestore_ws", "test_hub"}) {
+	if got := only.RequiredPorts(); !slices.Equal(got, []string{"test_firestore", "test_firestore_ws", "test_hub", "test_logging"}) {
 		t.Errorf("test.only firestore requires %v", got)
 	}
 }
@@ -119,7 +119,7 @@ func TestRender(t *testing.T) {
 	if err := json.Unmarshal(test, &tgot); err != nil {
 		t.Fatal(err)
 	}
-	if tgot.Functions != nil || tgot.Emulators["auth"] != nil || tgot.Emulators["logging"] != nil {
+	if tgot.Functions != nil || tgot.Emulators["auth"] != nil {
 		t.Errorf("the test config keeps emulators outside test.only: %s", test)
 	}
 	if ui := tgot.Emulators["ui"].(map[string]any); ui["enabled"] != false {

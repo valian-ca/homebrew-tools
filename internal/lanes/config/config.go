@@ -261,6 +261,9 @@ func (f *Firebase) validate() error {
 			return fmt.Errorf("%s: %w", key, err)
 		}
 	}
+	if err := f.checkDataDir(); err != nil {
+		return err
+	}
 	for key, list := range map[string][]string{"only": f.Only, "test.only": f.Test.Only} {
 		for _, e := range list {
 			if !slices.Contains(FirebaseEmulators, e) {
@@ -278,6 +281,35 @@ func (f *Firebase) validate() error {
 	}
 	if f.JVMHeap < 0 {
 		return errors.New("jvm_heap: must be positive")
+	}
+	return nil
+}
+
+// checkDataDir rejects a data directory the firebase stop would destroy: the
+// stop renames it aside and removes it, so it must be a dedicated directory,
+// never the worktree itself, lanes' or git's own state, the seed, or whatever
+// holds the emulator config.
+func (f *Firebase) checkDataDir() error {
+	d := f.Data
+	if d == "" {
+		d = DefaultFirebaseData
+	}
+	c := filepath.Clean(d)
+	if c == "." {
+		return errors.New("data: must name a directory inside the worktree, not the worktree itself")
+	}
+	if c == ".git" || c == ".lanes" || strings.HasPrefix(c, ".git/") || strings.HasPrefix(c, ".lanes/") {
+		return fmt.Errorf("data: %q is lanes' or git's own directory", d)
+	}
+	if f.Seed != "" {
+		s := filepath.Clean(f.Seed)
+		if c == s || strings.HasPrefix(c, s+"/") || strings.HasPrefix(s, c+"/") {
+			return fmt.Errorf("data: %q overlaps the seed %q", d, f.Seed)
+		}
+	}
+	cfgDir := filepath.Dir(filepath.Clean(f.Config))
+	if cfgDir == c || strings.HasPrefix(cfgDir, c+"/") {
+		return fmt.Errorf("data: %q holds the base config", d)
 	}
 	return nil
 }

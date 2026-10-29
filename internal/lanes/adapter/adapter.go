@@ -28,7 +28,6 @@ type Adapter interface {
 	// Owner returns "" for a resource that is not a lane's.
 	Owner(ctx context.Context, resource string) (string, error)
 	Processes() map[string]pc.Process
-	// Entry describes a created resource for the repo registry.
 	Entry(lane, resource string) registry.Entry
 }
 

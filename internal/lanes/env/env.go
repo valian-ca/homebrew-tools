@@ -10,8 +10,8 @@ import (
 
 const DefaultHost = "127.0.0.1"
 
-// Fixed lists every variable the core may export whatever the project
-// declares, so --unset clears them even from a shell whose LANES_VARS is gone.
+// Fixed names every variable lanes may export, so --unset clears them even
+// from a shell whose LANES_VARS is gone.
 var Fixed = []string{
 	"LANE_ID", "LANES_WORKTREE", "TMPDIR", "LANES_PORT_BASE", "LANES_PORT_SIZE", "LANES_HOST", "LANES_VARS",
 	"FIRESTORE_EMULATOR_HOST", "FIREBASE_AUTH_EMULATOR_HOST", "FIREBASE_STORAGE_EMULATOR_HOST",
@@ -100,8 +100,6 @@ func (v Vars) Names() []string {
 	return names
 }
 
-// Environ overlays the lane's variables on base, replacing any inherited
-// value, TMPDIR included.
 func (v Vars) Environ(base []string) []string {
 	m := v.Map()
 	out := make([]string, 0, len(base)+len(v))

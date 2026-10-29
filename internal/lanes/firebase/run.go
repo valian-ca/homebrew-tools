@@ -127,6 +127,7 @@ func Run(ctx context.Context, s RunSpec) error {
 	banner, failed := watch(pr, s.Out)
 
 	var probe <-chan time.Time
+	wasReady := false
 	for {
 		select {
 		case <-banner:
@@ -135,9 +136,11 @@ func Run(ctx context.Context, s RunSpec) error {
 		case <-probe:
 			if allListening(plan, ports) {
 				probe = nil
+				failed = nil
 				if err := os.WriteFile(ready, []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
 					return err
 				}
+				wasReady = true
 				fmt.Fprintln(s.Out, "firebase: ready")
 				continue
 			}
@@ -150,23 +153,27 @@ func Run(ctx context.Context, s RunSpec) error {
 			killTree(s.Procs, cmd.Process.Pid, s.Root)
 			return &exitError{exitCode(waitErr), fmt.Errorf("firebase-tools exited before the stop: %v", waitErr)}
 		case <-ctx.Done():
-			return stop(s, cmd, exited, data)
+			return stop(s, cmd, exited, data, wasReady)
 		}
 	}
 }
 
-func stop(s RunSpec, cmd *exec.Cmd, exited <-chan struct{}, data string) error {
+func stop(s RunSpec, cmd *exec.Cmd, exited <-chan struct{}, data string, wasReady bool) error {
 	_ = os.Remove(ReadyMarker(s.Tmpdir))
 	timeout := s.Firebase.ExportTimeout.Std()
 	_ = cmd.Process.Signal(syscall.SIGTERM)
 	select {
 	case <-exited:
-		if complete(data + ".next") {
+		switch {
+		case wasReady && complete(data+".next"):
 			if err := swap(data); err != nil {
 				return err
 			}
 			fmt.Fprintf(s.Out, "firebase: exported to %s\n", data)
-		} else {
+		case !wasReady:
+			_ = os.RemoveAll(data + ".next")
+			fmt.Fprintf(s.Out, "firebase: stopped before it was ready; %s keeps the last complete export\n", data)
+		default:
 			_ = os.RemoveAll(data + ".next")
 			fmt.Fprintf(s.Out, "firebase: the export did not complete; %s keeps the last complete export\n", data)
 		}
@@ -176,8 +183,15 @@ func stop(s RunSpec, cmd *exec.Cmd, exited <-chan struct{}, data string) error {
 		case <-exited:
 		case <-time.After(orphanPatience):
 		}
-		_ = os.RemoveAll(data + ".next")
-		fmt.Fprintf(s.Out, "firebase: export abandoned after %s (export_timeout); %s keeps the last complete export\n", s.Firebase.ExportTimeout, data)
+		if wasReady && complete(data+".next") {
+			if err := swap(data); err != nil {
+				return err
+			}
+			fmt.Fprintf(s.Out, "firebase: exported to %s (firebase-tools hung after the export)\n", data)
+		} else {
+			_ = os.RemoveAll(data + ".next")
+			fmt.Fprintf(s.Out, "firebase: export abandoned after %s (export_timeout); %s keeps the last complete export\n", s.Firebase.ExportTimeout, data)
+		}
 	}
 	killTree(s.Procs, cmd.Process.Pid, s.Root)
 	return nil
@@ -363,8 +377,7 @@ func isWorker(p procinfo.Proc, root string) bool {
 	return p.Under(root) && slices.ContainsFunc(p.Argv, func(a string) bool { return strings.Contains(a, workerMarker) })
 }
 
-// killTree SIGKILLs firebase-tools and everything it started: its
-// descendants, the emulators detached from it, and its orphaned workers.
+// Descendants alone miss the emulators detached from firebase-tools and the workers already orphaned.
 func killTree(src procinfo.Source, pid int, root string) {
 	procs, err := src.Snapshot()
 	if err != nil {
@@ -377,7 +390,7 @@ func killTree(src procinfo.Source, pid int, root string) {
 	}
 	self := os.Getpid()
 	for _, p := range procs {
-		if p.PID != self && (p.Under(WorkDir(root)) || (p.PPID == 1 && isWorker(p, root))) {
+		if p.PID != self && p.PPID == 1 && (p.Under(WorkDir(root)) || isWorker(p, root)) {
 			set[p.PID] = true
 		}
 	}

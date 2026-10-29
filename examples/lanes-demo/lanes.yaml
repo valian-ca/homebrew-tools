@@ -1,9 +1,9 @@
 schema: 1
 ports:
-  block: 20
+  block: 24
   names: [web, extra,
           auth, firestore, firestore_ws, functions, pubsub, eventarc, tasks, hub, ui, logging,
-          test_auth, test_firestore, test_firestore_ws, test_functions, test_pubsub, test_eventarc, test_tasks, test_hub]
+          test_auth, test_firestore, test_firestore_ws, test_functions, test_pubsub, test_eventarc, test_tasks, test_hub, test_logging]
 resources:
   - scripts:
       name: demo-store

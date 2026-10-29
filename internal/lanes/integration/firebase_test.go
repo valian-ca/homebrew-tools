@@ -196,7 +196,7 @@ func TestFirebaseCaps(t *testing.T) {
 	if heaps := javaHeaps(t, wt); len(heaps) < 2 || slices.ContainsFunc(heaps, func(s string) bool { return s != "-Xmx700m" }) {
 		t.Fatalf("JVM heaps = %v, want the override's -Xmx700m", heaps)
 	}
-	probe := `node_modules/.bin/firebase emulators:exec --config "$LANES_FIREBASE_CONFIG" --only firestore 'ps eww -o command= -p $(pgrep -f -n cloud-firestore-emulator) | grep -o "JAVA_TOOL_OPTIONS=[^ ]*"'`
+	probe := `node_modules/.bin/firebase emulators:exec --config "$LANES_FIREBASE_CONFIG" --only firestore 'ps eww -o command= -p $(lsof -ti tcp:$PORT_FIRESTORE -sTCP:LISTEN | head -1) | grep -o "JAVA_TOOL_OPTIONS=[^ ]*"'`
 	for env, want := range map[string]string{"": "-Xmx640m", "LANES_FIREBASE_JVM_HEAP=700MB": "-Xmx700m"} {
 		r := h.lanesIn(wt, "", []string{env}, "test-env", "--", "sh", "-c", probe)
 		if r.code != 0 || !strings.Contains(r.stdout, "JAVA_TOOL_OPTIONS="+want) {
@@ -313,9 +313,9 @@ func TestFirebaseTwoLanes(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	for _, r := range results {
+	for i, r := range results {
 		if r.code != 0 || !strings.Contains(r.stdout, suiteSummary) || !strings.Contains(r.stdout, "# fail 0") {
-			t.Errorf("parallel test-env: %s", r)
+			t.Errorf("parallel test-env: %s\n--- firebase-debug.log ---\n%s", r, tail(read(filepath.Join([]string{a, b}[i], "firebase-debug.log")), 60))
 		}
 	}
 }
@@ -348,7 +348,7 @@ func TestFirebaseTestEnvSeries(t *testing.T) {
 		keys = append(keys, k)
 	}
 	slices.Sort(keys)
-	if strings.Join(keys, ",") != "firestore,hub,singleProjectMode,ui" || cfg.Emulators["ui"].(map[string]any)["enabled"] != false {
+	if strings.Join(keys, ",") != "firestore,hub,logging,singleProjectMode,ui" || cfg.Emulators["ui"].(map[string]any)["enabled"] != false {
 		t.Fatalf("test config emulators = %v", cfg.Emulators)
 	}
 
@@ -467,4 +467,9 @@ func httpBody(method, url string) string {
 	defer resp.Body.Close()
 	data, _ := io.ReadAll(resp.Body)
 	return string(data)
+}
+
+func tail(s string, n int) string {
+	lines := strings.Split(s, "\n")
+	return strings.Join(lines[max(0, len(lines)-n):], "\n")
 }

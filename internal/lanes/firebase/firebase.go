@@ -27,6 +27,8 @@ var products = []string{"auth", "firestore", "database", "functions", "pubsub", 
 
 var uiProducts = []string{"auth", "database", "firestore", "functions", "storage"}
 
+var startedByFunctions = []string{"eventarc", "tasks"}
+
 var sdkVars = map[string]string{
 	"firestore": "FIRESTORE_EMULATOR_HOST",
 	"auth":      "FIREBASE_AUTH_EMULATOR_HOST",
@@ -126,7 +128,7 @@ func NewPlan(b Base, fb *config.Firebase, s Series) Plan {
 		}
 	}
 	if slices.Contains(want, "functions") {
-		want = append(want, "eventarc", "tasks")
+		want = append(want, startedByFunctions...)
 	}
 	p := Plan{Series: s}
 	for _, name := range products {
@@ -138,33 +140,30 @@ func NewPlan(b Base, fb *config.Firebase, s Series) Plan {
 	return p
 }
 
-func (p Plan) Starts(name string) bool { return slices.Contains(p.Started(), name) }
+func (p Plan) Starts(name string) bool { return slices.Contains(p.UnprefixedPorts(), name) }
 
-// Started lists the unprefixed port names of every emulator the series runs.
-func (p Plan) Started() []string {
+func (p Plan) UnprefixedPorts() []string {
 	out := slices.Clone(p.Products)
 	if slices.Contains(p.Products, "firestore") {
 		out = append(out, "firestore_ws")
 	}
-	out = append(out, "hub")
+	out = append(out, "hub", "logging")
 	if p.UI {
-		out = append(out, "ui", "logging")
+		out = append(out, "ui")
 	}
 	return out
 }
 
 func (p Plan) RequiredPorts() []string {
 	var out []string
-	for _, n := range p.Started() {
+	for _, n := range p.UnprefixedPorts() {
 		out = append(out, p.Series.Port(n))
 	}
 	return out
 }
 
-// Only is the --only list for firebase-tools: the implicit emulators start
-// on their own.
 func (p Plan) Only() []string {
-	return slices.DeleteFunc(slices.Clone(p.Products), func(n string) bool { return n == "eventarc" || n == "tasks" })
+	return slices.DeleteFunc(slices.Clone(p.Products), func(n string) bool { return slices.Contains(startedByFunctions, n) })
 }
 
 func Missing(required, named []string) []string {
@@ -181,7 +180,6 @@ func MissingError(missing []string) error {
 	return fmt.Errorf("ports.names is missing %s (required by the firebase resource)", strings.Join(missing, ", "))
 }
 
-// Ports maps every named port of the block to its number.
 func Ports(names []string, blockStart int) map[string]int {
 	m := make(map[string]int, len(names))
 	for i, n := range names {
@@ -220,11 +218,13 @@ func Render(b Base, p Plan, ports map[string]int) ([]byte, error) {
 		emu[n] = block
 	}
 	emu["hub"] = map[string]any{"host": ListenHost, "port": port("hub")}
+	// firebase-tools 15 starts the logging emulator in every session, UI or
+	// not: its START_LOGGING_EMULATOR default is the string "false".
+	emu["logging"] = map[string]any{"host": ListenHost, "port": port("logging")}
 	ui := object(b.emulators["ui"])
 	if p.UI {
 		ui["host"] = ListenHost
 		ui["port"] = port("ui")
-		emu["logging"] = map[string]any{"host": ListenHost, "port": port("logging")}
 	} else {
 		ui = map[string]any{"enabled": false}
 	}
@@ -276,7 +276,7 @@ func Vars(p Plan, ports map[string]int, configPath string) env.Vars {
 // the stack's.
 func PortVars(p Plan, ports map[string]int) env.Vars {
 	var v env.Vars
-	for _, n := range p.Started() {
+	for _, n := range p.UnprefixedPorts() {
 		if port, ok := ports[p.Series.Port(n)]; ok {
 			v = append(v, env.Var{Name: env.PortVar(n), Value: strconv.Itoa(port)})
 		}
