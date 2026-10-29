@@ -2,15 +2,25 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log"
+	"os"
+	"path/filepath"
 	"slices"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
 
+	"github.com/valian-ca/homebrew-tools/internal/lanes/adapter"
+	"github.com/valian-ca/homebrew-tools/internal/lanes/config"
+	"github.com/valian-ca/homebrew-tools/internal/lanes/paths"
+	"github.com/valian-ca/homebrew-tools/internal/lanes/ports"
 	"github.com/valian-ca/homebrew-tools/internal/lanes/procinfo"
+	"github.com/valian-ca/homebrew-tools/internal/lanes/registry"
 	"github.com/valian-ca/homebrew-tools/internal/lanes/testutil"
+	"github.com/valian-ca/homebrew-tools/internal/lanes/tmpdir"
 )
 
 const root = "/w/demo-wt"
@@ -270,5 +280,97 @@ func TestTeardownRechecksSessionsUnderTheLock(t *testing.T) {
 	}
 	if !h.s.Running || len(h.rt.downs) != 0 {
 		t.Fatal("a session that came back while the teardown waited lost its stack")
+	}
+}
+
+func TestNotifyArmsOnlyRunningStacksAtOrBelowTheRoot(t *testing.T) {
+	h := newHarness(t)
+	h.d.notify(root + "-other")
+	if !h.s.NotifyUntil.IsZero() {
+		t.Fatal("a sibling path sharing the root's prefix armed the window")
+	}
+	h.d.notify(root + "/sub/dir")
+	if h.s.NotifyUntil.IsZero() {
+		t.Fatal("a SessionEnd from a subdirectory did not arm the window")
+	}
+	h.d.setRunning(h.s, false)
+	h.d.notify(root)
+	if !h.s.NotifyUntil.IsZero() {
+		t.Fatal("a stopped stack was armed, so a start within the minute would stop at once")
+	}
+}
+
+func TestReconcileBacksOffAFailedCleanup(t *testing.T) {
+	h := newHarness(t)
+	common := testutil.RealTemp(t)
+	gone := filepath.Join(common, "worktrees", "gone")
+	t.Setenv("LANES_PORT_RANGE", "43900-43999")
+	if _, err := ports.Ensure(ports.Entry{CommonDir: common, AdminDir: gone, Worktree: "/w/gone", Size: 5}); err != nil {
+		t.Fatal(err)
+	}
+	counter, okFile := filepath.Join(common, "erases"), filepath.Join(common, "ok")
+	erase := "echo x >> " + counter + "; test -f " + okFile
+	if err := registry.Add(common, registry.Entry{
+		Kind: adapter.KindScripts, Adapter: "store", Resource: "r1", Lane: "l1", AdminDir: gone,
+		Scripts: &config.Scripts{Name: "store", Erase: erase},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	erases := func() int { data, _ := os.ReadFile(counter); return strings.Count(string(data), "x") }
+	held := func() bool { _, ok, _ := ports.Find(gone); return ok }
+	ctx := context.Background()
+
+	h.d.reconcile(ctx)
+	if erases() != 1 || !held() {
+		t.Fatalf("after a failed erase: %d erases, block held %v", erases(), held())
+	}
+	h.advance(time.Minute)
+	h.d.reconcile(ctx)
+	if erases() != 1 {
+		t.Fatal("a failed cleanup was retried before the backoff ended")
+	}
+	if err := os.WriteFile(okFile, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h.advance(reconcileRetry)
+	h.d.reconcile(ctx)
+	if erases() != 2 || held() {
+		t.Fatalf("after the backoff: %d erases, block held %v", erases(), held())
+	}
+	if _, ok := h.d.retryAt[gone]; ok {
+		t.Fatal("the retry date outlived a successful cleanup")
+	}
+}
+
+func TestAdoptKeepsTheSavedGraceAndSkipsDeadStacks(t *testing.T) {
+	h := newHarness(t)
+	common := testutil.RealTemp(t)
+	t.Setenv("LANES_PORT_RANGE", "43800-43899")
+	var entries []ports.Entry
+	for _, name := range []string{"alive", "dead"} {
+		e, err := ports.Ensure(ports.Entry{CommonDir: common, AdminDir: filepath.Join(common, name), Worktree: "/w/" + name, Size: 5})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(e.AdminDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		entries = append(entries, e)
+	}
+	alive, dead := entries[0], entries[1]
+	h.rt.alive[tmpdir.Path(common, alive.AdminDir)] = true
+	grace := time.Unix(1_900_000_000, 0).UTC()
+	saved, _ := json.Marshal([]*stack{{AdminDir: alive.AdminDir, GraceUntil: grace}})
+	if err := os.WriteFile(paths.Stacks(), saved, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	h.d.adopt(context.Background())
+	got, ok := h.d.stacks[alive.AdminDir]
+	if !ok || !got.Running || !got.GraceUntil.Equal(grace) {
+		t.Fatalf("adopted = %+v, want running with the saved grace", got)
+	}
+	if _, ok := h.d.stacks[dead.AdminDir]; ok {
+		t.Fatal("a stack whose process-compose is gone was adopted")
 	}
 }

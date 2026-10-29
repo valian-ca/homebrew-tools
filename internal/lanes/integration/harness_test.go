@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -30,10 +31,8 @@ var (
 	nextRange atomic.Int32
 )
 
-// TestMain builds lanes and lanesd, and the stand-ins a test needs under a
-// given process name: a sleeper built as claude (a session), nvim (an editor)
-// and lanes-demo-shared (the demo's shared process). Copies of /bin/sleep
-// would not do: macOS kills a renamed copy of a platform binary.
+// The stand-ins for a session, an editor and the demo's shared process are a
+// Go sleeper built under each name: macOS kills a renamed copy of /bin/sleep.
 func TestMain(m *testing.M) {
 	for _, kv := range testutil.GitEnv {
 		k, v, _ := strings.Cut(kv, "=")
@@ -111,8 +110,8 @@ func newHarness(t *testing.T, opts ...option) *harness {
 	return h
 }
 
-// repo makes another demo repository. Every repo of a harness shares its
-// demo store, as two clones of a project share a database server.
+// Every repo of a harness shares its demo store, as two clones of a project
+// share a database server.
 func (h *harness) repo(name string) string {
 	h.t.Helper()
 	dir := filepath.Join(testutil.RealTemp(h.t), name)
@@ -256,15 +255,34 @@ func (h *harness) spawn(dir, name string, args ...string) *exec.Cmd {
 	if err := c.Start(); err != nil {
 		h.t.Fatal(err)
 	}
-	go func() { _ = c.Wait() }()
-	h.children = append(h.children, c)
+	h.track(c)
 	return c
+}
+
+var exits sync.Map
+
+// track reaps a started child and records its exit, which alive reads without
+// racing the reaper.
+func (h *harness) track(c *exec.Cmd) {
+	done := make(chan struct{})
+	exits.Store(c, done)
+	go func() {
+		_ = c.Wait()
+		close(done)
+	}()
+	h.children = append(h.children, c)
 }
 
 func (h *harness) session(dir string) *exec.Cmd { return h.spawn(dir, "claude", "600") }
 
 func alive(c *exec.Cmd) bool {
-	return c.ProcessState == nil && syscall.Kill(c.Process.Pid, 0) == nil
+	done, _ := exits.Load(c)
+	select {
+	case <-done.(chan struct{}):
+		return false
+	default:
+		return syscall.Kill(c.Process.Pid, 0) == nil
+	}
 }
 
 func (h *harness) cleanup() {

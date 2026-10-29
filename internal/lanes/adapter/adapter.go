@@ -6,30 +6,26 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 	"time"
 
 	"github.com/valian-ca/homebrew-tools/internal/lanes/config"
 	"github.com/valian-ca/homebrew-tools/internal/lanes/pc"
 	"github.com/valian-ca/homebrew-tools/internal/lanes/registry"
+	"github.com/valian-ca/homebrew-tools/internal/lanes/shellx"
 )
 
-// Adapter creates, erases and inventories one kind of resource for lanes,
-// and may contribute processes to the stack.
 type Adapter interface {
 	Kind() string
 	Name() string
 	Preflight(ctx context.Context) error
-	// Create makes the lane's resources and returns their names. It runs once
-	// per lane, at the lane's first start.
+	// Create runs once per lane, at the lane's first start.
 	Create(ctx context.Context, lane string) ([]string, error)
 	Erase(ctx context.Context, lane, resource string) error
 	// List returns every resource of this adapter on the machine, whichever
 	// lane owns it, so orphans that never reached the registry can be found.
 	List(ctx context.Context) ([]string, error)
-	// Owner returns the lane a resource belongs to, or "" when it is not a
-	// lane resource.
+	// Owner returns "" for a resource that is not a lane's.
 	Owner(ctx context.Context, resource string) (string, error)
 	Processes() map[string]pc.Process
 	// Entry describes a created resource for the repo registry.
@@ -123,7 +119,7 @@ func (s *Scripts) Entry(lane, resource string) registry.Entry {
 func (s *Scripts) run(ctx context.Context, verb, command, lane, resource string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, ScriptTimeout)
 	defer cancel()
-	c := exec.CommandContext(ctx, "/bin/sh", "-c", command)
+	c := shellx.Command(ctx, command)
 	c.Dir = s.Env.Dir
 	environ := s.Env.Environ
 	if environ == nil {

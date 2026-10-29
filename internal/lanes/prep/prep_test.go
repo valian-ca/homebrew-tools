@@ -124,3 +124,34 @@ func TestFailingStepKeepsItsStampAndReportsItsOutput(t *testing.T) {
 		t.Fatal("a failed step was stamped as done")
 	}
 }
+
+func TestIncludesNeverFollowASymlinkedDirectory(t *testing.T) {
+	f := newFixture(t)
+	outside := testutil.RealTemp(t)
+	if err := os.Symlink(outside, filepath.Join(f.wt.Root, "conf")); err != nil {
+		t.Fatal(err)
+	}
+	var log bytes.Buffer
+	if err := CopyIncludes(f.main, f.wt.Root, &log); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "a.local")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("a main-checkout file was copied out of the worktree through a symlinked directory")
+	}
+	if !strings.Contains(log.String(), "skipping conf/a.local") {
+		t.Errorf("the refusal was not reported: %q", log.String())
+	}
+
+	secret := testutil.RealTemp(t)
+	testutil.Write(t, filepath.Join(secret, "s.local"), "outside\n")
+	if err := os.Symlink(secret, filepath.Join(f.main, "linked")); err != nil {
+		t.Fatal(err)
+	}
+	testutil.Write(t, filepath.Join(f.wt.Root, IncludeFile), "linked/s.local\n")
+	if err := CopyIncludes(f.main, f.wt.Root, &log); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(filepath.Join(f.wt.Root, "linked", "s.local")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("a file outside the main checkout was copied through a symlinked directory")
+	}
+}

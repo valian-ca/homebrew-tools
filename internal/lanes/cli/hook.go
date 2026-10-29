@@ -78,7 +78,7 @@ session sees the lane's ports and TMPDIR, over the TMPDIR Claude Code sets.`,
 }
 
 func runEnvHook(ctx context.Context, dir string, log io.Writer) error {
-	w, err := workspace.Open(ctx, dir)
+	w, err := workspace.Settle(ctx, dir)
 	if workspace.IsQuiet(err) {
 		return nil
 	}

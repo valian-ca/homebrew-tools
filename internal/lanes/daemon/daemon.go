@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"net"
 	"os"
@@ -136,8 +137,7 @@ func durationOverride(name string, def time.Duration) time.Duration {
 
 var ErrAlreadyRunning = errors.New("another lanesd is already running")
 
-// Run serves until ctx ends. It adopts the stacks that survived a restart and
-// reconciles what disappeared meanwhile, and never relaunches a stack.
+// Run never relaunches a stack: it only adopts those that survived a restart.
 func (d *Daemon) Run(ctx context.Context) error {
 	d.init()
 	if err := paths.EnsureDir(paths.MustStateDir()); err != nil {
@@ -183,8 +183,8 @@ func (d *Daemon) Run(ctx context.Context) error {
 	}
 }
 
-// serve answers one request. A client that hangs up — a Ctrl-C on lanes up —
-// cancels the work it asked for.
+// A client that hangs up — a Ctrl-C on lanes up — cancels the work it asked
+// for.
 func (d *Daemon) serve(ctx context.Context, conn net.Conn) {
 	defer conn.Close()
 	r := bufio.NewReader(conn)
@@ -262,7 +262,7 @@ func (d *Daemon) notify(root string) {
 	}
 	d.mu.Lock()
 	for _, s := range d.stacks {
-		if s.Root == root || strings.HasPrefix(root, s.Root+"/") {
+		if s.Running && (s.Root == root || strings.HasPrefix(root, s.Root+"/")) {
 			s.NotifyUntil = d.Now().Add(NotifyWindow)
 		}
 	}
@@ -320,9 +320,6 @@ func (d *Daemon) notifying() bool {
 	return false
 }
 
-// tick applies the stop rules to every stack, then reconciles the worktrees
-// that disappeared. A stack found alive again after a failed check is watched
-// again.
 func (d *Daemon) tick(ctx context.Context) {
 	procs, err := d.Procs.Snapshot()
 	if err != nil {
@@ -337,7 +334,7 @@ func (d *Daemon) tick(ctx context.Context) {
 	d.mu.Unlock()
 
 	for _, s := range stacks {
-		if _, err := os.Stat(s.AdminDir); err != nil {
+		if _, err := os.Stat(s.AdminDir); errors.Is(err, fs.ErrNotExist) {
 			continue
 		}
 		d.mu.Lock()
@@ -371,9 +368,8 @@ func (d *Daemon) tick(ctx context.Context) {
 	d.save()
 }
 
-// teardownLater stops a stack off the watch loop. It waits for any start or
-// stop in progress, then checks the sessions again: one may have come back
-// while it waited.
+// teardownLater checks the sessions again once it holds the stack: one may
+// have come back while a start or a stop held it.
 func (d *Daemon) teardownLater(ctx context.Context, s *stack, reason string) {
 	d.mu.Lock()
 	if s.tearing {
@@ -390,7 +386,7 @@ func (d *Daemon) teardownLater(ctx context.Context, s *stack, reason string) {
 		}()
 		s.op.Lock()
 		defer s.op.Unlock()
-		if procs, err := d.Procs.Snapshot(); err == nil && sessionsIn(s, procs) > 0 {
+		if procs, err := d.Procs.Snapshot(); err == nil && d.sessionsIn(s, procs) > 0 {
 			d.verdict(s, procs)
 			return
 		}
@@ -401,21 +397,26 @@ func (d *Daemon) teardownLater(ctx context.Context, s *stack, reason string) {
 	})
 }
 
-func sessionsIn(s *stack, procs []procinfo.Proc) int {
+func (d *Daemon) sessionsIn(s *stack, procs []procinfo.Proc) int {
+	root, keep := d.view(s)
 	n := 0
 	for _, p := range procs {
-		if p.Under(s.Root) && p.NamedAs(s.Keep.Sessions) {
+		if p.Under(root) && p.NamedAs(keep.Sessions) {
 			n++
 		}
 	}
 	return n
 }
 
-// verdict counts the sessions of a running stack and decides whether it must
-// stop now: right after a SessionEnd left no session, or once the grace that
-// started when sessions vanished silently has run out.
+// view reads what start may rewrite while the watch loop counts sessions.
+func (d *Daemon) view(s *stack) (string, Keep) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return s.Root, s.Keep
+}
+
 func (d *Daemon) verdict(s *stack, procs []procinfo.Proc) string {
-	n := sessionsIn(s, procs)
+	n := d.sessionsIn(s, procs)
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	now := d.Now()
@@ -461,8 +462,7 @@ func (d *Daemon) setRunning(s *stack, running bool) {
 	d.mu.Unlock()
 }
 
-// teardown shuts process-compose down, then sweeps what still works in the
-// worktree. The lane's data is left in place.
+// teardown leaves the lane's data in place.
 func (d *Daemon) teardown(ctx context.Context, s *stack) error {
 	s.op.Lock()
 	defer s.op.Unlock()
@@ -486,7 +486,8 @@ func (d *Daemon) sweep(ctx context.Context, s *stack) {
 		d.Log.Printf("%s: sweep: %v", s.Root, err)
 		return
 	}
-	targets := SweepTargets(procs, s.Root, s.Keep, os.Getpid())
+	root, keep := d.view(s)
+	targets := SweepTargets(procs, root, keep, os.Getpid())
 	if len(targets) == 0 {
 		return
 	}
@@ -541,8 +542,6 @@ func (d *Daemon) save() {
 	}
 }
 
-// adopt finds the stacks still running after a lanesd restart, through their
-// process-compose socket, and takes them back as they are.
 func (d *Daemon) adopt(ctx context.Context) {
 	var saved []*stack
 	if data, err := os.ReadFile(paths.Stacks()); err == nil {

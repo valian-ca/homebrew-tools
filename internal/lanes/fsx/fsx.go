@@ -36,8 +36,7 @@ func WriteAtomic(path string, data []byte, mode os.FileMode) error {
 	return os.Rename(tmp.Name(), path)
 }
 
-// WriteIfChanged leaves the file untouched when its bytes already match, so
-// its mtime only moves on a real change.
+// WriteIfChanged keeps the mtime of a file whose bytes already match.
 func WriteIfChanged(path string, data []byte, mode os.FileMode) (bool, error) {
 	if cur, err := os.ReadFile(path); err == nil && bytes.Equal(cur, data) {
 		return false, nil
@@ -53,8 +52,7 @@ func WriteJSON(path string, v any) error {
 	return WriteAtomic(path, append(data, '\n'), paths.FileMode)
 }
 
-// ReadJSON leaves v untouched and reports false when the file does not exist.
-func ReadJSON(path string, v any) (bool, error) {
+func ReadJSON(path string, v any) (found bool, err error) {
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil

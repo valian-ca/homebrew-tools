@@ -18,7 +18,7 @@ class Lanes < Formula
 
   service do
     run [opt_bin/"lanesd"]
-    keep_alive true
+    keep_alive successful_exit: false
     environment_variables PATH: std_service_path_env
     log_path var/"log/lanes.log"
     error_log_path var/"log/lanes.log"

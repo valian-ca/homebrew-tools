@@ -66,7 +66,7 @@ func MainRoot(ctx context.Context, dir string) (string, error) {
 	return "", errors.New("git worktree list: no main worktree")
 }
 
-// Branch returns the checked-out branch name, or "" when HEAD is detached.
+// Branch is "" on a detached HEAD.
 func Branch(ctx context.Context, dir string) (string, error) {
 	out, err := run(ctx, dir, "symbolic-ref", "-q", "--short", "HEAD")
 	if err != nil {
@@ -123,8 +123,7 @@ func CommitsOutside(ctx context.Context, dir, tip, base string) (int, error) {
 
 type Rename struct{ From, To string }
 
-// Renames lists the branch renames git logged in HEAD's reflog and in the
-// branch's own reflog, oldest first.
+// Renames reads HEAD's reflog and the branch's own, oldest first.
 func Renames(ctx context.Context, dir, branch string) []Rename {
 	var renames []Rename
 	seen := map[Rename]bool{}

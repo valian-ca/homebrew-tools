@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -56,7 +57,9 @@ func (d *Daemon) start(ctx context.Context, req proto.Request) (proto.Response, 
 	defer s.op.Unlock()
 
 	d.mu.Lock()
+	s.Root, s.CommonDir, s.Tmp = w.WT.Root, w.WT.CommonDir, w.Tmpdir
 	s.Keep = Keep{Sessions: w.Cfg.Sessions, Shared: w.Cfg.Shared, Spare: w.Cfg.Spare}
+	s.NotifyUntil = time.Time{}
 	d.mu.Unlock()
 
 	resp := proto.Response{OK: true}
@@ -72,14 +75,10 @@ func (d *Daemon) start(ctx context.Context, req proto.Request) (proto.Response, 
 	if err != nil {
 		return proto.Response{}, err
 	}
+	sessions := d.sessionsIn(s, procs)
 	d.mu.Lock()
 	s.Running = true
-	s.Sessions = 0
-	for _, p := range procs {
-		if p.Under(s.Root) && p.NamedAs(s.Keep.Sessions) {
-			s.Sessions++
-		}
-	}
+	s.Sessions = sessions
 	if s.Sessions == 0 {
 		resp.NoSession = true
 		if s.GraceUntil.IsZero() {
@@ -148,9 +147,8 @@ func (d *Daemon) launch(ctx context.Context, w *workspace.Workspace, req proto.R
 	return nil
 }
 
-// checkPorts refuses to start while a process outside the stack holds a port
-// of the block. A port busy with no visible listener (a closing connection,
-// another user's process) is left for the piece itself to report.
+// A port busy with no visible listener (a closing connection, another user's
+// process) is left for the piece itself to report.
 func (d *Daemon) checkPorts(block ports.Entry) error {
 	for p := block.Start; p <= block.End(); p++ {
 		if !ports.Busy(p) {
@@ -260,9 +258,7 @@ func (d *Daemon) up(ctx context.Context, req proto.Request, restart bool) error 
 	return d.awaitReady(ctx, s.Tmp, req.Proc, d.StartTimeout)
 }
 
-// reconcile clears what remains of each worktree that disappeared: its stack,
-// its registered resources and orphans, its TMPDIR, then its port block. A
-// worktree whose cleanup failed keeps its block, and is retried later.
+// A worktree whose cleanup failed keeps its port block and is retried later.
 func (d *Daemon) reconcile(ctx context.Context) {
 	t, err := ports.Load()
 	if err != nil {
@@ -270,7 +266,7 @@ func (d *Daemon) reconcile(ctx context.Context) {
 		return
 	}
 	for _, e := range t.Entries {
-		if _, err := os.Stat(e.AdminDir); err == nil {
+		if _, err := os.Stat(e.AdminDir); !errors.Is(err, fs.ErrNotExist) {
 			continue
 		}
 		d.mu.Lock()
@@ -296,8 +292,9 @@ func (d *Daemon) reconcile(ctx context.Context) {
 }
 
 func (d *Daemon) clear(ctx context.Context, t ports.Table, e ports.Entry) error {
-	if err := d.teardown(ctx, d.stackFor(e)); err != nil {
-		d.Log.Printf("%s: teardown: %v", e.Worktree, err)
+	s := d.stackFor(e)
+	if err := d.teardown(ctx, s); err != nil && d.Runtime.Alive(ctx, s.Tmp) {
+		return fmt.Errorf("its stack is still running: %w", err)
 	}
 	var failed []error
 	if _, err := os.Stat(e.CommonDir); err == nil {
@@ -363,10 +360,16 @@ func (d *Daemon) eraseOrphans(ctx context.Context, t ports.Table, gone ports.Ent
 	}
 	live := map[string]bool{}
 	for _, e := range t.Entries {
-		if _, err := os.Stat(e.AdminDir); err != nil {
+		_, err := os.Stat(e.AdminDir)
+		if errors.Is(err, fs.ErrNotExist) {
 			continue
 		}
-		if rec, err := lane.Load(e.AdminDir); err == nil && rec != nil {
+		rec, lerr := lane.Load(e.AdminDir)
+		if err != nil || lerr != nil {
+			d.Log.Printf("%s: lane unreadable, skipping the orphan pass: %v", e.Worktree, errors.Join(err, lerr))
+			return
+		}
+		if rec != nil {
 			live[rec.ID] = true
 		}
 	}

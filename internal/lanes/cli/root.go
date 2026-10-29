@@ -32,6 +32,10 @@ project's own commands.
 
 The project declares its stack in lanes.yaml and process-compose.yaml, both
 versioned. See the contract: https://github.com/valian-ca/homebrew-tools/blob/main/cmd/lanes/README.md`,
+		Example: `  cd ~/code/acme/.claude/worktrees/fix-login
+  lanes start              # start this worktree's stack, wait until it is ready
+  eval "$(lanes env)"      # its ports and TMPDIR in this shell
+  lanes list --json        # every lane on this Mac`,
 		Version:       version,
 		SilenceErrors: true,
 		SilenceUsage:  true,
@@ -53,8 +57,6 @@ func cwd() (string, error) {
 	return os.Getwd()
 }
 
-// daemonReady makes sure lanesd answers and process-compose is recent enough,
-// before a command changes anything.
 func daemonReady(ctx context.Context) (string, error) {
 	if !client.Ping(ctx) {
 		return "", client.ErrDaemonDown

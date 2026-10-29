@@ -61,12 +61,10 @@ func Save(adminDir string, r Record) error {
 	return fsx.WriteJSON(paths.LaneRecord(adminDir), r)
 }
 
-// Retire ends a lane that a new one replaces in the same worktree: its stack
-// stops and its resources are erased before the new lane is recorded.
 type Retire func(ctx context.Context, old Record) error
 
-// Check settles which lane the worktree carries now, under the lane lock so
-// two hooks firing together cannot both give birth to a lane.
+// Check holds the lane lock so two hooks firing together cannot both give
+// birth to a lane.
 func Check(ctx context.Context, wt gitx.Worktree, retire Retire) (Record, bool, error) {
 	var (
 		rec  Record

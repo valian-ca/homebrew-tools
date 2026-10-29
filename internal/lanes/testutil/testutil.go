@@ -98,7 +98,6 @@ func RealTemp(t *testing.T) string {
 	return dir
 }
 
-// StateDir isolates lanes' machine-wide state for one test.
 func StateDir(t *testing.T) string {
 	t.Helper()
 	dir, err := os.MkdirTemp("/tmp", "lt")

@@ -25,11 +25,6 @@ type Keep struct {
 	Spare    []string
 }
 
-// SweepTargets lists the processes a teardown stops: every process working in
-// the worktree that is not a session, a declared shared process, or spared,
-// nor launched by a session, an editor or lanes — an MCP server, a language
-// server, a prep step. A process whose cwd lies outside the worktree is never
-// a target.
 func SweepTargets(procs []procinfo.Proc, root string, keep Keep, self int) []procinfo.Proc {
 	helpers := helpersOf(procs, slices.Concat(keep.Sessions, editors), true)
 	for pid := range helpersOf(procs, own, false) {

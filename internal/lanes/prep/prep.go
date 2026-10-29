@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path"
 	"path/filepath"
 	"strings"
@@ -19,6 +18,7 @@ import (
 	"github.com/valian-ca/homebrew-tools/internal/lanes/fsx"
 	"github.com/valian-ca/homebrew-tools/internal/lanes/gitx"
 	"github.com/valian-ca/homebrew-tools/internal/lanes/paths"
+	"github.com/valian-ca/homebrew-tools/internal/lanes/shellx"
 )
 
 const IncludeFile = ".worktreeinclude"
@@ -31,8 +31,6 @@ type Options struct {
 	Log      io.Writer
 }
 
-// Run brings the worktree up to date: the built-in copies first, then every
-// declared step whose trigger changed since it last succeeded.
 func Run(ctx context.Context, o Options) error {
 	if o.Log == nil {
 		o.Log = io.Discard
@@ -54,8 +52,9 @@ func Run(ctx context.Context, o Options) error {
 }
 
 // CopyIncludes copies from the main checkout each file .worktreeinclude
-// names that the worktree lacks. The manifest is branch content, so a path
-// leaving the tree or a symlink is refused rather than followed.
+// names that the worktree lacks. The manifest and the tree are branch
+// content, so a path leaving either tree, through `..` or through a symlinked
+// directory, is refused rather than followed.
 func CopyIncludes(mainRoot, root string, log io.Writer) error {
 	data, err := os.ReadFile(filepath.Join(root, IncludeFile))
 	if errors.Is(err, os.ErrNotExist) {
@@ -90,9 +89,10 @@ func CopyIncludes(mainRoot, root string, log io.Writer) error {
 			if err != nil || !contained(rel) || excluded(rel, excludes) {
 				continue
 			}
-			placed, err := place(src, filepath.Join(root, rel))
+			placed, err := place(mainRoot, root, rel, rel)
 			if err != nil {
-				return err
+				fmt.Fprintf(log, "lanes: skipping %s: %v\n", rel, err)
+				continue
 			}
 			if placed {
 				fmt.Fprintf(log, "lanes: copied %s\n", rel)
@@ -113,9 +113,10 @@ func CreateFromTemplates(ctx context.Context, root string, log io.Writer) error 
 			continue
 		}
 		local := strings.TrimSuffix(tmpl, ".template")
-		placed, err := place(filepath.Join(root, tmpl), filepath.Join(root, local))
+		placed, err := place(root, root, tmpl, local)
 		if err != nil {
-			return err
+			fmt.Fprintf(log, "lanes: skipping %s: %v\n", local, err)
+			continue
 		}
 		if placed {
 			fmt.Fprintf(log, "lanes: created %s from %s\n", local, base)
@@ -145,35 +146,63 @@ func excluded(rel string, excludes []string) bool {
 	return false
 }
 
-// place copies src to dst unless dst exists in any form, a dangling symlink
-// included: nothing already in the worktree is ever overwritten.
-func place(src, dst string) (bool, error) {
-	if _, err := os.Lstat(dst); err == nil {
-		return false, nil
-	}
-	info, err := os.Lstat(src)
-	if err != nil || !info.Mode().IsRegular() {
-		return false, nil
-	}
-	data, err := os.ReadFile(src)
+// place copies srcRel under srcRoot to dstRel under dstRoot unless the
+// destination exists in any form, a dangling symlink included: nothing
+// already in the worktree is ever overwritten. Both sides go through os.Root,
+// which refuses a path that a symlinked directory would lead out of its tree.
+func place(srcRoot, dstRoot, srcRel, dstRel string) (bool, error) {
+	src, err := os.OpenRoot(srcRoot)
 	if err != nil {
 		return false, err
 	}
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+	defer src.Close()
+	dst, err := os.OpenRoot(dstRoot)
+	if err != nil {
 		return false, err
 	}
-	f, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, info.Mode().Perm())
+	defer dst.Close()
+
+	if _, err := dst.Lstat(dstRel); err == nil {
+		return false, nil
+	}
+	info, err := src.Lstat(srcRel)
+	if err != nil || !info.Mode().IsRegular() {
+		return false, nil
+	}
+	in, err := src.Open(srcRel)
+	if err != nil {
+		return false, err
+	}
+	defer in.Close()
+	if err := mkdirAll(dst, filepath.Dir(dstRel)); err != nil {
+		return false, err
+	}
+	out, err := dst.OpenFile(dstRel, os.O_WRONLY|os.O_CREATE|os.O_EXCL, info.Mode().Perm())
 	if errors.Is(err, os.ErrExist) {
 		return false, nil
 	}
 	if err != nil {
 		return false, err
 	}
-	if _, err := f.Write(data); err != nil {
-		f.Close()
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
 		return false, err
 	}
-	return true, f.Close()
+	return true, out.Close()
+}
+
+func mkdirAll(r *os.Root, dir string) error {
+	if dir == "." {
+		return nil
+	}
+	cur := ""
+	for _, part := range strings.Split(filepath.ToSlash(dir), "/") {
+		cur = path.Join(cur, part)
+		if err := r.Mkdir(cur, 0o755); err != nil && !errors.Is(err, os.ErrExist) {
+			return err
+		}
+	}
+	return nil
 }
 
 type StepError struct {
@@ -196,7 +225,7 @@ func runStep(ctx context.Context, o Options, s config.Step) error {
 		return nil
 	}
 	fmt.Fprintf(o.Log, "lanes: running prep step %s\n", s.Name)
-	c := exec.CommandContext(ctx, "/bin/sh", "-c", s.Run)
+	c := shellx.Command(ctx, s.Run)
 	c.Dir = o.Worktree.Root
 	c.Env = o.Environ
 	var out bytes.Buffer

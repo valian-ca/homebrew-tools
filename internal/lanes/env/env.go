@@ -89,8 +89,6 @@ func (v Vars) Exports() string {
 	return b.String()
 }
 
-// Unsets clears the names this lane exports, those the shell's LANES_VARS
-// remembers from an earlier lane, and the fixed set.
 func Unsets(current Vars) string {
 	names := slices.Clone(Fixed)
 	names = append(names, current.Names()...)

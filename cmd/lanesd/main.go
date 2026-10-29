@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -41,6 +42,9 @@ the Homebrew service writes to $(brew --prefix)/var/log/lanes.log.`,
 	defer cancel()
 	if err := root.ExecuteContext(ctx); err != nil {
 		fmt.Fprintln(os.Stderr, "lanesd: "+err.Error())
+		if errors.Is(err, daemon.ErrAlreadyRunning) {
+			os.Exit(0)
+		}
 		os.Exit(1)
 	}
 }

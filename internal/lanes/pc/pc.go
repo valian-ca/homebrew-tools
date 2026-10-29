@@ -88,8 +88,8 @@ type UpSpec struct {
 	Environ  []string
 }
 
-// Up starts process-compose detached. It forks a server into its own session
-// and exits once the server answers, so the stack outlives the caller.
+// Up returns once the server answers. The server runs in its own session, so
+// the stack outlives the caller.
 func Up(ctx context.Context, s UpSpec) error {
 	args := []string{"up", "-D", "--keep-project", "--ordered-shutdown", "-U", "-u", s.Socket, "-L", s.LogFile}
 	for _, f := range s.Files {
@@ -139,6 +139,7 @@ func NewClient(socket string) *Client {
 	return &Client{
 		Socket: socket,
 		http: &http.Client{Transport: &http.Transport{
+			DisableKeepAlives: true,
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 				var d net.Dialer
 				return d.DialContext(ctx, "unix", socket)
@@ -251,8 +252,8 @@ func Evaluate(states []State) (bool, *Failure) {
 
 var oomTail = regexp.MustCompile(`Killed: 9|OutOfMemoryError`)
 
-// KilledForMemory recognizes a piece the kernel or its runtime killed for
-// lack of memory: a SIGKILL nobody asked for, or the runtime's own message.
 func KilledForMemory(s State, logTail string) bool {
-	return s.ExitCode == 128+int(syscall.SIGKILL) || s.ExitCode == -int(syscall.SIGKILL) || oomTail.MatchString(logTail)
+	shellReportedKill := 128 + int(syscall.SIGKILL)
+	goReportedKill := -int(syscall.SIGKILL)
+	return s.ExitCode == shellReportedKill || s.ExitCode == goReportedKill || oomTail.MatchString(logTail)
 }

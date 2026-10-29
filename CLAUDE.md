@@ -172,7 +172,7 @@ needed.
 - `brew audit --strict --online Formula/*.rb` if any formula changed
 - `go test -tags integration` for lanes on the macOS runner, when a PR
   touches `cmd/lanes*`, `internal/lanes`, `examples/lanes-demo`,
-  `Formula/lanes.rb` or the workflow. It needs process-compose and cgo
+  `Formula/lanes.rb`, `go.mod`, `go.sum` or the workflow. It needs process-compose and cgo
   (lanes reads processes through libproc).
 
 Keep all jobs mandatory via branch protection on `main`.

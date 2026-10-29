@@ -64,8 +64,7 @@ func (p Proc) Under(dir string) bool {
 
 type Source interface {
 	Snapshot() ([]Proc, error)
-	// ListeningPID finds the process listening on a TCP port, if this user
-	// can see it.
+	// ListeningPID sees only this user's processes.
 	ListeningPID(port int) (int, bool)
 }
 

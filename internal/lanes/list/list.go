@@ -69,8 +69,7 @@ type Report struct {
 	Lanes         []Lane `json:"lanes"`
 }
 
-// Build inventories every lane of every repo on the Mac, stopped ones
-// included. stacks is lanesd's view, or nil when lanesd is not running.
+// stacks is lanesd's view, nil when lanesd is not running.
 func Build(ctx context.Context, stacks []proto.StackStatus, procs procinfo.Source) (Report, error) {
 	t, err := ports.Load()
 	if err != nil {

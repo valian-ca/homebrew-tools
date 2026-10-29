@@ -15,8 +15,6 @@ import (
 
 var ErrDaemonDown = errors.New("lanesd is not running — run: brew services start lanes")
 
-// Call sends one request and waits for its reply until ctx ends. A daemon
-// that does not accept the connection within a second counts as down.
 func Call(ctx context.Context, req proto.Request) (proto.Response, error) {
 	d := net.Dialer{Timeout: time.Second}
 	conn, err := d.DialContext(ctx, "unix", paths.Socket())

@@ -10,9 +10,8 @@ const (
 	FileMode os.FileMode = 0o600
 )
 
-// TestOverride returns a test-only setting. These settings shorten timers and
-// isolate state for the integration suite; they are honored only when
-// LANES_TEST=1 so a stray variable in a user's shell cannot change behavior.
+// TestOverride honors test-only settings only under LANES_TEST=1, so a stray
+// variable in a user's shell cannot change behavior.
 func TestOverride(name string) (string, bool) {
 	if os.Getenv("LANES_TEST") != "1" {
 		return "", false

@@ -14,8 +14,6 @@ import (
 	"github.com/valian-ca/homebrew-tools/internal/lanes/gitx"
 )
 
-// Run renders every declared template with the lane's variables. An output
-// git tracks is refused: lanes never modifies a tracked file.
 func Run(ctx context.Context, root string, specs []config.Generate, vars map[string]string, log io.Writer) error {
 	for _, g := range specs {
 		out := g.Output()

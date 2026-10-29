@@ -210,8 +210,7 @@ func TestSweep(t *testing.T) {
 	if err := group.Start(); err != nil {
 		t.Fatal(err)
 	}
-	go func() { _ = group.Wait() }()
-	h.children = append(h.children, group)
+	h.track(group)
 
 	h.mustLanes(wt, "stop")
 	h.eventually("the hand-launched server to stop", 15*time.Second, func() bool { return !alive(server) })
@@ -352,9 +351,7 @@ func TestDaemonRestartAdoptsStacks(t *testing.T) {
 	}
 }
 
-// Deleting a worktree of one repo never erases the live lanes of another repo
-// whose adapter lists the same store; a true orphan is erased.
-func TestReconcileKeepsOtherReposLanes(t *testing.T) {
+func TestReconcileKeepsOtherReposLanesAndErasesOrphans(t *testing.T) {
 	h := newHarness(t, grace(time.Hour))
 	h.startDaemon()
 	other := h.repo("other")

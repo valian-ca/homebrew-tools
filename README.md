@@ -305,4 +305,4 @@ Every PR and push to `main` runs:
 - `go vet ./...`, `go test ./...`, `golangci-lint run` — for Go packages.
 - `shellcheck -x bin/*` — when `bin/` contains scripts.
 - `brew audit --strict --online valian-ca/tools/<name>` — only when a formula changes.
-- `go test -tags integration` for lanes, on macOS — only when lanes changes.
+- `go test -tags integration` for lanes, on macOS — only when lanes or the Go modules change.

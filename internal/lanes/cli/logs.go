@@ -31,8 +31,8 @@ func showLog(ctx context.Context, out io.Writer, tmp, piece string, lines int, f
 	return followLog(ctx, out, path, int64(len(data)))
 }
 
-// followLog polls the file and prints what was appended. A file that shrank
-// was truncated by a restart, and is read again from its start.
+// A file that shrank was truncated by a restart, and is read again from its
+// start.
 func followLog(ctx context.Context, out io.Writer, path string, offset int64) error {
 	for {
 		select {

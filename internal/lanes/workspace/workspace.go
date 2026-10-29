@@ -34,9 +34,6 @@ type Workspace struct {
 	Vars     env.Vars
 }
 
-// Locate finds the worktree around dir and its lanes.yaml. It returns
-// ErrMainCheckout on the main checkout and config.ErrNotFound without a
-// lanes.yaml, which the silent commands treat as "nothing to do".
 func Locate(ctx context.Context, dir string) (gitx.Worktree, *config.Config, error) {
 	wt, err := gitx.Detect(ctx, dir)
 	if err != nil {
@@ -49,15 +46,11 @@ func Locate(ctx context.Context, dir string) (gitx.Worktree, *config.Config, err
 	return wt, cfg, err
 }
 
-// IsQuiet reports the errors a silent command (env, hooks) answers with
-// nothing: not a repo, the main checkout, or no lanes.yaml.
 func IsQuiet(err error) bool {
 	return errors.Is(err, gitx.ErrNotRepo) || errors.Is(err, ErrMainCheckout) || errors.Is(err, config.ErrNotFound)
 }
 
-// Open settles the worktree's lane — retiring the previous one when a new
-// lane is born — and gives it its block and TMPDIR.
-func Open(ctx context.Context, dir string) (*Workspace, error) {
+func Settle(ctx context.Context, dir string) (*Workspace, error) {
 	wt, cfg, err := Locate(ctx, dir)
 	if err != nil {
 		return nil, err
@@ -159,8 +152,6 @@ func LastActivity(adminDir string) time.Time {
 	return time.Time{}
 }
 
-// retire ends the lane a new one replaces: its stack stops, then each of its
-// registered resources is erased by the adapter that created it.
 func (w *Workspace) retire(ctx context.Context, old lane.Record) error {
 	if err := StopStack(ctx, w.WT.Root, w.Tmpdir); err != nil {
 		return fmt.Errorf("stop the stack of lane %s: %w", old.ID, err)
@@ -202,8 +193,6 @@ func eraseFrom(ctx context.Context, en registry.Entry, laneID string, environ []
 	return err
 }
 
-// StopStack asks lanesd to stop a worktree's stack, or — with lanesd down —
-// shuts process-compose down through its own socket.
 func StopStack(ctx context.Context, root, tmp string) error {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()

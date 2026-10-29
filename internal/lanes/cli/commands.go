@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,10 +13,13 @@ import (
 	"github.com/valian-ca/homebrew-tools/internal/lanes/client"
 	"github.com/valian-ca/homebrew-tools/internal/lanes/daemon"
 	"github.com/valian-ca/homebrew-tools/internal/lanes/env"
+	"github.com/valian-ca/homebrew-tools/internal/lanes/gitx"
 	"github.com/valian-ca/homebrew-tools/internal/lanes/list"
 	"github.com/valian-ca/homebrew-tools/internal/lanes/paths"
+	"github.com/valian-ca/homebrew-tools/internal/lanes/ports"
 	"github.com/valian-ca/homebrew-tools/internal/lanes/procinfo"
 	"github.com/valian-ca/homebrew-tools/internal/lanes/proto"
+	"github.com/valian-ca/homebrew-tools/internal/lanes/tmpdir"
 	"github.com/valian-ca/homebrew-tools/internal/lanes/workspace"
 )
 
@@ -53,7 +57,7 @@ stops after 5 minutes unless a session arrives.`,
 			if err != nil {
 				return err
 			}
-			w, err := workspace.Open(ctx, dir)
+			w, err := workspace.Settle(ctx, dir)
 			if err != nil {
 				return err
 			}
@@ -101,7 +105,6 @@ spared.`,
   lanes stop ~/code/acme/.claude/worktrees/fix-login`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := cmd.Context()
 			dir, err := cwd()
 			if err != nil {
 				return err
@@ -111,17 +114,35 @@ spared.`,
 					return err
 				}
 			}
-			w, err := workspace.Open(ctx, dir)
-			if err != nil {
-				return err
-			}
-			if err := workspace.StopStack(ctx, w.WT.Root, w.Tmpdir); err != nil {
-				return err
-			}
-			printf(cmd.OutOrStdout(), "stopped the stack of %s — its data is kept\n", w.WT.Root)
-			return nil
+			return stop(cmd, dir)
 		},
 	}
+}
+
+// stop settles no lane and allocates nothing: stopping keeps the lane's data,
+// and a stack started before its branch lost lanes.yaml must stay stoppable.
+func stop(cmd *cobra.Command, dir string) error {
+	ctx := cmd.Context()
+	wt, _, err := workspace.Locate(ctx, dir)
+	if errors.Is(err, gitx.ErrNotRepo) || errors.Is(err, workspace.ErrMainCheckout) {
+		return err
+	}
+	_, hasBlock, ferr := ports.Find(wt.AdminDir)
+	if ferr != nil {
+		return ferr
+	}
+	if !hasBlock {
+		if err != nil {
+			return err
+		}
+		printf(cmd.OutOrStdout(), "no stack has run in %s — nothing to stop\n", wt.Root)
+		return nil
+	}
+	if err := workspace.StopStack(ctx, wt.Root, tmpdir.Path(wt.CommonDir, wt.AdminDir)); err != nil {
+		return err
+	}
+	printf(cmd.OutOrStdout(), "stopped the stack of %s — its data is kept\n", wt.Root)
+	return nil
 }
 
 func newListCmd() *cobra.Command {
@@ -185,7 +206,7 @@ nothing. It never runs a prep step.`,
 			if err != nil {
 				return err
 			}
-			w, err := workspace.Open(ctx, dir)
+			w, err := workspace.Settle(ctx, dir)
 			if workspace.IsQuiet(err) {
 				return nil
 			}
@@ -244,7 +265,7 @@ func runProcessOp(cmd *cobra.Command, op, proc, done string) error {
 	if _, err := daemonReady(ctx); err != nil {
 		return err
 	}
-	w, err := workspace.Open(ctx, dir)
+	w, err := workspace.Settle(ctx, dir)
 	if err != nil {
 		return err
 	}
@@ -277,7 +298,7 @@ stay readable after the stack stops; they go away with the worktree.`,
 			if err != nil {
 				return err
 			}
-			w, err := workspace.Open(ctx, dir)
+			w, err := workspace.Settle(ctx, dir)
 			if err != nil {
 				return err
 			}

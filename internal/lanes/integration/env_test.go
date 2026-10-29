@@ -169,7 +169,6 @@ func TestMainCheckout(t *testing.T) {
 	}
 }
 
-// A Mac without lanes: the contract's hook commands and .envrc stay silent.
 func TestNoLanesOnPath(t *testing.T) {
 	h := newHarness(t)
 	var settings struct {
