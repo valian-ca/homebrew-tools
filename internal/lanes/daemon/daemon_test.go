@@ -237,6 +237,22 @@ func TestSweepSparesWhatALanesCommandRuns(t *testing.T) {
 	}
 }
 
+func TestSweepSparesTheLauncherOfADesktopSession(t *testing.T) {
+	procs := []procinfo.Proc{
+		{PID: 100, PPID: 1, PGID: 100, Comm: "Claude", Cwd: "/"},
+		{PID: 101, PPID: 100, PGID: 101, Comm: "disclaimer", Argv: []string{"/Applications/Claude.app/Contents/Helpers/disclaimer", "--pgroup"}, Cwd: root},
+		{PID: 102, PPID: 101, PGID: 101, Comm: "claude", Cwd: root},
+		{PID: 103, PPID: 1, PGID: 103, Comm: "disclaimer", Cwd: root},
+	}
+	var got []int
+	for _, p := range SweepTargets(procs, root, Keep{Sessions: []string{"claude"}}, 999) {
+		got = append(got, p.PID)
+	}
+	if !slices.Equal(got, []int{103}) {
+		t.Fatalf("targets = %v, want only the launcher whose session is gone", got)
+	}
+}
+
 func TestSweepSparesHelpersButNotWhatShellsRun(t *testing.T) {
 	procs := []procinfo.Proc{
 		{PID: 60, PPID: 1, PGID: 60, Comm: "claude", Cwd: root},
