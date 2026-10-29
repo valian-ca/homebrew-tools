@@ -96,6 +96,7 @@ func (d *Daemon) launch(ctx context.Context, w *workspace.Workspace, req proto.R
 			return err
 		}
 	}
+	d.clearOrphans(ctx, w.WT.Root, Keep{Sessions: w.Cfg.Sessions, Shared: w.Cfg.Shared, Spare: w.Cfg.Spare}, w.Block)
 	if err := d.checkPorts(w.Block); err != nil {
 		return err
 	}
@@ -144,6 +145,36 @@ func (d *Daemon) launch(ctx context.Context, w *workspace.Workspace, req proto.R
 		return err
 	}
 	return nil
+}
+
+// clearOrphans ends what a crashed stack left listening on the block, so the
+// start only refuses a port something alive still holds. It runs only while
+// no process-compose answers for the lane: a live stack's pieces would read
+// as orphans of a daemonized process-compose.
+func (d *Daemon) clearOrphans(ctx context.Context, root string, keep Keep, block ports.Entry) {
+	var holders []int
+	for p := block.Start; p <= block.End(); p++ {
+		if !ports.Busy(p) {
+			continue
+		}
+		if pid, ok := d.Procs.ListeningPID(p); ok {
+			holders = append(holders, pid)
+		}
+	}
+	if len(holders) == 0 {
+		return
+	}
+	procs, err := d.Procs.Snapshot()
+	if err != nil {
+		return
+	}
+	targets := OrphanHolders(procs, root, keep, os.Getpid(), holders)
+	for _, t := range targets {
+		d.Log.Printf("%s: stopping %s (pid %d), left by an earlier stack", root, t.Comm, t.PID)
+	}
+	if len(targets) > 0 {
+		End(ctx, d.Procs, d.Kill, procs, targets, sweepPatience)
+	}
 }
 
 // A port busy with no visible listener (a closing connection, another user's

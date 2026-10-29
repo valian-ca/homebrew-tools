@@ -503,39 +503,7 @@ func (d *Daemon) sweep(ctx context.Context, s *stack, yield bool) {
 	for _, t := range targets {
 		d.Log.Printf("%s: stopping %s (pid %d)", s.Root, t.Comm, t.PID)
 	}
-	send(d.Kill, Signals(procs, targets, syscall.Getpgrp()), syscall.SIGTERM)
-
-	deadline := time.Now().Add(sweepPatience)
-	for {
-		procs, err = d.Procs.Snapshot()
-		if err != nil {
-			return
-		}
-		alive := map[int]procinfo.Proc{}
-		for _, p := range procs {
-			alive[p.PID] = p
-		}
-		var left []procinfo.Proc
-		for _, t := range targets {
-			if p, ok := alive[t.PID]; ok && p.Comm == t.Comm {
-				left = append(left, p)
-			}
-		}
-		if len(left) == 0 {
-			return
-		}
-		if !time.Now().Before(deadline) {
-			for _, p := range left {
-				_ = d.Kill(p.PID, syscall.SIGKILL)
-			}
-			return
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(250 * time.Millisecond):
-		}
-	}
+	End(ctx, d.Procs, d.Kill, procs, targets, sweepPatience)
 }
 
 func (d *Daemon) save() {

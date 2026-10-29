@@ -87,6 +87,8 @@ func TestParseErrors(t *testing.T) {
 		"firebase escapes":  minimal + "resources: [{firebase: {config: ../f.json}}]\n",
 		"firebase only":     minimal + "resources: [{firebase: {config: f.json, only: [firestor]}}]\n",
 		"firebase test":     minimal + "resources: [{firebase: {config: f.json, test: {only: [hub]}}}]\n",
+		"only companions":   minimal + "resources: [{firebase: {config: f.json, only: [eventarc, ui]}}]\n",
+		"test only tasks":   minimal + "resources: [{firebase: {config: f.json, test: {only: [tasks]}}}]\n",
 		"firebase timeout":  minimal + "resources: [{firebase: {config: f.json, functions_timeout: soon}}]\n",
 		"two adapters":      minimal + "resources: [{scripts: {name: s, create: c, erase: e, list: l, owner: o}, firebase: {config: f.json}}]\n",
 		"unknown scripts k": minimal + "resources: [{scripts: {name: s, create: c, erase: e, list: l, owner: o, oops: 1}}]\n",

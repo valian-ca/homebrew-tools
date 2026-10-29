@@ -180,12 +180,15 @@ func TestCheckSocket(t *testing.T) {
 	if err := CheckSocket("/tmp/lanes-501-abcdef12"); err != nil {
 		t.Errorf("a lane TMPDIR fails: %v", err)
 	}
-	long := "/tmp/" + strings.Repeat("d", 70)
+	if err := CheckSocket("/tmp/" + strings.Repeat("d", 67)); err != nil {
+		t.Errorf("a 103-byte socket path fails: %v", err)
+	}
+	long := "/tmp/" + strings.Repeat("d", 68)
 	err := CheckSocket(long)
 	if err == nil {
-		t.Fatal("a 106-byte socket path passed")
+		t.Fatal("a 104-byte socket path passed: it leaves no room for the NUL")
 	}
-	for _, want := range []string{SocketPath(long), "106 bytes", "104-byte"} {
+	for _, want := range []string{SocketPath(long), "104 bytes", "104-byte"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("%q does not name %q", err, want)
 		}

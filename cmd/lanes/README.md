@@ -262,6 +262,11 @@ The Firebase emulators of the lane, common to every project. A project
 declares at most one `firebase` resource; a second is an error of
 `lanes.yaml` that names its path.
 
+**Prerequisites.** The emulators need Java 21 or later on `PATH`, and Node 22
+for firebase-tools and the functions. The project installs firebase-tools in
+its dependencies: lanes runs the first `node_modules/.bin/firebase` from the
+base config's directory up to the worktree, unless `command` names another.
+
 ```yaml
 resources:
   - firebase:
@@ -286,6 +291,8 @@ them: `hub` and `logging` always (firebase-tools 15 starts the logging
 emulator in every session); `ui` when the stack runs an emulator the UI shows
 (Auth, Database, Firestore, Functions, Storage) and `ui.enabled` is not false;
 `eventarc` and `tasks` with Functions; `firestore_ws` with Firestore.
+`only` and `test.only` name at least one emulator that starts on its own:
+`eventarc`, `tasks` and `ui` alone are an error of `lanes.yaml`.
 `lanes start` refuses when a stack port is missing, and `lanes test-env` when a
 `test_*` port is, each naming every missing port.
 
@@ -330,12 +337,15 @@ export's temporary files never land in the worktree.
 - **Functions workers.** Before each start of the piece (`lanes start`,
   `lanes restart firebase`) and at each stop, lanes ends what an earlier
   firebase piece left — firebase-tools, its emulators and its functions
-  workers, once their parent is gone. The workers of a running
+  workers, once their parent is gone. A piece that outlived a crashed
+  process-compose first gets the stop process-compose would have sent, and
+  `export_timeout` + 15 s to export. The workers of a running
   `lanes test-env` keep their parent and are spared.
 - **Sockets.** Before emulators start, for the stack and for `test-env`, lanes
   computes the longest socket path they open under `TMPDIR`
-  (`fire_emu_<16 hex>.sock`, a functions worker's), and refuses past 104 bytes,
-  naming the path, its length and the limit.
+  (`fire_emu_<16 hex>.sock`, a functions worker's), and refuses it at 104
+  bytes or more — macOS keeps 104 bytes for a socket path, its final NUL
+  included —, naming the path, its length and the limit.
 
 **Data.** At start, a complete export in `data` is imported; otherwise the
 `seed`; without one, the lane starts empty. The stop always exports into
@@ -373,7 +383,10 @@ The test config lists only `test.only` and the emulators Firebase starts with
 them, without the UI. lanes prepares the worktree as `lanes start` does, then
 imports and exports nothing: the lane's data is never touched. It works
 whether the stack runs or not, and never touches the stack; `lanes stop`
-spares a running `test-env`. One runs at a time in a lane: a second refuses and
+spares a running `test-env`. Before and after the command, lanes ends what a
+`test-env` killed outright left listening on the `test_*` ports — the
+emulators and the firebase-tools that ran them, once their parent is gone —
+and the functions workers it orphaned. One runs at a time in a lane: a second refuses and
 names the PID of the first. On a main checkout, outside a repository or
 without `lanes.yaml`, the command runs as is. The exit status is the
 command's.
@@ -406,6 +419,11 @@ A physical device reaches the lane's emulators by the Mac's IP, not by
   and `restart` has 20 minutes.
 - There is one stack per worktree, shared by its sessions. `lanes start` on a
   running stack restarts nothing.
+- Before it checks the block's ports, `lanes start` ends what a crashed stack
+  left listening on them: a process working in the worktree whose parent is
+  gone, with what it started, under the teardown's rules below. A port held
+  by anything else — a process outside the worktree, one a live shell or
+  session still owns — fails the start, naming the process and its PID.
 - `lanesd` looks for sessions every 10 s. After `SessionEnd`, it stops the
   stack as soon as no session is left. When sessions vanish without
   `SessionEnd` — a killed session — it waits 5 minutes for one to come back.

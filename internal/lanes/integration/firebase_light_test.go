@@ -115,7 +115,7 @@ func TestFirebaseSocketPathTooLong(t *testing.T) {
 	for _, args := range [][]string{{"start"}, {"test-env", "--", "true"}} {
 		r := h.lanes(wt, args...)
 		if r.code == 0 || !strings.Contains(r.stderr, deep) || !strings.Contains(r.stderr, "fire_emu_") ||
-			!strings.Contains(r.stderr, " bytes, over the 104-byte macOS limit") {
+			!strings.Contains(r.stderr, " bytes, past the 104-byte macOS limit, its final NUL included") {
 			t.Errorf("lanes %s with a deep TMPDIR: %s", args[0], r)
 		}
 	}

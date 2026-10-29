@@ -62,6 +62,10 @@ const (
 	MaxFirebaseExportTimeout        = Duration(75 * time.Second)
 )
 
+// firebaseCompanions start only beside another emulator: eventarc and tasks
+// with functions, the UI with what it shows.
+var firebaseCompanions = []string{"eventarc", "tasks", "ui"}
+
 var FirebaseEmulators = []string{"auth", "firestore", "database", "functions", "pubsub", "storage", "eventarc", "tasks", "hosting", "ui"}
 
 type Firebase struct {
@@ -269,6 +273,9 @@ func (f *Firebase) validate() error {
 			if !slices.Contains(FirebaseEmulators, e) {
 				return fmt.Errorf("%s: %q is not an emulator (one of %s)", key, e, strings.Join(FirebaseEmulators, ", "))
 			}
+		}
+		if len(list) > 0 && !slices.ContainsFunc(list, func(e string) bool { return !slices.Contains(firebaseCompanions, e) }) {
+			return fmt.Errorf("%s: %s start no emulator on their own — name at least one other emulator", key, strings.Join(list, ", "))
 		}
 	}
 	if f.ExportTimeout > MaxFirebaseExportTimeout {

@@ -10,7 +10,7 @@ demo/hello and one Auth user. Run it under emulators:exec, which exports the
 session into seed/ on exit, never against a session tests ran against:
 
   rm -rf seed
-  npx firebase emulators:exec --config firebase.emulator.json \\
+  npx firebase emulators:exec --config firebase.emulator.json --project demo-lanes \\
     --only auth,firestore --export-on-exit seed "node tool/make-seed.mjs"
 `;
 

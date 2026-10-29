@@ -9,7 +9,25 @@ import (
 	"time"
 
 	"github.com/valian-ca/homebrew-tools/internal/lanes/config"
+	"github.com/valian-ca/homebrew-tools/internal/lanes/procinfo"
 )
+
+func TestOrphanedPieces(t *testing.T) {
+	const root = "/w/wt"
+	piece := []string{"/opt/bin/lanes", "firebase", "run"}
+	procs := []procinfo.Proc{
+		{PID: 10, PPID: 1, Comm: "lanes", Argv: piece, Cwd: root},
+		{PID: 20, PPID: 1, Comm: "bash", Cwd: root},
+		{PID: 21, PPID: 20, Comm: "lanes", Argv: piece, Cwd: root},
+		{PID: 30, PPID: 1, Comm: "process-compose", Cwd: root},
+		{PID: 31, PPID: 30, Comm: "lanes", Argv: piece, Cwd: root},
+		{PID: 40, PPID: 1, Comm: "lanes", Argv: []string{"/opt/bin/lanes", "test-env", "--", "npm", "test"}, Cwd: root},
+		{PID: 50, PPID: 1, Comm: "lanes", Argv: piece, Cwd: "/w/other"},
+	}
+	if got := orphanedPieces(procs, root); !slices.Equal(got, []int{10, 21}) {
+		t.Fatalf("orphaned pieces = %v, want the two whose process-compose is gone", got)
+	}
+}
 
 func mkExport(t *testing.T, dir, marker string) {
 	t.Helper()

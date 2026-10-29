@@ -296,8 +296,8 @@ func SocketPath(tmpdir string) string {
 
 func CheckSocket(tmpdir string) error {
 	p := SocketPath(tmpdir)
-	if len(p) > MaxSocketPath {
-		return fmt.Errorf("firebase: socket path %s is %d bytes, over the %d-byte macOS limit — use a shorter TMPDIR", p, len(p), MaxSocketPath)
+	if len(p) >= MaxSocketPath {
+		return fmt.Errorf("firebase: socket path %s is %d bytes, past the %d-byte macOS limit, its final NUL included — use a shorter TMPDIR", p, len(p), MaxSocketPath)
 	}
 	return nil
 }

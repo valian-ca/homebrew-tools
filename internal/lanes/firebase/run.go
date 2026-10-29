@@ -73,7 +73,7 @@ func Run(ctx context.Context, s RunSpec) error {
 	if err := os.MkdirAll(cwd, 0o755); err != nil {
 		return err
 	}
-	SweepOrphans(s.Procs, s.Root, s.Out)
+	SweepOrphans(s.Procs, s.Root, fb.ExportTimeout.Std()+ExportGrace, s.Out)
 
 	data := filepath.Join(s.Root, fb.Data)
 	if err := settleData(data); err != nil {
@@ -345,14 +345,34 @@ func exitCode(err error) int {
 	return 1
 }
 
-// SweepOrphans ends what a killed firebase piece left behind: the processes
-// that ran from WorkDir or are functions workers of the worktree, once their
-// parent is gone, with everything they started. A live `lanes test-env` keeps
-// its workers' parent.
-func SweepOrphans(src procinfo.Source, root string, log io.Writer) {
+// ExportGrace is what process-compose gives the piece past export_timeout to
+// stop.
+const ExportGrace = 15 * time.Second
+
+// SweepOrphans ends what a killed firebase piece left behind. A piece whose
+// process-compose crashed first gets the stop process-compose would have
+// sent, and grace to export; then go the processes that ran from WorkDir or
+// are functions workers of the worktree, once their parent is gone, with
+// everything they started. A live `lanes test-env` keeps its workers' parent.
+func SweepOrphans(src procinfo.Source, root string, grace time.Duration, log io.Writer) {
 	procs, err := src.Snapshot()
 	if err != nil {
 		return
+	}
+	if pieces := orphanedPieces(procs, root); len(pieces) > 0 {
+		fmt.Fprintf(log, "firebase: stopping the piece of a crashed stack (pid %v)\n", pieces)
+		for _, p := range pieces {
+			_ = syscall.Kill(p, syscall.SIGTERM)
+		}
+		if !waitGone(pieces, grace) {
+			for _, p := range pieces {
+				_ = syscall.Kill(p, syscall.SIGKILL)
+			}
+			waitGone(pieces, orphanPatience)
+		}
+		if procs, err = src.Snapshot(); err != nil {
+			return
+		}
 	}
 	set := map[int]bool{}
 	for _, p := range procs {
@@ -371,6 +391,32 @@ func SweepOrphans(src procinfo.Source, root string, log io.Writer) {
 	}
 	fmt.Fprintf(log, "firebase: ending %d process(es) left by an earlier run\n", len(targets))
 	terminate(targets)
+}
+
+// orphanedPieces are the `lanes firebase run` of the worktree whose
+// process-compose is gone: their ancestry, through the bash -c process-compose
+// may run them under, ends at a dead parent.
+func orphanedPieces(procs []procinfo.Proc, root string) []int {
+	byPID := procinfo.ByPID(procs)
+	self := os.Getpid()
+	var out []int
+	for _, p := range procs {
+		if p.PID == self || !p.Under(root) || !p.NamedAs([]string{"lanes"}) || !slices.Equal(p.Argv[min(1, len(p.Argv)):], []string{"firebase", "run"}) {
+			continue
+		}
+		a := p
+		for a.PPID != 1 {
+			parent, ok := byPID[a.PPID]
+			if !ok || !parent.NamedAs(procinfo.Shells) {
+				break
+			}
+			a = parent
+		}
+		if a.PPID == 1 {
+			out = append(out, p.PID)
+		}
+	}
+	return out
 }
 
 func isWorker(p procinfo.Proc, root string) bool {

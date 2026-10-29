@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -11,14 +12,18 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/valian-ca/homebrew-tools/internal/lanes/daemon"
 	"github.com/valian-ca/homebrew-tools/internal/lanes/firebase"
 	"github.com/valian-ca/homebrew-tools/internal/lanes/paths"
 	"github.com/valian-ca/homebrew-tools/internal/lanes/procinfo"
 	"github.com/valian-ca/homebrew-tools/internal/lanes/workspace"
 )
+
+const orphanPatience = 5 * time.Second
 
 type exitCodeError struct{ code int }
 
@@ -42,7 +47,8 @@ The command starts the emulators itself, for instance with
 The test config lists only test.only and the emulators Firebase starts with
 them, without the UI. lanes imports and exports nothing: the lane's data
 directory is never touched. It works whether the stack runs or not, and never
-touches the stack.
+touches the stack. Before and after the command, lanes ends what a test-env
+killed outright left listening on the test ports.
 
 One test-env runs at a time in a lane: a second one refuses, naming the PID of
 the first. On a main checkout, outside a repository or without lanes.yaml, the
@@ -66,7 +72,7 @@ command runs as is. The exit status is the command's.`,
 				return err
 			}
 			testTmp := filepath.Join(w.Tmpdir, "test")
-			environ, err := testEnviron(ctx, w, testTmp)
+			environ, held, err := testEnviron(ctx, w, testTmp)
 			if err != nil {
 				return err
 			}
@@ -78,42 +84,78 @@ command runs as is. The exit status is the command's.`,
 				return err
 			}
 			defer release()
+			clearTestOrphans(ctx, w, held, cmd.ErrOrStderr())
 			err = runForeground(args, environ)
-			if w.Cfg.Firebase() != nil {
-				firebase.SweepOrphans(procinfo.System(), w.WT.Root, cmd.ErrOrStderr())
+			if fb := w.Cfg.Firebase(); fb != nil {
+				firebase.SweepOrphans(procinfo.System(), w.WT.Root, fb.ExportTimeout.Std()+firebase.ExportGrace, cmd.ErrOrStderr())
 			}
+			clearTestOrphans(ctx, w, held, cmd.ErrOrStderr())
 			return err
 		},
 	}
 }
 
-func testEnviron(ctx context.Context, w *workspace.Workspace, testTmp string) ([]string, error) {
+// testEnviron also returns the test series' ports, the ones a killed
+// test-env's emulators keep.
+func testEnviron(ctx context.Context, w *workspace.Workspace, testTmp string) ([]string, []int, error) {
 	if err := prepare(ctx, w, os.Stderr); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	environ := w.TestVars().Environ(os.Environ())
 	fb := w.Cfg.Firebase()
 	if fb == nil {
-		return environ, nil
+		return environ, nil, nil
 	}
 	b, err := firebase.LoadBase(w.WT.Root, fb)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	if missing := firebase.Missing(firebase.NewPlan(b, fb, firebase.Test).RequiredPorts(), w.Cfg.Ports.Names); len(missing) > 0 {
-		return nil, firebase.MissingError(missing)
+	required := firebase.NewPlan(b, fb, firebase.Test).RequiredPorts()
+	if missing := firebase.Missing(required, w.Cfg.Ports.Names); len(missing) > 0 {
+		return nil, nil, firebase.MissingError(missing)
 	}
 	if err := firebase.CheckSocket(testTmp); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if _, err := firebase.Binary(w.WT.Root, fb); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	caps, err := firebase.Caps(fb, environ)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return append(environ, caps...), nil
+	byName := firebase.Ports(w.Cfg.Ports.Names, w.Block.Start)
+	held := make([]int, 0, len(required))
+	for _, n := range required {
+		held = append(held, byName[n])
+	}
+	return append(environ, caps...), held, nil
+}
+
+// clearTestOrphans ends what a test-env killed outright left listening on the
+// test ports — the lock proves no other test-env of the lane is alive.
+func clearTestOrphans(ctx context.Context, w *workspace.Workspace, held []int, log io.Writer) {
+	src := procinfo.System()
+	var holders []int
+	for _, p := range held {
+		if pid, ok := src.ListeningPID(p); ok {
+			holders = append(holders, pid)
+		}
+	}
+	if len(holders) == 0 {
+		return
+	}
+	procs, err := src.Snapshot()
+	if err != nil {
+		return
+	}
+	keep := daemon.Keep{Sessions: w.Cfg.Sessions, Shared: w.Cfg.Shared, Spare: w.Cfg.Spare}
+	targets := daemon.OrphanHolders(procs, w.WT.Root, keep, os.Getpid(), holders)
+	if len(targets) == 0 {
+		return
+	}
+	fmt.Fprintf(log, "lanes: ending %d process(es) a killed test-env left on the test ports\n", len(targets))
+	daemon.End(ctx, src, syscall.Kill, procs, targets, orphanPatience)
 }
 
 // lockTestEnv holds an flock for the life of the run: the kernel drops it

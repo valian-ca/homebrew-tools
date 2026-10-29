@@ -6,6 +6,9 @@ import (
 	"strings"
 )
 
+// Shells are the names an interactive or a `-c` shell runs under.
+var Shells = []string{"sh", "bash", "zsh", "fish", "dash", "nu"}
+
 type Proc struct {
 	PID  int
 	PPID int

@@ -48,7 +48,7 @@ func (f *Firebase) Preflight(context.Context) error {
 	if _, err := firebase.Binary(f.Env.Worktree, &f.Spec); err != nil {
 		return err
 	}
-	firebase.SweepOrphans(procinfo.System(), f.Env.Worktree, io.Discard)
+	firebase.SweepOrphans(procinfo.System(), f.Env.Worktree, f.Spec.ExportTimeout.Std()+firebase.ExportGrace, io.Discard)
 	return nil
 }
 
@@ -78,7 +78,7 @@ func (f *Firebase) Owner(context.Context, string) (string, error) { return "", n
 // Processes leaves depends_on and environment to the project, whose
 // process-compose.yaml is merged after the fragment.
 func (f *Firebase) Processes() map[string]pc.Process {
-	grace := f.Spec.ExportTimeout.Std() + 15*time.Second
+	grace := f.Spec.ExportTimeout.Std() + firebase.ExportGrace
 	probes := int((f.Spec.FunctionsTimeout.Std() + 5*time.Minute) / time.Second)
 	return map[string]pc.Process{FirebasePiece: {
 		"command":     env.Quote(LanesExecutable()) + " firebase run",

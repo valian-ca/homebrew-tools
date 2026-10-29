@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -252,20 +253,10 @@ func TestFirebaseOrphanWorkers(t *testing.T) {
 		t.Fatalf("lanes restart firebase left the killed piece's processes: %v", alive)
 	}
 
-	// A crashed stack whose only survivors are the firebase piece's: the core
-	// refuses a start beside any other piece's orphan, which holds its port.
+	// A crashed stack: every piece outlives process-compose, the firebase
+	// piece's workers with them.
 	spawnWorker()
-	tree := h.firebaseTree(wt)
-	left = pidsOf(tree)
-	for _, p := range procsUnder(wt, func(p procinfo.Proc) bool {
-		return !p.NamedAs([]string{"claude"}) && !slices.ContainsFunc(tree, func(f procinfo.Proc) bool { return f.PID == p.PID })
-	}) {
-		_ = syscall.Kill(p.PID, syscall.SIGKILL)
-	}
-	for _, p := range pcOf(h.tmpdir(wt)) {
-		_ = syscall.Kill(p, syscall.SIGKILL)
-	}
-	h.eventually("process-compose to die", 10*time.Second, func() bool { return len(pcOf(h.tmpdir(wt))) == 0 })
+	left = append(pidsOf(h.firebaseTree(wt)), h.crashStack(wt)...)
 	h.mustLanes(wt, "start")
 	if alive := stillAlive(left); len(alive) > 0 {
 		t.Fatalf("lanes start left the crashed stack's processes: %v", alive)
@@ -350,6 +341,29 @@ func TestFirebaseTestEnvSeries(t *testing.T) {
 	slices.Sort(keys)
 	if strings.Join(keys, ",") != "firestore,hub,logging,singleProjectMode,ui" || cfg.Emulators["ui"].(map[string]any)["enabled"] != false {
 		t.Fatalf("test config emulators = %v", cfg.Emulators)
+	}
+
+	// A test-env killed outright with its whole group, as a timeout does: the
+	// emulator JVM, detached, keeps its test port until the next test-env.
+	killed := exec.Command(filepath.Join(binDir, "lanes"), "test-env", "--", "sh", "-c",
+		`node_modules/.bin/firebase emulators:exec --config "$LANES_FIREBASE_CONFIG" 'sleep 600'`)
+	killed.Dir, killed.Env, killed.SysProcAttr = wt, h.env, &syscall.SysProcAttr{Setpgid: true}
+	if err := killed.Start(); err != nil {
+		t.Fatal(err)
+	}
+	h.track(killed)
+	testFirestore := h.port(wt, "test_firestore")
+	h.eventually("the killed test-env's Firestore to listen", 2*time.Minute, func() bool { return listening(testFirestore) })
+	if err := syscall.Kill(-killed.Process.Pid, syscall.SIGKILL); err != nil {
+		t.Fatal(err)
+	}
+	h.eventually("the killed test-env to exit", 10*time.Second, func() bool { return !alive(killed) })
+	if !listening(testFirestore) {
+		t.Fatal("kill -9 of the test-env group took its emulators down: nothing is left to sweep")
+	}
+	r = h.lanes(wt, "test-env", "--", "sh", "-c", script)
+	if r.code != 0 || !strings.Contains(r.stderr, "a killed test-env left on the test ports") {
+		t.Fatalf("test-env after one killed outright: %s", r)
 	}
 
 	first := h.spawn(wt, "lanes", "test-env", "--", "sleep", "30")
@@ -442,6 +456,30 @@ func stillAlive(pids []int) []int {
 		}
 	}
 	return out
+}
+
+// crashStack kills the lane's process-compose alone, as a crash would, and
+// returns the PIDs of the pieces it leaves running.
+func (h *harness) crashStack(wt string) []int {
+	h.t.Helper()
+	procs, err := procinfo.System().Snapshot()
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	var pieces []int
+	for _, pc := range pcOf(h.tmpdir(wt)) {
+		for _, p := range procinfo.Descendants(procs, pc) {
+			if p.PID != pc {
+				pieces = append(pieces, p.PID)
+			}
+		}
+		_ = syscall.Kill(pc, syscall.SIGKILL)
+	}
+	h.eventually("process-compose to die", 10*time.Second, func() bool { return len(pcOf(h.tmpdir(wt))) == 0 })
+	if len(stillAlive(pieces)) == 0 {
+		h.t.Fatal("the crash took every piece down: nothing is left to sweep")
+	}
+	return pieces
 }
 
 func pcOf(tmp string) []int {
