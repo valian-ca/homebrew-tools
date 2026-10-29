@@ -8,7 +8,8 @@ Usage: make-repo.sh <dir>
 Turn the lanes demo into a throwaway git repository at <dir>, with one commit
 on main and an origin remote: a bare repository at <dir>.origin.git, so that
 origin/main exists. The main checkout also gets a git-ignored secrets.local,
-which .worktreeinclude copies into new worktrees.
+which .worktreeinclude copies into new worktrees. node_modules is not copied:
+the node setup step installs it in each worktree.
 
 Examples:
   examples/lanes-demo/make-repo.sh ~/tmp/lanes-demo
@@ -29,7 +30,8 @@ if [ -e "$dest" ]; then
 fi
 
 mkdir -p "$dest"
-(cd "$src" && tar cf - --exclude make-repo.sh --exclude .lanes --exclude .demo --exclude app.env --exclude .env.local --exclude secrets.local .) | (cd "$dest" && tar xf -)
+(cd "$src" && tar cf - --exclude make-repo.sh --exclude .lanes --exclude .demo --exclude app.env --exclude .env.local --exclude secrets.local \
+  --exclude node_modules --exclude '.emu-data*' --exclude 'firebase.lanes*.json' --exclude '*-debug.log' .) | (cd "$dest" && tar xf -)
 git -C "$dest" init -q -b main
 git -C "$dest" add -A
 git -C "$dest" -c user.name=lanes-demo -c user.email=lanes-demo@example.com commit -q -m "lanes demo"

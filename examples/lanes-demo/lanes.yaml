@@ -1,7 +1,9 @@
 schema: 1
 ports:
-  block: 10
-  names: [web, extra]
+  block: 24
+  names: [web, extra,
+          auth, firestore, firestore_ws, functions, pubsub, eventarc, tasks, hub, ui, logging,
+          test_auth, test_firestore, test_firestore_ws, test_functions, test_pubsub, test_eventarc, test_tasks, test_hub, test_logging]
 resources:
   - scripts:
       name: demo-store
@@ -9,10 +11,16 @@ resources:
       erase: tool/lane-store erase
       list: tool/lane-store list
       owner: tool/lane-store owner
+  - firebase:
+      config: firebase.emulator.json
+      seed: seed
 generate:
   - template: app.env.tmpl
 setup:
   - name: deps
     run: tool/install.sh
     when_changed: [deps.lock]
+  - name: node
+    run: npm ci --prefer-offline --no-audit --no-fund
+    when_changed: [package-lock.json]
 shared: [lanes-demo-shared]

@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -117,6 +118,7 @@ func runEnvHook(ctx context.Context, p hookPayload, log io.Writer) error {
 		se.Files = append(se.Files, f)
 	}
 	w, err := workspace.Settle(ctx, p.Cwd)
+	var genErr error
 	switch {
 	case workspace.IsQuiet(err):
 		if len(se.Vars) > 0 {
@@ -133,19 +135,20 @@ func runEnvHook(ctx context.Context, p hookPayload, log io.Writer) error {
 				return err
 			}
 		}
-		if err := prepare(ctx, w, log); err != nil {
+		if err := prepareCore(ctx, w, log); err != nil {
 			return err
 		}
+		genErr = generateFirebase(ctx, w, log)
 		if err := rewrite(se.Files, w.Vars.Exports()); err != nil {
 			return err
 		}
 		se.Vars = w.Vars.Names()
 	}
 	if !known || len(se.Files) == 0 {
-		return nil
+		return genErr
 	}
 	pruneSessions()
-	return fsx.WriteJSON(paths.SessionEnv(p.SessionID), se)
+	return errors.Join(genErr, fsx.WriteJSON(paths.SessionEnv(p.SessionID), se))
 }
 
 // cleared exports each variable empty, TMPDIR back to the session's own:

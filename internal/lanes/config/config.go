@@ -7,8 +7,10 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -40,7 +42,8 @@ type Ports struct {
 }
 
 type Resource struct {
-	Scripts *Scripts `yaml:"scripts"`
+	Scripts  *Scripts  `yaml:"scripts"`
+	Firebase *Firebase `yaml:"firebase"`
 }
 
 type Scripts struct {
@@ -49,6 +52,45 @@ type Scripts struct {
 	Erase  string `yaml:"erase" json:"erase"`
 	List   string `yaml:"list" json:"list"`
 	Owner  string `yaml:"owner" json:"owner"`
+}
+
+const (
+	DefaultFirebaseData             = ".emu-data"
+	DefaultFirebaseJVMHeap          = ByteSize(512 << 20)
+	DefaultFirebaseFunctionsTimeout = Duration(180 * time.Second)
+	DefaultFirebaseExportTimeout    = Duration(60 * time.Second)
+	MaxFirebaseExportTimeout        = Duration(75 * time.Second)
+)
+
+// firebaseCompanions start only beside another emulator: eventarc and tasks
+// with functions, the UI with what it shows.
+var firebaseCompanions = []string{"eventarc", "tasks", "ui"}
+
+var FirebaseEmulators = []string{"auth", "firestore", "database", "functions", "pubsub", "storage", "eventarc", "tasks", "hosting", "ui"}
+
+type Firebase struct {
+	Config           string       `yaml:"config"`
+	Data             string       `yaml:"data"`
+	Seed             string       `yaml:"seed"`
+	Only             []string     `yaml:"only"`
+	Test             FirebaseTest `yaml:"test"`
+	JVMHeap          ByteSize     `yaml:"jvm_heap"`
+	FunctionsTimeout Duration     `yaml:"functions_timeout"`
+	ExportTimeout    Duration     `yaml:"export_timeout"`
+	Command          string       `yaml:"command"`
+}
+
+type FirebaseTest struct {
+	Only []string `yaml:"only"`
+}
+
+func (c *Config) Firebase() *Firebase {
+	for _, r := range c.Resources {
+		if r.Firebase != nil {
+			return r.Firebase
+		}
+	}
+	return nil
 }
 
 type Generate struct {
@@ -110,6 +152,9 @@ func Parse(data []byte) (*Config, error) {
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
+	if fb := cfg.Firebase(); fb != nil {
+		fb.setDefaults()
+	}
 	if len(cfg.Sessions) == 0 {
 		cfg.Sessions = DefaultSessions
 	}
@@ -146,9 +191,22 @@ func (c *Config) validate() error {
 	}
 
 	seen = map[string]bool{}
+	firebaseAt := -1
 	for i, r := range c.Resources {
-		if r.Scripts == nil {
+		switch {
+		case r.Scripts == nil && r.Firebase == nil:
 			return fmt.Errorf("resources[%d]: declares no adapter", i)
+		case r.Scripts != nil && r.Firebase != nil:
+			return fmt.Errorf("resources[%d]: declares two adapters, scripts and firebase — one per resource", i)
+		case r.Firebase != nil:
+			if firebaseAt >= 0 {
+				return fmt.Errorf("resources[%d].firebase: at most one firebase resource per project (first at resources[%d])", i, firebaseAt)
+			}
+			firebaseAt = i
+			if err := r.Firebase.validate(); err != nil {
+				return fmt.Errorf("resources[%d].firebase.%w", i, err)
+			}
+			continue
 		}
 		s := r.Scripts
 		if !stepName.MatchString(s.Name) {
@@ -195,6 +253,89 @@ func (c *Config) validate() error {
 	return nil
 }
 
+func (f *Firebase) validate() error {
+	if f.Config == "" {
+		return errors.New("config: required (e.g. config: firebase.emulator.json)")
+	}
+	for key, p := range map[string]string{"config": f.Config, "data": f.Data, "seed": f.Seed} {
+		if p == "" {
+			continue
+		}
+		if err := relativeInside(p); err != nil {
+			return fmt.Errorf("%s: %w", key, err)
+		}
+	}
+	if err := f.checkDataDir(); err != nil {
+		return err
+	}
+	for key, list := range map[string][]string{"only": f.Only, "test.only": f.Test.Only} {
+		for _, e := range list {
+			if !slices.Contains(FirebaseEmulators, e) {
+				return fmt.Errorf("%s: %q is not an emulator (one of %s)", key, e, strings.Join(FirebaseEmulators, ", "))
+			}
+		}
+		if len(list) > 0 && !slices.ContainsFunc(list, func(e string) bool { return !slices.Contains(firebaseCompanions, e) }) {
+			return fmt.Errorf("%s: %s start no emulator on their own — name at least one other emulator", key, strings.Join(list, ", "))
+		}
+	}
+	if f.ExportTimeout > MaxFirebaseExportTimeout {
+		return fmt.Errorf("export_timeout: %s exceeds the %s limit", f.ExportTimeout, MaxFirebaseExportTimeout)
+	}
+	for key, d := range map[string]Duration{"functions_timeout": f.FunctionsTimeout, "export_timeout": f.ExportTimeout} {
+		if d < 0 {
+			return fmt.Errorf("%s: must be positive", key)
+		}
+	}
+	if f.JVMHeap < 0 {
+		return errors.New("jvm_heap: must be positive")
+	}
+	return nil
+}
+
+// checkDataDir rejects a data directory the firebase stop would destroy: the
+// stop renames it aside and removes it, so it must be a dedicated directory,
+// never the worktree itself, lanes' or git's own state, the seed, or whatever
+// holds the emulator config.
+func (f *Firebase) checkDataDir() error {
+	d := f.Data
+	if d == "" {
+		d = DefaultFirebaseData
+	}
+	c := filepath.Clean(d)
+	if c == "." {
+		return errors.New("data: must name a directory inside the worktree, not the worktree itself")
+	}
+	if c == ".git" || c == ".lanes" || strings.HasPrefix(c, ".git/") || strings.HasPrefix(c, ".lanes/") {
+		return fmt.Errorf("data: %q is lanes' or git's own directory", d)
+	}
+	if f.Seed != "" {
+		s := filepath.Clean(f.Seed)
+		if c == s || strings.HasPrefix(c, s+"/") || strings.HasPrefix(s, c+"/") {
+			return fmt.Errorf("data: %q overlaps the seed %q", d, f.Seed)
+		}
+	}
+	cfgDir := filepath.Dir(filepath.Clean(f.Config))
+	if cfgDir == c || strings.HasPrefix(cfgDir, c+"/") {
+		return fmt.Errorf("data: %q holds the base config", d)
+	}
+	return nil
+}
+
+func (f *Firebase) setDefaults() {
+	if f.Data == "" {
+		f.Data = DefaultFirebaseData
+	}
+	if f.JVMHeap == 0 {
+		f.JVMHeap = DefaultFirebaseJVMHeap
+	}
+	if f.FunctionsTimeout == 0 {
+		f.FunctionsTimeout = DefaultFirebaseFunctionsTimeout
+	}
+	if f.ExportTimeout == 0 {
+		f.ExportTimeout = DefaultFirebaseExportTimeout
+	}
+}
+
 func relativeInside(p string) error {
 	if p == "" || filepath.IsAbs(p) {
 		return fmt.Errorf("%q must be a path relative to the worktree root", p)
@@ -237,6 +378,26 @@ func (b *ByteSize) UnmarshalYAML(node *yaml.Node) error {
 	}
 	*b = v
 	return nil
+}
+
+type Duration time.Duration
+
+func (d *Duration) UnmarshalYAML(node *yaml.Node) error {
+	v, err := time.ParseDuration(strings.TrimSpace(node.Value))
+	if err != nil {
+		return fmt.Errorf("%q is not a duration (e.g. 90s, 3m)", node.Value)
+	}
+	*d = Duration(v)
+	return nil
+}
+
+func (d Duration) Std() time.Duration { return time.Duration(d) }
+
+func (d Duration) String() string {
+	if d%Duration(time.Second) == 0 {
+		return fmt.Sprintf("%ds", int64(d.Std()/time.Second))
+	}
+	return d.Std().String()
 }
 
 func (b ByteSize) String() string {

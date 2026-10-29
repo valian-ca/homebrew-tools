@@ -205,6 +205,43 @@ func TestSweepTargets(t *testing.T) {
 	}
 }
 
+func TestOrphanHolders(t *testing.T) {
+	procs := []procinfo.Proc{
+		// A crashed stack's dev server under the bash -c of process-compose,
+		// both orphaned: the server and its child go, the shell is spared.
+		{PID: 10, PPID: 1, PGID: 10, Comm: "bash", Cwd: root},
+		{PID: 11, PPID: 10, PGID: 10, Comm: "node", Argv: []string{"node", "vite"}, Cwd: root},
+		{PID: 12, PPID: 11, PGID: 10, Comm: "esbuild", Cwd: root},
+		// An orphaned emulator JVM of a killed test-env.
+		{PID: 15, PPID: 1, PGID: 15, Comm: "java", Cwd: root},
+		// A server an agent's live shell runs: something alive owns it.
+		{PID: 20, PPID: 1, PGID: 20, Comm: "claude", Cwd: root},
+		{PID: 21, PPID: 20, PGID: 21, Comm: "zsh", Cwd: root},
+		{PID: 22, PPID: 21, PGID: 21, Comm: "nc", Cwd: root},
+		// A live lanes test-env's emulator.
+		{PID: 30, PPID: 1, PGID: 30, Comm: "lanes", Cwd: root},
+		{PID: 31, PPID: 30, PGID: 30, Comm: "java", Cwd: root},
+		// An orphan working outside the worktree.
+		{PID: 40, PPID: 1, PGID: 40, Comm: "nc", Cwd: "/elsewhere"},
+		// An orphan of the worktree holding no port of the block.
+		{PID: 50, PPID: 1, PGID: 50, Comm: "nc", Cwd: root},
+	}
+	var got []int
+	for _, p := range OrphanHolders(procs, root, Keep{Sessions: []string{"claude"}}, 999, []int{11, 15, 22, 31, 40}) {
+		got = append(got, p.PID)
+	}
+	if !slices.Equal(got, []int{11, 12, 15}) {
+		t.Fatalf("targets = %v, want the orphaned dev server with its child, and the orphaned JVM", got)
+	}
+	got = nil
+	for _, p := range Orphans(procs, root, Keep{Sessions: []string{"claude"}}, 999) {
+		got = append(got, p.PID)
+	}
+	if !slices.Equal(got, []int{11, 12, 15, 50}) {
+		t.Fatalf("orphans = %v, want the port holders' and the orphan holding no port", got)
+	}
+}
+
 func TestSignalsSpareAMixedGroup(t *testing.T) {
 	procs := []procinfo.Proc{
 		{PID: 20, PGID: 20, Comm: "vite", Cwd: root},

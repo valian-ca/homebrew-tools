@@ -16,3 +16,9 @@ processes:
   crashy:
     command: 'echo "crashy: cannot open the database"; exit 3'
     disabled: true
+  functions-build:
+    command: 'sleep 1; echo "build done"'
+  firebase:
+    depends_on:
+      functions-build:
+        condition: process_completed_successfully

@@ -35,9 +35,14 @@ steps whose trigger changed run first, and templates are rendered. A stack
 that already runs is left untouched.
 
 The command fails, with a non-zero status, when lanesd is not running, when a
-port of the block is held by another process, or when a piece dies — then it
-prints the piece's name and the end of its log. A start may take up to 20
-minutes.
+port of the block is held by another process, when a piece dies — then it
+prints the piece's name and the end of its log — when the firebase resource
+lacks a named port, when firebase-tools is missing from node_modules, or when
+its socket path under TMPDIR is too long. A start may take up to 20 minutes.
+
+With a firebase resource, LANES_FIREBASE_JVM_HEAP (768MB) and
+LANES_FIREBASE_FUNCTIONS_TIMEOUT (300, or 5m), when set, replace the
+project's jvm_heap and functions_timeout.
 
 When no Claude session works in the worktree, the stack still starts, and
 stops after 5 minutes unless a session arrives.`,
@@ -65,6 +70,11 @@ stops after 5 minutes unless a session arrives.`,
 				return err
 			}
 			environ := w.Environ(os.Environ())
+			for _, a := range w.Adapters(environ) {
+				if err := a.Preflight(ctx); err != nil {
+					return err
+				}
+			}
 			if err := w.CreateResources(ctx, environ); err != nil {
 				return err
 			}
@@ -159,6 +169,11 @@ never stopped. Main checkouts never appear.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
+			if dir, err := cwd(); err == nil {
+				if _, _, err := workspace.Locate(ctx, dir); err != nil && !workspace.IsQuiet(err) {
+					return err
+				}
+			}
 			callCtx, cancel := withTimeout(ctx, 5*time.Second)
 			defer cancel()
 			var stacks []proto.StackStatus
@@ -192,8 +207,11 @@ func newEnvCmd() *cobra.Command {
 		Short: "Print this worktree's lane variables as shell exports",
 		Long: `Print the lane's variables as export lines, for eval in a shell or .envrc:
 LANE_ID, LANES_WORKTREE, TMPDIR, PORT_<NAME> for each named port,
-LANES_PORT_BASE, LANES_PORT_SIZE and LANES_VARS. With --unset, print the unset
-line that removes every variable lanes exports.
+LANES_PORT_BASE, LANES_PORT_SIZE, LANES_HOST and LANES_VARS. With a firebase
+resource, also the SDK variable of each emulator that starts, on 127.0.0.1
+(FIRESTORE_EMULATOR_HOST, FIREBASE_AUTH_EMULATOR_HOST…), FIREBASE_EMULATOR_HUB
+and LANES_FIREBASE_CONFIG. With --unset, print the unset line that removes
+every variable lanes exports.
 
 On a main checkout, outside a repository, or without lanes.yaml, it prints
 nothing. It never runs a prep step.`,

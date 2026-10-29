@@ -121,6 +121,42 @@ jobs:
         if: steps.changed.outputs.lanes == 'true'
         run: brew install f1bonacc1/tap/process-compose
 
+      - uses: actions/setup-java@v4
+        if: steps.changed.outputs.lanes == 'true'
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: actions/setup-node@v4
+        if: steps.changed.outputs.lanes == 'true'
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: examples/lanes-demo/package-lock.json
+
+      - name: Read the demo's firebase-tools version
+        if: steps.changed.outputs.lanes == 'true'
+        id: firebase
+        run: echo "version=$(jq -r '.devDependencies["firebase-tools"]' examples/lanes-demo/package.json)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v4
+        if: steps.changed.outputs.lanes == 'true'
+        id: emulators
+        with:
+          path: ~/.cache/firebase/emulators
+          key: firebase-emulators-${{ runner.os }}-${{ steps.firebase.outputs.version }}
+
+      # Parallel Firebase stacks would each download a missing jar into the
+      # same path, and one of them starts on a partial file.
+      - name: Download the Firebase emulators
+        if: steps.changed.outputs.lanes == 'true' && steps.emulators.outputs.cache-hit != 'true'
+        run: |
+          for emulator in firestore pubsub ui; do
+            npx --yes "firebase-tools@${{ steps.firebase.outputs.version }}" setup:emulators:$emulator
+          done
+
       - name: go test -tags integration
         if: steps.changed.outputs.lanes == 'true'
-        run: go test -tags integration ./internal/lanes/... ./cmd/lanes/... ./cmd/lanesd/...
+        env:
+          LANES_REQUIRE_FIREBASE: "1"
+        run: go test -tags integration -timeout 30m ./internal/lanes/... ./cmd/lanes/... ./cmd/lanesd/...

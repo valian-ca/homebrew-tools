@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"regexp"
 	"slices"
 	"strings"
@@ -23,6 +24,7 @@ type Record struct {
 	LastTip              string    `json:"lastTip,omitempty"`
 	LastTipHadOwnCommits bool      `json:"lastTipHadOwnCommits"`
 	Created              []string  `json:"created,omitempty"`
+	Host                 string    `json:"host,omitempty"`
 }
 
 func (r Record) HasCreated(adapter string) bool { return slices.Contains(r.Created, adapter) }
@@ -93,6 +95,22 @@ func Check(ctx context.Context, wt gitx.Worktree, retire Retire) (Record, bool, 
 		return Save(wt.AdminDir, rec)
 	})
 	return rec, born, err
+}
+
+// SetHost refuses when another lane was born since the caller settled: a host
+// chosen for one lane never carries over to the next.
+func SetHost(wt gitx.Worktree, laneID, host string) error {
+	return fsx.WithLock(paths.LaneLock(wt.AdminDir), func() error {
+		cur, err := Load(wt.AdminDir)
+		if err != nil {
+			return err
+		}
+		if cur == nil || cur.ID != laneID {
+			return fmt.Errorf("lane %s is no longer this worktree's lane", laneID)
+		}
+		cur.Host = host
+		return Save(wt.AdminDir, *cur)
+	})
 }
 
 func MarkCreated(wt gitx.Worktree, laneID, adapter string) error {

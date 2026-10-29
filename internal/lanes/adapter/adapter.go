@@ -28,7 +28,6 @@ type Adapter interface {
 	// Owner returns "" for a resource that is not a lane's.
 	Owner(ctx context.Context, resource string) (string, error)
 	Processes() map[string]pc.Process
-	// Entry describes a created resource for the repo registry.
 	Entry(lane, resource string) registry.Entry
 }
 
@@ -41,8 +40,11 @@ type Env struct {
 func FromConfig(cfg *config.Config, e Env) []Adapter {
 	var out []Adapter
 	for _, r := range cfg.Resources {
-		if r.Scripts != nil {
+		switch {
+		case r.Scripts != nil:
 			out = append(out, &Scripts{Spec: *r.Scripts, Env: e})
+		case r.Firebase != nil:
+			out = append(out, &Firebase{Spec: *r.Firebase, PortNames: cfg.Ports.Names, Env: e})
 		}
 	}
 	return out
@@ -51,8 +53,11 @@ func FromConfig(cfg *config.Config, e Env) []Adapter {
 // FromEntry rebuilds the adapter that created a registry entry, from the
 // entry alone, so a resource stays erasable once its worktree is gone.
 func FromEntry(en registry.Entry, e Env) (Adapter, error) {
-	if en.Kind == KindScripts && en.Scripts != nil {
+	switch {
+	case en.Kind == KindScripts && en.Scripts != nil:
 		return &Scripts{Spec: *en.Scripts, Env: e}, nil
+	case en.Kind == KindFirebase:
+		return &Firebase{Env: e}, nil
 	}
 	return nil, fmt.Errorf("registry entry %s/%s: unknown adapter kind %q", en.Adapter, en.Resource, en.Kind)
 }

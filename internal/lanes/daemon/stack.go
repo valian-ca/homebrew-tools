@@ -96,6 +96,7 @@ func (d *Daemon) launch(ctx context.Context, w *workspace.Workspace, req proto.R
 			return err
 		}
 	}
+	d.clearOrphans(ctx, w.WT.Root, Keep{Sessions: w.Cfg.Sessions, Shared: w.Cfg.Shared, Spare: w.Cfg.Spare})
 	if err := d.checkPorts(w.Block); err != nil {
 		return err
 	}
@@ -144,6 +145,24 @@ func (d *Daemon) launch(ctx context.Context, w *workspace.Workspace, req proto.R
 		return err
 	}
 	return nil
+}
+
+// clearOrphans ends what a crashed stack left behind, listening or not, so no
+// piece runs twice and the start only refuses a port something alive still
+// holds. It runs only while no process-compose answers for the lane: a live
+// stack's pieces would read as orphans of a daemonized process-compose.
+func (d *Daemon) clearOrphans(ctx context.Context, root string, keep Keep) {
+	procs, err := d.Procs.Snapshot()
+	if err != nil {
+		return
+	}
+	targets := Orphans(procs, root, keep, os.Getpid())
+	for _, t := range targets {
+		d.Log.Printf("%s: stopping %s (pid %d), left by an earlier stack", root, t.Comm, t.PID)
+	}
+	if len(targets) > 0 {
+		End(ctx, d.Procs, d.Kill, procs, targets, sweepPatience)
+	}
 }
 
 // A port busy with no visible listener (a closing connection, another user's

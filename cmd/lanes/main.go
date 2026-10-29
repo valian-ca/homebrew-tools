@@ -20,7 +20,9 @@ func main() {
 	root.SetOut(os.Stdout)
 	root.SetErr(os.Stderr)
 	if err := root.ExecuteContext(ctx); err != nil {
-		fmt.Fprintln(os.Stderr, "lanes: "+err.Error())
+		if !cli.Quiet(err) {
+			fmt.Fprintln(os.Stderr, "lanes: "+err.Error())
+		}
 		os.Exit(cli.ExitCode(err))
 	}
 }

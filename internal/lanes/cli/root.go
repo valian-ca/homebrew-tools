@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/valian-ca/homebrew-tools/internal/lanes/client"
+	"github.com/valian-ca/homebrew-tools/internal/lanes/firebase"
 	"github.com/valian-ca/homebrew-tools/internal/lanes/generate"
 	"github.com/valian-ca/homebrew-tools/internal/lanes/pc"
 	"github.com/valian-ca/homebrew-tools/internal/lanes/prep"
@@ -49,6 +50,9 @@ versioned. See the contract: https://github.com/valian-ca/homebrew-tools/blob/ma
 		newRestartCmd(),
 		newLogsCmd(),
 		newHookCmd(),
+		newTestEnvCmd(),
+		newHostCmd(),
+		newFirebaseCmd(),
 	)
 	return root
 }
@@ -65,6 +69,17 @@ func daemonReady(ctx context.Context) (string, error) {
 }
 
 func prepare(ctx context.Context, w *workspace.Workspace, log io.Writer) error {
+	if err := prepareCore(ctx, w, log); err != nil {
+		return err
+	}
+	return generateFirebase(ctx, w, log)
+}
+
+func generateFirebase(ctx context.Context, w *workspace.Workspace, log io.Writer) error {
+	return firebase.Generate(ctx, w.WT.Root, w.Cfg, w.Block.Start, log)
+}
+
+func prepareCore(ctx context.Context, w *workspace.Workspace, log io.Writer) error {
 	if err := prep.Run(ctx, prep.Options{
 		Worktree: w.WT,
 		MainRoot: w.MainRoot,
@@ -79,6 +94,12 @@ func prepare(ctx context.Context, w *workspace.Workspace, log io.Writer) error {
 
 func withTimeout(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(ctx, d)
+}
+
+// Quiet errors carry only an exit status: the command already spoke.
+func Quiet(err error) bool {
+	var q *exitCodeError
+	return errors.As(err, &q)
 }
 
 func ExitCode(err error) int {

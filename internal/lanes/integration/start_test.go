@@ -82,6 +82,49 @@ func TestStartForeignPortHolder(t *testing.T) {
 	}
 }
 
+func TestStartAfterACrashEndsTheOrphans(t *testing.T) {
+	h := newHarness(t)
+	h.startDaemon()
+	wt := h.worktree("crash", "feat/crash")
+	// A piece listening on no port: only its dead parent marks it an orphan.
+	pcFile := filepath.Join(wt, "process-compose.yaml")
+	if err := os.WriteFile(pcFile, []byte(strings.Replace(read(pcFile), "processes:\n", "processes:\n  watcher:\n    command: exec /bin/sleep 600\n", 1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h.session(wt)
+	h.mustLanes(wt, "start")
+	watcher := h.piecePID(wt, "watcher")
+	if watcher == 0 {
+		t.Fatal("the stack runs no watcher")
+	}
+	left := h.crashStack(wt)
+	if len(stillAlive([]int{watcher})) == 0 {
+		t.Fatal("the crash took the watcher down: nothing proves the sweep")
+	}
+
+	h.mustLanes(wt, "start")
+	if alive := stillAlive(left); len(alive) > 0 {
+		t.Fatalf("lanes start left the crashed stack's pieces: %v", alive)
+	}
+	if h.piecePID(wt, "watcher") == watcher {
+		t.Fatal("the new stack reports the old watcher")
+	}
+	if !strings.Contains(h.daemonLog(), "left by an earlier stack") {
+		t.Errorf("the start did not log what it ended:\n%s", h.daemonLog())
+	}
+	// A server a live shell runs is still refused, by name.
+	h.mustLanes(wt, "stop")
+	port := strconv.Itoa(h.laneOf(wt).Block.Start + 1)
+	shell := h.spawn(wt, "/bin/zsh", "-c", "/usr/bin/nc -lk 127.0.0.1 "+port+"; true")
+	h.eventually("the shell's server to listen", 10*time.Second, func() bool { return listening(h.laneOf(wt).Block.Start + 1) })
+	if r := h.lanes(wt, "start"); r.code == 0 || !strings.Contains(r.stderr, "port "+port+" is held by nc") {
+		t.Fatalf("start beside a live shell's server: %s", r)
+	}
+	if !alive(shell) {
+		t.Fatal("the start ended a server a live shell owns")
+	}
+}
+
 func TestStartPieceDies(t *testing.T) {
 	h := newHarness(t)
 	h.startDaemon()
