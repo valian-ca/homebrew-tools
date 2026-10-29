@@ -87,11 +87,6 @@ func Head(ctx context.Context, dir string) (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
-func IsAncestor(ctx context.Context, dir, ancestor, descendant string) bool {
-	_, err := run(ctx, dir, "merge-base", "--is-ancestor", ancestor, descendant)
-	return err == nil
-}
-
 func refExists(ctx context.Context, dir, ref string) bool {
 	_, err := run(ctx, dir, "rev-parse", "-q", "--verify", ref+"^{commit}")
 	return err == nil

@@ -79,7 +79,7 @@ func Check(ctx context.Context, wt gitx.Worktree, retire Retire) (Record, bool, 
 		if err != nil {
 			return err
 		}
-		if cur != nil && sameLane(ctx, wt.Root, *cur, state) {
+		if cur != nil && sameLane(*cur, state) {
 			rec = refresh(*cur, state)
 		} else {
 			if cur != nil {
@@ -144,28 +144,26 @@ func birthName(o observed) string {
 	return o.branch
 }
 
-func sameLane(ctx context.Context, root string, rec Record, o observed) bool {
+func sameLane(rec Record, o observed) bool {
 	switch {
 	case o.branch == "":
 		return true
 	case rec.Branch == "":
 		return true
 	case o.branch == rec.Branch:
-		return !resetToDefault(ctx, root, rec, o)
+		return !resetToDefault(rec, o)
 	default:
 		return o.renamedFrom(rec.Branch)
 	}
 }
 
-// resetToDefault spots a branch moved back onto the default branch after its
-// work merged: the tip left the recorded history, the branch no longer holds a
-// commit of its own, and it did before. A rebase keeps its own commits, so it
-// never matches.
-func resetToDefault(ctx context.Context, root string, rec Record, o observed) bool {
-	if rec.LastTip == "" || o.tip == "" || !rec.LastTipHadOwnCommits || !o.ownKnown || o.ownCommits {
-		return false
-	}
-	return !gitx.IsAncestor(ctx, root, rec.LastTip, o.tip)
+// resetToDefault spots a branch moved onto the default branch after its work
+// merged: the tip moved, the branch no longer holds a commit of its own, and
+// it did before. Ancestry cannot tell it: a merge commit keeps the old tip in
+// the default branch's history.
+func resetToDefault(rec Record, o observed) bool {
+	return rec.LastTip != "" && o.tip != "" && o.tip != rec.LastTip &&
+		rec.LastTipHadOwnCommits && o.ownKnown && !o.ownCommits
 }
 
 func refresh(rec Record, o observed) Record {
@@ -173,11 +171,13 @@ func refresh(rec Record, o observed) Record {
 		return rec
 	}
 	rec.Branch = o.branch
-	if o.tip != "" {
-		rec.LastTip = o.tip
-		if o.ownKnown {
-			rec.LastTipHadOwnCommits = o.ownCommits
-		}
+	if o.tip != "" && o.tip != rec.LastTip {
+		rec.LastTip, rec.LastTipHadOwnCommits = o.tip, false
+	}
+	// Sticky for an unchanged tip: once its merge is fetched, the same tip
+	// counts no commit of its own, and the reset that follows must still show.
+	if o.tip != "" && o.ownKnown && o.ownCommits {
+		rec.LastTipHadOwnCommits = true
 	}
 	return rec
 }

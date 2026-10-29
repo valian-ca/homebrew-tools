@@ -170,6 +170,31 @@ func TestResetToMainNewLane(t *testing.T) {
 	}
 }
 
+func TestResetToMainAfterMergeCommitNewLane(t *testing.T) {
+	h := newHarness(t)
+	h.startDaemon()
+	wt := h.worktree("merged", "feat/merged")
+	h.session(wt)
+	h.run(wt, "sh", "-c", "echo f > feature.txt && git add feature.txt && git commit -q -m feature")
+	h.mustLanes(wt, "start")
+	old := h.laneOf(wt).Lane
+	h.mustLanes(wt, "stop")
+
+	h.run(h.main, "sh", "-c", "git merge -q --no-ff -m 'Merge feat/merged' feat/merged && git push -q origin main")
+	h.git(wt, "fetch", "-q", "origin")
+	if r := h.lanesIn(h.main, payload(wt), nil, "hook", "session-start"); r.code != 0 {
+		t.Fatalf("hook between fetch and reset: %s", r)
+	}
+	if h.laneOf(wt).Lane != old {
+		t.Fatal("a fetched merge changed the lane before any reset")
+	}
+	h.git(wt, "reset", "-q", "--hard", "origin/main")
+	h.mustLanes(wt, "start")
+	if h.laneOf(wt).Lane == old || h.storeHas(old) {
+		t.Fatal("a branch reset onto main after a merge commit kept its lane")
+	}
+}
+
 func TestStopKeepsData(t *testing.T) {
 	h := newHarness(t)
 	h.startDaemon()

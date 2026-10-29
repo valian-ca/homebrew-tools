@@ -49,8 +49,9 @@ lanes serves linked worktrees only. On the main checkout:
 - the hooks return at once without doing anything;
 - `lanes list` never shows it.
 
-In a repository without `lanes.yaml`, `lanes env` and the hooks do nothing;
-every other command refuses and names the missing file.
+In a repository without `lanes.yaml`, `lanes env` and the hooks do nothing,
+and `lanes list` still lists every lane on the Mac; every other command
+refuses and names the missing file.
 
 ## Versioned files
 
@@ -186,8 +187,8 @@ built-in steps run first:
 
 1. Copy from the main checkout each file `.worktreeinclude` names that the
    worktree lacks. One shell glob per line, relative to the root; `#` starts a
-   comment and `!` excludes what an earlier line matched. Paths leaving the
-   tree and symlinks are refused.
+   comment and a `!` line excludes what it matches, wherever it stands in the
+   file. Paths leaving the tree and symlinks are refused.
 2. For each git-tracked `.env*.template`, create the file without
    `.template` when it is missing.
 
@@ -238,8 +239,8 @@ A non-zero exit fails the operation, and its stderr is reported.
   It returns once every enabled piece runs and passes its readiness probe, or
   has completed with exit 0. A piece that errors, exits non-zero or restarts
   fails the start at once, with its name and the end of its log; a piece
-  killed for lack of memory is reported as such. A first start has 20
-  minutes.
+  killed for lack of memory is reported as such. Each `lanes start`, `up`
+  and `restart` has 20 minutes.
 - There is one stack per worktree, shared by its sessions. `lanes start` on a
   running stack restarts nothing.
 - `lanesd` looks for sessions every 10 s. After `SessionEnd`, it stops the

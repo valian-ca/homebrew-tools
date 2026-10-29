@@ -148,6 +148,41 @@ func TestResetToMainAfterMergeBirthsALane(t *testing.T) {
 	}
 }
 
+func TestResetToMainAfterMergeCommitBirthsALane(t *testing.T) {
+	f := newFixture(t, "feat/merged")
+	testutil.Commit(t, f.wt.Root, "feature.txt", "feature\n")
+	old, _ := f.check()
+
+	testutil.Git(t, f.main, "merge", "-q", "--no-ff", "-m", "Merge feat/merged", "feat/merged")
+	testutil.Git(t, f.main, "push", "-q", "origin", "main")
+	f.git("fetch", "-q", "origin")
+	if got, born := f.check(); born || got.ID != old.ID {
+		t.Fatalf("a fetched merge changed the lane before any reset: %+v", got)
+	}
+	f.git("reset", "-q", "--hard", "origin/main")
+
+	got, born := f.check()
+	if !born || got.ID == old.ID {
+		t.Fatalf("reset to main after a merge commit kept the lane: %+v", got)
+	}
+}
+
+func TestMergedBranchLeftAloneKeepsTheLane(t *testing.T) {
+	f := newFixture(t, "feat/merged")
+	testutil.Commit(t, f.wt.Root, "feature.txt", "feature\n")
+	rec, _ := f.check()
+
+	testutil.Git(t, f.main, "merge", "-q", "--no-ff", "-m", "Merge feat/merged", "feat/merged")
+	testutil.Git(t, f.main, "push", "-q", "origin", "main")
+	f.git("fetch", "-q", "origin")
+	f.advanceOrigin("upstream.txt")
+	for range 2 {
+		if got, born := f.check(); born || got.ID != rec.ID {
+			t.Fatalf("a merged branch left untouched changed lane: %+v", got)
+		}
+	}
+}
+
 func TestBranchWithoutCommitsFollowingMainKeepsTheLane(t *testing.T) {
 	f := newFixture(t, "feat/idle")
 	rec, _ := f.check()
