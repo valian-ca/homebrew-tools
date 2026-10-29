@@ -40,6 +40,24 @@ func TestSessionEndTeardown(t *testing.T) {
 	}
 }
 
+func TestSessionEndFromTheMainCheckoutFindsTheWorktree(t *testing.T) {
+	h := newHarness(t, grace(time.Hour))
+	h.startDaemon()
+	wt := h.worktree("left", "feat/left")
+	s := h.session(wt)
+	if r := h.lanesIn(h.main, `{"cwd":"`+wt+`","session_id":"s-1","hook_event_name":"SessionStart"}`, nil, "hook", "session-start"); r.code != 0 {
+		t.Fatalf("session-start: %s", r)
+	}
+	h.mustLanes(wt, "start")
+	web := h.port(wt, "web")
+
+	_ = s.Process.Kill()
+	if r := h.lanesIn(h.main, `{"cwd":"`+h.main+`","session_id":"s-1","hook_event_name":"SessionEnd"}`, nil, "hook", "session-end"); r.code != 0 {
+		t.Fatalf("session-end: %s", r)
+	}
+	h.eventually("ports freed after a SessionEnd naming the main checkout", 90*time.Second, func() bool { return !listening(web) })
+}
+
 func TestTwoSessionsOneLeaves(t *testing.T) {
 	h := newHarness(t, grace(time.Hour))
 	h.startDaemon()
@@ -315,6 +333,41 @@ func TestWorktreeRemovedReconcile(t *testing.T) {
 		}
 		return true
 	})
+}
+
+// Claude Code removes a worktree by deleting git's files from its admin dir,
+// and keeps whatever else lives there.
+func TestWorktreeRemovedByClaudeReconcile(t *testing.T) {
+	h := newHarness(t, grace(time.Hour))
+	h.startDaemon()
+	wt := h.worktree("claude-gone", "feat/claude-gone")
+	h.mustLanes(wt, "start")
+	l := h.laneOf(wt)
+	web, admin := l.Ports["PORT_WEB"], h.adminDir(wt)
+
+	if err := os.RemoveAll(wt); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(admin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if e.Name() != "lanes" {
+			if err := os.RemoveAll(filepath.Join(admin, e.Name())); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	h.eventually("the stack's processes to stop", 90*time.Second, func() bool { return !listening(web) })
+	h.eventually("the resource, the TMPDIR and the admin dir to go", 2*time.Minute, func() bool {
+		_, terr := os.Stat(l.Tmpdir)
+		_, aerr := os.Stat(admin)
+		return !h.storeHas(l.Lane) && os.IsNotExist(terr) && os.IsNotExist(aerr)
+	})
+	if lanes := h.list().Lanes; len(lanes) != 0 {
+		t.Fatalf("lanes list still shows %+v", lanes)
+	}
 }
 
 func TestDaemonStartupReconcilesWithoutRelaunch(t *testing.T) {

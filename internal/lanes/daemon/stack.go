@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -266,7 +265,7 @@ func (d *Daemon) reconcile(ctx context.Context) {
 		return
 	}
 	for _, e := range t.Entries {
-		if _, err := os.Stat(e.AdminDir); !errors.Is(err, fs.ErrNotExist) {
+		if gone, _ := gitx.Gone(e.AdminDir); !gone {
 			continue
 		}
 		d.mu.Lock()
@@ -305,9 +304,15 @@ func (d *Daemon) clear(ctx context.Context, t ports.Table, e ports.Entry) error 
 	if err := os.RemoveAll(tmpdir.Path(e.CommonDir, e.AdminDir)); err != nil {
 		failed = append(failed, err)
 	}
+	if err := os.RemoveAll(paths.LaneDir(e.AdminDir)); err != nil {
+		failed = append(failed, err)
+	}
 	if len(failed) > 0 {
 		return errors.Join(failed...)
 	}
+	// Claude Code leaves the admin dir behind once git's files are gone; it is
+	// removed only when nothing else is left in it.
+	_ = os.Remove(e.AdminDir)
 	return ports.Remove(e.AdminDir)
 }
 
@@ -360,8 +365,8 @@ func (d *Daemon) eraseOrphans(ctx context.Context, t ports.Table, gone ports.Ent
 	}
 	live := map[string]bool{}
 	for _, e := range t.Entries {
-		_, err := os.Stat(e.AdminDir)
-		if errors.Is(err, fs.ErrNotExist) {
+		gone, err := gitx.Gone(e.AdminDir)
+		if gone {
 			continue
 		}
 		rec, lerr := lane.Load(e.AdminDir)

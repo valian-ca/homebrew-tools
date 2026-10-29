@@ -8,7 +8,7 @@ A Homebrew tap for Valian's internal developer tools.
 | ----- | ---------------------------------------------- | ----------------------------------- |
 | [`frn`](#frn) | Fast `flutter run` launcher with device picker | `brew install valian-ca/tools/frn` |
 | [`atelierd`](#atelierd-device) | Atelier dashboard daemon + mobile device bank | `brew install valian-ca/tools/atelierd` |
-| [`lanes`](#lanes) | A local stack per git worktree, run by the `lanesd` daemon | `brew install valian-ca/tools/lanes` |
+| [`lanes`](#lanes) | A local stack per git worktree, run by the `lanesd` daemon | `brew install f1bonacc1/tap/process-compose valian-ca/tools/lanes` |
 
 ## Install the tap
 
@@ -262,7 +262,7 @@ goes away. It serves worktrees only: a project keeps working on its main
 checkout without it.
 
 ```sh
-brew install valian-ca/tools/lanes
+brew install f1bonacc1/tap/process-compose valian-ca/tools/lanes
 brew services start lanes
 
 cd <a worktree of a project with lanes.yaml>

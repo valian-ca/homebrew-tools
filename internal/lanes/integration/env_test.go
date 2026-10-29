@@ -41,6 +41,44 @@ func TestHookExportsTheWorktreeLane(t *testing.T) {
 	}
 }
 
+func TestEnterWorktreeExportsThroughTheSessionEnvFile(t *testing.T) {
+	h := newHarness(t)
+	wt := h.worktree("enter", "feat/enter")
+	envFile := filepath.Join(t.TempDir(), "claude-env")
+	hook := func(name, cwd string, env ...string) {
+		t.Helper()
+		if r := h.lanesIn(h.main, `{"cwd":"`+cwd+`","session_id":"s-enter"}`, env, "hook", name); r.code != 0 {
+			t.Fatalf("%s in %s: %s", name, cwd, r)
+		}
+	}
+	sees := func() string {
+		t.Helper()
+		out, err := exec.Command("/bin/bash", "-c", `source "$1"; echo "$PORT_WEB $LANE_ID"`, "_", envFile).Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.TrimSpace(string(out))
+	}
+
+	hook("session-start", h.main, "CLAUDE_ENV_FILE="+envFile, "TMPDIR=/var/folders/session")
+	hook("cwd-changed", wt)
+	l := h.laneOf(wt)
+	if got, want := sees(), strconv.Itoa(l.Ports["PORT_WEB"])+" "+l.Lane; got != want {
+		t.Fatalf("after EnterWorktree a Bash command sees %q, want %q", got, want)
+	}
+	hook("cwd-changed", h.main)
+	if data, _ := os.ReadFile(envFile); strings.Contains(string(data), l.Lane) {
+		t.Fatalf("the env file still names the lane, and Claude Code keeps a variable's first value:\n%s", data)
+	}
+	if got := sees(); got != "" {
+		t.Fatalf("after ExitWorktree a Bash command still sees %q", got)
+	}
+	tmp, err := exec.Command("/bin/bash", "-c", `source "$1"; echo "$TMPDIR"`, "_", envFile).Output()
+	if err != nil || strings.TrimSpace(string(tmp)) != "/var/folders/session" {
+		t.Fatalf("after ExitWorktree TMPDIR is %q, want the session's own: %v", tmp, err)
+	}
+}
+
 func TestEnvUnsetLeavesNothing(t *testing.T) {
 	h := newHarness(t)
 	wt := h.worktree("unset", "feat/unset")

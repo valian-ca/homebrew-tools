@@ -51,6 +51,14 @@ func Socket() string { return filepath.Join(MustStateDir(), "lanesd.sock") }
 
 func Stacks() string { return filepath.Join(MustStateDir(), "stacks.json") }
 
+// SessionEnv records, per Claude session, the env file its SessionStart hook
+// was given and the variables lanes wrote to it.
+func SessionEnv(sessionID string) string {
+	return filepath.Join(Sessions(), sessionID+".json")
+}
+
+func Sessions() string { return filepath.Join(MustStateDir(), "sessions") }
+
 func DaemonLock() string { return filepath.Join(MustStateDir(), "lanesd.lock") }
 
 func DaemonLog() string { return filepath.Join(MustStateDir(), "lanesd.log") }
@@ -62,6 +70,10 @@ func LaneRecord(adminDir string) string { return filepath.Join(LaneDir(adminDir)
 func LaneLock(adminDir string) string { return filepath.Join(LaneDir(adminDir), "lane.lock") }
 
 func Activity(adminDir string) string { return filepath.Join(LaneDir(adminDir), "activity") }
+
+func SessionMark(adminDir, sessionID string) string {
+	return filepath.Join(LaneDir(adminDir), "sessions", sessionID)
+}
 
 func PrepLock(adminDir string) string { return filepath.Join(LaneDir(adminDir), "prep.lock") }
 

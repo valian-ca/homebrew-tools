@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -12,6 +11,7 @@ import (
 
 	"github.com/valian-ca/homebrew-tools/internal/lanes/config"
 	"github.com/valian-ca/homebrew-tools/internal/lanes/env"
+	"github.com/valian-ca/homebrew-tools/internal/lanes/gitx"
 	"github.com/valian-ca/homebrew-tools/internal/lanes/lane"
 	"github.com/valian-ca/homebrew-tools/internal/lanes/paths"
 	"github.com/valian-ca/homebrew-tools/internal/lanes/pc"
@@ -83,7 +83,7 @@ func Build(ctx context.Context, stacks []proto.StackStatus, procs procinfo.Sourc
 
 	r := Report{DaemonRunning: stacks != nil, Lanes: []Lane{}}
 	for _, e := range t.Entries {
-		if _, err := os.Stat(e.AdminDir); err != nil {
+		if gone, err := gitx.Gone(e.AdminDir); gone || err != nil {
 			continue
 		}
 		r.Lanes = append(r.Lanes, describe(ctx, e, byAdmin, stacks != nil, snapshot))

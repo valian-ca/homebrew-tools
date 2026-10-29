@@ -2,6 +2,7 @@
   "hooks": {
     "SessionStart": [{ "hooks": [{ "type": "command", "command": "command -v lanes >/dev/null 2>&1 && lanes hook session-start || true" }] }],
     "CwdChanged": [{ "hooks": [{ "type": "command", "command": "command -v lanes >/dev/null 2>&1 && lanes hook cwd-changed || true" }] }],
+    "PostToolUse": [{ "matcher": "EnterWorktree|ExitWorktree", "hooks": [{ "type": "command", "command": "command -v lanes >/dev/null 2>&1 && lanes hook cwd-changed || true" }] }],
     "SessionEnd": [{ "hooks": [{ "type": "command", "command": "command -v lanes >/dev/null 2>&1 && lanes hook session-end || true", "timeout": 5 }] }]
   }
 }
