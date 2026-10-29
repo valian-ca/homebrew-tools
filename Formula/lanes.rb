@@ -1,8 +1,8 @@
 class Lanes < Formula
   desc "Give each git worktree its own local stack, run by the lanesd daemon"
   homepage "https://github.com/valian-ca/homebrew-tools"
-  url "https://github.com/valian-ca/homebrew-tools/archive/refs/tags/lanes-0.1.1.tar.gz"
-  sha256 "10d32c593ce677a0913d75f2979e205220d1b72ee8487ddb9f9b2fe98ce48d34"
+  url "https://github.com/valian-ca/homebrew-tools/archive/refs/tags/lanes-0.1.2.tar.gz"
+  sha256 "ccf8f589a962ba820a69d2d772540191c4a3c4f89cd48e2e42fd533cea809021"
   license "MIT"
   head "https://github.com/valian-ca/homebrew-tools.git", branch: "main"
 
