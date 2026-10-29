@@ -90,6 +90,17 @@ func OrphanHolders(procs []procinfo.Proc, root string, keep Keep, self int, hold
 	return out
 }
 
+// Orphans returns every sweep target a crashed stack left behind, listening
+// or not: a watcher or a queue consumer would otherwise run beside its new
+// copy until the next teardown.
+func Orphans(procs []procinfo.Proc, root string, keep Keep, self int) []procinfo.Proc {
+	var pids []int
+	for _, t := range SweepTargets(procs, root, keep, self) {
+		pids = append(pids, t.PID)
+	}
+	return OrphanHolders(procs, root, keep, self, pids)
+}
+
 // End stops targets with SIGTERM, by whole group where Signals allows it, and
 // sends SIGKILL to those still alive after patience. A PID reused by another
 // command in between is left alone.

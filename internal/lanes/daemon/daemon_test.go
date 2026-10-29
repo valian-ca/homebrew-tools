@@ -233,6 +233,13 @@ func TestOrphanHolders(t *testing.T) {
 	if !slices.Equal(got, []int{11, 12, 15}) {
 		t.Fatalf("targets = %v, want the orphaned dev server with its child, and the orphaned JVM", got)
 	}
+	got = nil
+	for _, p := range Orphans(procs, root, Keep{Sessions: []string{"claude"}}, 999) {
+		got = append(got, p.PID)
+	}
+	if !slices.Equal(got, []int{11, 12, 15, 50}) {
+		t.Fatalf("orphans = %v, want the port holders' and the orphan holding no port", got)
+	}
 }
 
 func TestSignalsSpareAMixedGroup(t *testing.T) {

@@ -420,8 +420,9 @@ A physical device reaches the lane's emulators by the Mac's IP, not by
 - There is one stack per worktree, shared by its sessions. `lanes start` on a
   running stack restarts nothing.
 - Before it checks the block's ports, `lanes start` ends what a crashed stack
-  left listening on them: a process working in the worktree whose parent is
-  gone, with what it started, under the teardown's rules below. A port held
+  left behind, listening or not: a process working in the worktree whose
+  parent is gone, with what it started, under the teardown's rules below. A
+  watcher or a queue consumer never runs beside its new copy. A port held
   by anything else — a process outside the worktree, one a live shell or
   session still owns — fails the start, naming the process and its PID.
 - `lanesd` looks for sessions every 10 s. After `SessionEnd`, it stops the
