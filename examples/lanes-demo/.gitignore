@@ -1,0 +1,4 @@
+.demo/
+app.env
+.env.local
+secrets.local

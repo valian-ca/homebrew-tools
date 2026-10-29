@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+store="${LANES_DEMO_STATE:-$HOME/.local/state/lanes-demo}"
+
+case "${1:-}" in
+  create)
+    mkdir -p "$store/$LANES_LANE"
+    if [ ! -f "$store/$LANES_LANE/data.txt" ]; then
+      od -An -tx1 -N8 /dev/urandom | tr -d ' \n' >"$store/$LANES_LANE/data.txt"
+    fi
+    echo "$LANES_LANE"
+    ;;
+  erase)
+    rm -rf "${store:?}/${LANES_RESOURCE:?}"
+    ;;
+  list)
+    [ -d "$store" ] && ls -1 "$store"
+    ;;
+  owner)
+    [ -d "$store/$LANES_RESOURCE" ] && echo "$LANES_RESOURCE"
+    ;;
+  *)
+    echo "usage: lane-store create|erase|list|owner" >&2
+    exit 2
+    ;;
+esac
+exit 0

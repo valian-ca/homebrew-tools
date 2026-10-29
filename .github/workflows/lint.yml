@@ -80,3 +80,47 @@ jobs:
       - name: Audit changed formulae
         if: steps.changed.outputs.formulae != ''
         run: brew audit --strict --online ${{ steps.changed.outputs.formulae }}
+
+  lanes-macos:
+    name: lanes integration (macOS)
+    runs-on: blacksmith-6vcpu-macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect lanes changes
+        id: changed
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="origin/${{ github.base_ref }}"
+          else
+            base="${{ github.event.before }}"
+          fi
+          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+            echo "lanes=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if git diff --name-only "$base"...HEAD -- \
+              'cmd/lanes/**' 'cmd/lanesd/**' 'internal/lanes/**' \
+              'examples/lanes-demo/**' 'Formula/lanes.rb' '.github/workflows/lint.yml' \
+              go.mod go.sum \
+              | grep -q .; then
+            echo "lanes=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "lanes=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-go@v5
+        if: steps.changed.outputs.lanes == 'true'
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install process-compose
+        if: steps.changed.outputs.lanes == 'true'
+        run: brew install f1bonacc1/tap/process-compose
+
+      - name: go test -tags integration
+        if: steps.changed.outputs.lanes == 'true'
+        run: go test -tags integration ./internal/lanes/... ./cmd/lanes/... ./cmd/lanesd/...

@@ -1,0 +1,18 @@
+version: "0.5"
+processes:
+  web:
+    command: exec /usr/bin/nc -lk 127.0.0.1 "$PORT_WEB"
+    readiness_probe:
+      exec:
+        command: /usr/bin/nc -z 127.0.0.1 "$PORT_WEB"
+      period_seconds: 1
+  extra:
+    command: exec /usr/bin/nc -lk 127.0.0.1 "$PORT_EXTRA"
+    disabled: true
+    readiness_probe:
+      exec:
+        command: /usr/bin/nc -z 127.0.0.1 "$PORT_EXTRA"
+      period_seconds: 1
+  crashy:
+    command: 'echo "crashy: cannot open the database"; exit 3'
+    disabled: true

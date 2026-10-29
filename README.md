@@ -8,6 +8,7 @@ A Homebrew tap for Valian's internal developer tools.
 | ----- | ---------------------------------------------- | ----------------------------------- |
 | [`frn`](#frn) | Fast `flutter run` launcher with device picker | `brew install valian-ca/tools/frn` |
 | [`atelierd`](#atelierd-device) | Atelier dashboard daemon + mobile device bank | `brew install valian-ca/tools/atelierd` |
+| [`lanes`](#lanes) | A local stack per git worktree, run by the `lanesd` daemon | `brew install valian-ca/tools/lanes` |
 
 ## Install the tap
 
@@ -251,6 +252,30 @@ jq -rs 'def ts: sub("\\.[0-9]+"; "") | fromdateiso8601; group_by(.device)[] | so
 A `reap-unleased-on` line marks a device found on without a lease and
 powered off.
 
+## `lanes`
+
+`lanes` gives each git worktree of a project its own local stack — a block of
+ports, a short `TMPDIR`, the project's resources and processes — run by
+process-compose under the `lanesd` daemon. A stack stops when no Claude
+session works in its worktree any more; its data stays until the worktree
+goes away. It serves worktrees only: a project keeps working on its main
+checkout without it.
+
+```sh
+brew install valian-ca/tools/lanes
+brew services start lanes
+
+cd <a worktree of a project with lanes.yaml>
+lanes start          # start the stack, wait until it is ready
+lanes list           # every lane on this Mac
+lanes stop           # stop it, keep its data
+```
+
+A project adopts lanes with a `lanes.yaml`, a `process-compose.yaml` and
+three hooks. The contract is in [`cmd/lanes/README.md`](./cmd/lanes/README.md),
+and [`examples/lanes-demo`](./examples/lanes-demo) follows it
+(`examples/lanes-demo/make-repo.sh <dir>` turns it into a throwaway repo).
+
 ## Contributing
 
 See [CLAUDE.md](./CLAUDE.md) for conventions when adding a new tool or
@@ -280,3 +305,4 @@ Every PR and push to `main` runs:
 - `go vet ./...`, `go test ./...`, `golangci-lint run` — for Go packages.
 - `shellcheck -x bin/*` — when `bin/` contains scripts.
 - `brew audit --strict --online valian-ca/tools/<name>` — only when a formula changes.
+- `go test -tags integration` for lanes, on macOS — only when lanes or the Go modules change.
