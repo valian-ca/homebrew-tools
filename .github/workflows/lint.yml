@@ -141,9 +141,19 @@ jobs:
 
       - uses: actions/cache@v4
         if: steps.changed.outputs.lanes == 'true'
+        id: emulators
         with:
           path: ~/.cache/firebase/emulators
           key: firebase-emulators-${{ runner.os }}-${{ steps.firebase.outputs.version }}
+
+      # Parallel Firebase stacks would each download a missing jar into the
+      # same path, and one of them starts on a partial file.
+      - name: Download the Firebase emulators
+        if: steps.changed.outputs.lanes == 'true' && steps.emulators.outputs.cache-hit != 'true'
+        run: |
+          for emulator in firestore pubsub ui; do
+            npx --yes "firebase-tools@${{ steps.firebase.outputs.version }}" setup:emulators:$emulator
+          done
 
       - name: go test -tags integration
         if: steps.changed.outputs.lanes == 'true'
