@@ -30,6 +30,9 @@ func SweepTargets(procs []procinfo.Proc, root string, keep Keep, self int) []pro
 	for pid := range helpersOf(procs, own, false) {
 		helpers[pid] = true
 	}
+	for pid := range launchersOf(procs, slices.Concat(keep.Sessions, editors, own)) {
+		helpers[pid] = true
+	}
 	var out []procinfo.Proc
 	for _, p := range procs {
 		if p.PID == self || p.PID <= 1 || helpers[p.PID] || !p.Under(root) {
@@ -69,6 +72,27 @@ func helpersOf(procs []procinfo.Proc, roots []string, stopAtShells bool) map[int
 			}
 			out[c.PID] = true
 			queue = append(queue, c.PID)
+		}
+	}
+	return out
+}
+
+// launchersOf collects the ancestors of the named processes: killing the
+// launcher Claude Desktop starts a session under ends the session with it.
+func launchersOf(procs []procinfo.Proc, roots []string) map[int]bool {
+	byPID := procinfo.ByPID(procs)
+	out := map[int]bool{}
+	for _, p := range procs {
+		if !p.NamedAs(roots) {
+			continue
+		}
+		for pid := p.PPID; pid > 1 && !out[pid]; {
+			out[pid] = true
+			parent, ok := byPID[pid]
+			if !ok {
+				break
+			}
+			pid = parent.PPID
 		}
 	}
 	return out
