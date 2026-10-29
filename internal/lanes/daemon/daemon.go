@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/fs"
 	"log"
 	"net"
 	"os"
@@ -20,6 +19,7 @@ import (
 	"github.com/gofrs/flock"
 
 	"github.com/valian-ca/homebrew-tools/internal/lanes/fsx"
+	"github.com/valian-ca/homebrew-tools/internal/lanes/gitx"
 	"github.com/valian-ca/homebrew-tools/internal/lanes/paths"
 	"github.com/valian-ca/homebrew-tools/internal/lanes/pc"
 	"github.com/valian-ca/homebrew-tools/internal/lanes/ports"
@@ -334,7 +334,7 @@ func (d *Daemon) tick(ctx context.Context) {
 	d.mu.Unlock()
 
 	for _, s := range stacks {
-		if _, err := os.Stat(s.AdminDir); errors.Is(err, fs.ErrNotExist) {
+		if gone, _ := gitx.Gone(s.AdminDir); gone {
 			continue
 		}
 		d.mu.Lock()
@@ -391,7 +391,7 @@ func (d *Daemon) teardownLater(ctx context.Context, s *stack, reason string) {
 			return
 		}
 		d.Log.Printf("%s: %s, tearing the stack down", s.Root, reason)
-		if err := d.teardownLocked(ctx, s); err != nil {
+		if err := d.teardownLocked(ctx, s, true); err != nil {
 			d.Log.Printf("%s: teardown: %v", s.Root, err)
 		}
 	})
@@ -466,24 +466,33 @@ func (d *Daemon) setRunning(s *stack, running bool) {
 func (d *Daemon) teardown(ctx context.Context, s *stack) error {
 	s.op.Lock()
 	defer s.op.Unlock()
-	return d.teardownLocked(ctx, s)
+	return d.teardownLocked(ctx, s, false)
 }
 
-func (d *Daemon) teardownLocked(ctx context.Context, s *stack) error {
+// A teardown lanesd starts because no session was left yields to one that
+// came back meanwhile; one asked for by lanes stop or a vanished worktree
+// does not.
+func (d *Daemon) teardownLocked(ctx context.Context, s *stack, yield bool) error {
 	var downErr error
 	if d.Runtime.Alive(ctx, s.Tmp) {
 		downErr = d.Runtime.Down(ctx, s.Tmp)
 	}
-	d.sweep(ctx, s)
+	d.sweep(ctx, s, yield)
 	d.setRunning(s, false)
 	d.save()
 	return downErr
 }
 
-func (d *Daemon) sweep(ctx context.Context, s *stack) {
+func (d *Daemon) sweep(ctx context.Context, s *stack, yield bool) {
 	procs, err := d.Procs.Snapshot()
 	if err != nil {
 		d.Log.Printf("%s: sweep: %v", s.Root, err)
+		return
+	}
+	// A session that arrived while the stack went down owns the worktree now,
+	// and its own helpers may not be named as a session.
+	if yield && d.sessionsIn(s, procs) > 0 {
+		d.Log.Printf("%s: a session came back, nothing swept", s.Root)
 		return
 	}
 	root, keep := d.view(s)

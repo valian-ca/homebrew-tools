@@ -28,7 +28,8 @@ func fences(t *testing.T, lang string) []string {
 
 type settings struct {
 	Hooks map[string][]struct {
-		Hooks []struct {
+		Matcher string `json:"matcher"`
+		Hooks   []struct {
 			Command string `json:"command"`
 			Timeout int    `json:"timeout"`
 		} `json:"hooks"`
@@ -63,9 +64,9 @@ func TestDemoFollowsContract(t *testing.T) {
 	if err := json.Unmarshal(raw, &got); err != nil {
 		t.Fatal(err)
 	}
-	for _, event := range []string{"SessionStart", "CwdChanged", "SessionEnd"} {
+	for _, event := range []string{"SessionStart", "CwdChanged", "PostToolUse", "SessionEnd"} {
 		w, g := want.Hooks[event], got.Hooks[event]
-		if len(w) != 1 || len(g) != 1 || w[0].Hooks[0] != g[0].Hooks[0] {
+		if len(w) != 1 || len(g) != 1 || w[0].Matcher != g[0].Matcher || w[0].Hooks[0] != g[0].Hooks[0] {
 			t.Errorf("%s: demo %+v, contract %+v", event, g, w)
 		}
 	}

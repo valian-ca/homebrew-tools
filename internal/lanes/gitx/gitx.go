@@ -6,6 +6,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -42,6 +44,17 @@ func Detect(ctx context.Context, dir string) (Worktree, error) {
 		AdminDir:  realpath(lines[1]),
 		CommonDir: realpath(lines[2]),
 	}, nil
+}
+
+// Gone reports a linked worktree git no longer knows: its admin dir lost its
+// gitdir file, the mark git itself prunes on. The dir alone proves nothing,
+// since Claude Code removes git's files and leaves lanes' own beside them.
+func Gone(adminDir string) (bool, error) {
+	_, err := os.Stat(filepath.Join(adminDir, "gitdir"))
+	if errors.Is(err, fs.ErrNotExist) {
+		return true, nil
+	}
+	return false, err
 }
 
 func realpath(p string) string {

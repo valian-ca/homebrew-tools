@@ -13,14 +13,15 @@ in [`examples/lanes-demo`](../../examples/lanes-demo) follows it.
 ## Install
 
 ```sh
-brew install valian-ca/tools/lanes
+brew install f1bonacc1/tap/process-compose valian-ca/tools/lanes
 brew services start lanes
 ```
 
-`lanes` and `lanesd` run on macOS only. process-compose comes as a dependency,
-from its author's tap (`f1bonacc1/tap`); if your Homebrew refuses to tap it on
-its own, run `brew tap f1bonacc1/tap` first. lanes refuses a process-compose
-older than 1.73.0 and names both versions.
+`lanes` and `lanesd` run on macOS only. process-compose comes from its
+author's tap (`f1bonacc1/tap`). Homebrew taps a third-party tap only for a
+formula named in full on the command line, never for a dependency, so the
+install names process-compose too. lanes refuses a process-compose older
+than 1.73.0 and names both versions.
 
 ## Concepts
 
@@ -129,7 +130,7 @@ its configuration.
 
 ## Hooks and `.envrc`
 
-The project's `.claude/settings.json` wires three hooks. Each is guarded, so a
+The project's `.claude/settings.json` wires four hooks. Each is guarded, so a
 Mac without lanes stays silent:
 
 ```json
@@ -137,6 +138,7 @@ Mac without lanes stays silent:
   "hooks": {
     "SessionStart": [{ "hooks": [{ "type": "command", "command": "command -v lanes >/dev/null 2>&1 && lanes hook session-start || true" }] }],
     "CwdChanged": [{ "hooks": [{ "type": "command", "command": "command -v lanes >/dev/null 2>&1 && lanes hook cwd-changed || true" }] }],
+    "PostToolUse": [{ "matcher": "EnterWorktree|ExitWorktree", "hooks": [{ "type": "command", "command": "command -v lanes >/dev/null 2>&1 && lanes hook cwd-changed || true" }] }],
     "SessionEnd": [{ "hooks": [{ "type": "command", "command": "command -v lanes >/dev/null 2>&1 && lanes hook session-end || true", "timeout": 5 }] }]
   }
 }
@@ -145,14 +147,27 @@ Mac without lanes stays silent:
 - `session-start` and `cwd-changed` work on the directory the payload names,
   which is the worktree even when Desktop runs the hook from the main
   checkout. They settle the lane, run the prep steps, render the templates,
-  and append the lane's exports to `$CLAUDE_ENV_FILE`. A first prep may be
+  and write the lane's exports to `$CLAUDE_ENV_FILE`. A first prep may be
   long: set the hook's `timeout` in the project's settings to fit it.
+- Start a session in its worktree, with `claude --worktree` or from Desktop.
+  `EnterWorktree` and `ExitWorktree` fire neither `CwdChanged` nor
+  `SessionStart`, and Claude Code reads a session's env files again only
+  after those hooks, or before its first Bash command. The `PostToolUse` hook
+  covers the first `EnterWorktree` of a session opened on the main checkout:
+  `cwd-changed` rewrites the env files the session's lanes hooks got. After
+  an `ExitWorktree` or a second `EnterWorktree`, Bash commands keep the first
+  lane's variables until the session moves with `cd`, which fires
+  `CwdChanged`.
 - `session-end` only tells `lanesd` that a session ended, and returns in well
-  under a second.
+  under a second. A session opened by `claude --worktree` has already left its
+  worktree when the hook runs, so `session-end` also tells `lanesd` about every
+  worktree where `session-start` or `cwd-changed` saw the payload's
+  `session_id`.
 - Hooks never block a session: they exit 0 and write problems to stderr.
 
 No `WorktreeRemove` hook is needed: `lanesd` notices a deleted worktree on its
-own.
+own, as git does, by the missing `gitdir` file in its admin directory, even
+when the directory itself is left behind.
 
 The project's `.envrc`, for direnv:
 

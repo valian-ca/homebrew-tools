@@ -39,8 +39,10 @@ plugin shims anything matching that pattern and routes it to `flutter
 formula. Assume the user has nothing beyond macOS defaults. `gum`, `jq`,
 `fzf`, `yq` are fine to depend on — they're all in core Homebrew. A
 formula from a third-party tap is allowed when the tool is in no core tap,
-named fully: `lanes` depends on `f1bonacc1/tap/process-compose`, which
-`brew install` taps on first use.
+named fully: `lanes` depends on `f1bonacc1/tap/process-compose`. Homebrew
+taps a third-party tap only for a formula named on the command line, never
+for a dependency, so its install line names both:
+`brew install f1bonacc1/tap/process-compose valian-ca/tools/lanes`.
 
 **Scripts get `set -euo pipefail`** at the top. Use the
 `${arr[@]+"${arr[@]}"}` idiom for optional arrays to stay compatible with

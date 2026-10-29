@@ -3,7 +3,9 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
+	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
@@ -63,8 +65,21 @@ func newHarness(t *testing.T) *harness {
 		Go:       func(f func()) { f() },
 	}
 	h.d.init()
-	h.s = h.d.get(&stack{Root: root, AdminDir: t.TempDir(), Tmp: "/tmp/x", Keep: Keep{Sessions: []string{"claude"}}, Running: true})
+	h.s = h.d.get(&stack{Root: root, AdminDir: liveAdminDir(t, t.TempDir()), Tmp: "/tmp/x", Keep: Keep{Sessions: []string{"claude"}}, Running: true})
 	return h
+}
+
+// liveAdminDir gives dir the gitdir file git keeps in a linked worktree's
+// admin dir.
+func liveAdminDir(t *testing.T, dir string) string {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "gitdir"), []byte(root+"/.git\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return dir
 }
 
 func session(pid int) procinfo.Proc {
@@ -283,6 +298,27 @@ func TestTeardownRechecksSessionsUnderTheLock(t *testing.T) {
 	}
 }
 
+func TestAutomaticSweepYieldsToASessionThatCameBack(t *testing.T) {
+	h := newHarness(t)
+	var killed []int
+	h.d.Kill = func(pid int, _ syscall.Signal) error {
+		pid = max(pid, -pid)
+		killed = append(killed, pid)
+		h.procs.Procs = slices.DeleteFunc(h.procs.Procs, func(p procinfo.Proc) bool { return p.PID == pid })
+		return nil
+	}
+	server := procinfo.Proc{PID: 400, PPID: 1, PGID: 400, Comm: "nc", Cwd: root}
+	h.procs.Procs = []procinfo.Proc{session(300), server}
+	h.d.sweep(context.Background(), h.s, true)
+	if len(killed) != 0 {
+		t.Fatalf("an automatic teardown swept %v while a session worked in the worktree", killed)
+	}
+	h.d.sweep(context.Background(), h.s, false)
+	if !slices.Contains(killed, 400) {
+		t.Fatal("lanes stop spared the server because a session worked in the worktree")
+	}
+}
+
 func TestNotifyArmsOnlyRunningStacksAtOrBelowTheRoot(t *testing.T) {
 	h := newHarness(t)
 	h.d.notify(root + "-other")
@@ -297,6 +333,33 @@ func TestNotifyArmsOnlyRunningStacksAtOrBelowTheRoot(t *testing.T) {
 	h.d.notify(root)
 	if !h.s.NotifyUntil.IsZero() {
 		t.Fatal("a stopped stack was armed, so a start within the minute would stop at once")
+	}
+}
+
+func TestReconcileClearsAnAdminDirLeftWithLanesFilesOnly(t *testing.T) {
+	h := newHarness(t)
+	common := testutil.RealTemp(t)
+	t.Setenv("LANES_PORT_RANGE", "43700-43799")
+	left := filepath.Join(common, "worktrees", "left")
+	live := liveAdminDir(t, filepath.Join(common, "worktrees", "live"))
+	for _, admin := range []string{left, live} {
+		if _, err := ports.Ensure(ports.Entry{CommonDir: common, AdminDir: admin, Worktree: "/w/" + filepath.Base(admin), Size: 5}); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(paths.LaneDir(admin), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	h.d.reconcile(context.Background())
+	if _, ok, _ := ports.Find(left); ok {
+		t.Fatal("a worktree whose admin dir lost git's files kept its block")
+	}
+	if _, err := os.Stat(left); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("the admin dir left with lanes' files only was kept: %v", err)
+	}
+	if _, ok, _ := ports.Find(live); !ok {
+		t.Fatal("a live worktree lost its block")
 	}
 }
 
@@ -352,9 +415,7 @@ func TestAdoptKeepsTheSavedGraceAndSkipsDeadStacks(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := os.MkdirAll(e.AdminDir, 0o755); err != nil {
-			t.Fatal(err)
-		}
+		liveAdminDir(t, e.AdminDir)
 		entries = append(entries, e)
 	}
 	alive, dead := entries[0], entries[1]
