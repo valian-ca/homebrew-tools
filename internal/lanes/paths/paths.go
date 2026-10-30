@@ -3,6 +3,7 @@ package paths
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 )
 
 const (
@@ -98,3 +99,9 @@ func PCLog(tmpdir string) string { return filepath.Join(Logs(tmpdir), "process-c
 func Fragment(worktree string) string { return filepath.Join(worktree, ".lanes", "adapters.yaml") }
 
 func FragmentDir(worktree string) string { return filepath.Join(worktree, ".lanes") }
+
+// MySQLStartLock is the machine's, not a repository's: every project on the
+// Mac whose lanes.yaml names the port wakes the same server.
+func MySQLStartLock(port int) string {
+	return filepath.Join(MustStateDir(), "mysql-"+strconv.Itoa(port)+".lock")
+}

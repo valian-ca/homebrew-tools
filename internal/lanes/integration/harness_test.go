@@ -74,16 +74,22 @@ type harness struct {
 	lo       int
 	profile  profile
 	slot     bool
+	repos    []string
+	// mysqlPort is the port of the harness's MySQL server, which every repo
+	// of the harness shares, as two clones of a project share one.
+	mysqlPort int
+	mysqlSlot bool
 }
 
-// profile picks how much of the demo's Firebase side a test repo keeps: the
-// core tests run without Java or Node.
+// profile picks how much of the demo's Firebase and MySQL sides a test repo
+// keeps, so the core tests run without Java, Node or mysqld.
 type profile int
 
 const (
 	core profile = iota
 	firebaseLight
 	firebaseFull
+	mysqlStack
 )
 
 func withProfile(p profile) option { return func(h *harness) { h.profile = p } }
@@ -126,6 +132,12 @@ func newHarness(t *testing.T, opts ...option) *harness {
 		firebaseSlots <- struct{}{}
 		h.slot = true
 	}
+	if h.profile == mysqlStack {
+		requireMySQL(t)
+		mysqlSlots <- struct{}{}
+		h.mysqlSlot = true
+		h.mysqlPort = freePort(t)
+	}
 	t.Cleanup(h.cleanup)
 	h.main = h.repo("demo")
 	return h
@@ -137,9 +149,8 @@ func (h *harness) repo(name string) string {
 	h.t.Helper()
 	dir := filepath.Join(testutil.RealTemp(h.t), name)
 	h.run(filepath.Dir(dir), "../../../examples/lanes-demo/make-repo.sh", dir)
-	if h.profile != firebaseFull {
-		h.trimFirebase(dir)
-	}
+	h.shape(dir)
+	h.repos = append(h.repos, dir)
 	return dir
 }
 
@@ -313,6 +324,10 @@ func (h *harness) cleanup() {
 	if h.slot {
 		defer func() { <-firebaseSlots }()
 	}
+	if h.mysqlSlot {
+		defer func() { <-mysqlSlots }()
+	}
+	defer h.stopMySQLServers()
 	for _, c := range h.children {
 		_ = c.Process.Kill()
 	}

@@ -2,4 +2,4 @@
 set -euo pipefail
 
 mkdir -p .demo
-date -u +%FT%TZ >>.demo/installs
+echo "$(date -u +%FT%TZ) ${DEMO_DATABASE_URL:-}" >>.demo/installs

@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<USAGE
+Usage: tool/mysql-seed
+
+The demo's seed task, run by process-compose with the lane's variables. It
+seeds the lane's dev database when it lacks the lanes_seed marker table, and
+leaves it alone otherwise. The marker is created last: MySQL commits every
+CREATE TABLE at once, so a seed cut short leaves tables without the marker,
+and the next run drops them and seeds again.
+
+Before seeding, it appends what it found to \$LANES_DEMO_STATE/mysql-seed/<lane>.log:
+whether each database existed and how many tables it held, and DEMO_DATABASE_URL.
+
+Environment:
+  LANES_MYSQL_HOST, LANES_MYSQL_PORT, LANES_MYSQL_USER, LANES_MYSQL_PASSWORD,
+  LANES_MYSQL_DATABASE_DEV, LANES_MYSQL_DATABASE_TEST, LANE_ID  set by lanes
+  LANES_DEMO_STATE  where the record goes (default: ~/.local/state/lanes-demo)
+  MYSQL             the mysql client (default: mysql on PATH, else Homebrew's mysql@8.4)
+
+Examples:
+  lanes start                          # process-compose runs it
+  eval "\$(lanes env)" && tool/mysql-seed
+USAGE
+}
+
+case "${1:-}" in
+  -h | --help) usage; exit 0 ;;
+esac
+
+resolve_mysql() {
+  if [ -n "${MYSQL:-}" ]; then
+    echo "$MYSQL"
+  elif command -v mysql >/dev/null 2>&1; then
+    command -v mysql
+  elif command -v brew >/dev/null 2>&1 && [ -x "$(brew --prefix mysql@8.4)/bin/mysql" ]; then
+    echo "$(brew --prefix mysql@8.4)/bin/mysql"
+  else
+    echo "mysql-seed: no mysql client found — brew install mysql@8.4" >&2
+    exit 1
+  fi
+}
+
+client=$(resolve_mysql)
+if [ -n "$LANES_MYSQL_PASSWORD" ]; then
+  export MYSQL_PWD=$LANES_MYSQL_PASSWORD
+fi
+sql() {
+  "$client" --no-defaults --protocol=TCP -h "$LANES_MYSQL_HOST" -P "$LANES_MYSQL_PORT" -u "$LANES_MYSQL_USER" -N -B "$@"
+}
+
+found() {
+  if [ "$(sql -e "SELECT COUNT(*) FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = '$1'")" = 0 ]; then
+    echo missing
+  else
+    echo "tables:$(sql -e "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = '$1'")"
+  fi
+}
+
+dev=$LANES_MYSQL_DATABASE_DEV
+state="${LANES_DEMO_STATE:-$HOME/.local/state/lanes-demo}/mysql-seed"
+mkdir -p "$state"
+echo "dev=$(found "$dev") test=$(found "$LANES_MYSQL_DATABASE_TEST") url=${DEMO_DATABASE_URL:-}" >>"$state/$LANE_ID.log"
+
+marker=$(sql -e "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = '$dev' AND TABLE_NAME = 'lanes_seed'")
+if [ "$marker" != 0 ]; then
+  exit 0
+fi
+for t in $(sql -e "SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = '$dev'"); do
+  sql "$dev" -e "DROP TABLE \`$t\`"
+done
+sql "$dev" -e "
+  CREATE TABLE items (id INT PRIMARY KEY, name VARCHAR(64) NOT NULL);
+  INSERT INTO items VALUES (1, 'one'), (2, 'two'), (3, 'three');
+  CREATE TABLE lanes_seed (seeded_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP);
+  INSERT INTO lanes_seed () VALUES ();
+"

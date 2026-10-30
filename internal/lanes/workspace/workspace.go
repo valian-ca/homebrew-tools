@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/valian-ca/homebrew-tools/internal/lanes/adapter"
@@ -15,6 +17,7 @@ import (
 	"github.com/valian-ca/homebrew-tools/internal/lanes/firebase"
 	"github.com/valian-ca/homebrew-tools/internal/lanes/gitx"
 	"github.com/valian-ca/homebrew-tools/internal/lanes/lane"
+	"github.com/valian-ca/homebrew-tools/internal/lanes/mysql"
 	"github.com/valian-ca/homebrew-tools/internal/lanes/paths"
 	"github.com/valian-ca/homebrew-tools/internal/lanes/pc"
 	"github.com/valian-ca/homebrew-tools/internal/lanes/ports"
@@ -33,6 +36,12 @@ type Workspace struct {
 	Block    ports.Entry
 	Tmpdir   string
 	Vars     env.Vars
+	// EnvErr is the failed render of lanes.yaml's env: entries; Vars then
+	// holds every variable but theirs.
+	EnvErr error
+	// Deferred are the erases of a retired lane that could not reach their
+	// resource: the lane changed anyway, and lanesd retries them.
+	Deferred []error
 }
 
 func Locate(ctx context.Context, dir string) (gitx.Worktree, *config.Config, error) {
@@ -121,7 +130,7 @@ func Inspect(ctx context.Context, root string) (*Workspace, error) {
 
 func (w *Workspace) setLane(rec lane.Record) {
 	w.Lane = rec
-	w.Vars = env.Build(env.Lane{
+	l := env.Lane{
 		ID:         rec.ID,
 		Worktree:   w.WT.Root,
 		Tmpdir:     w.Tmpdir,
@@ -129,8 +138,42 @@ func (w *Workspace) setLane(rec lane.Record) {
 		BlockSize:  w.Block.Size,
 		PortNames:  w.Cfg.Ports.Names,
 		Host:       rec.Host,
-		Extra:      w.firebaseVars(firebase.Stack),
-	})
+		Extra:      append(w.firebaseVars(firebase.Stack), w.mysqlVars(rec.ID)...),
+	}
+	w.Vars = env.Build(l)
+	project, err := renderEnv(w.Cfg.Env, w.Vars)
+	w.EnvErr = err
+	if err != nil || len(project) == 0 {
+		return
+	}
+	l.Extra = append(l.Extra, project...)
+	w.Vars = env.Build(l)
+}
+
+func (w *Workspace) mysqlVars(laneID string) env.Vars {
+	m := w.Cfg.MySQL()
+	if m == nil {
+		return nil
+	}
+	return mysql.Vars(*m, laneID)
+}
+
+func renderEnv(entries config.EnvVars, base env.Vars) (env.Vars, error) {
+	seen := base.Map()
+	out := make(env.Vars, 0, len(entries))
+	for _, e := range entries {
+		t, err := e.Parse()
+		if err != nil {
+			return nil, fmt.Errorf("env.%s: %w", e.Name, err)
+		}
+		var b strings.Builder
+		if err := t.Execute(&b, seen); err != nil {
+			return nil, fmt.Errorf("env.%s: %w", e.Name, err)
+		}
+		seen[e.Name] = b.String()
+		out = append(out, env.Var{Name: e.Name, Value: b.String()})
+	}
+	return out, nil
 }
 
 // firebaseVars is empty when the base config is unreadable or a port is
@@ -156,7 +199,7 @@ func (w *Workspace) TestVars() env.Vars {
 	over := env.Vars{{Name: "TMPDIR", Value: filepath.Join(w.Tmpdir, "test")}}
 	fb := w.Cfg.Firebase()
 	if fb == nil {
-		return w.Vars.With(over)
+		return w.testProjectVars(w.Vars.With(over))
 	}
 	if b, err := firebase.LoadBase(w.WT.Root, fb); err == nil {
 		test := firebase.NewPlan(b, fb, firebase.Test)
@@ -175,7 +218,20 @@ func (w *Workspace) TestVars() env.Vars {
 			}
 		}
 	}
-	return w.Vars.With(over)
+	return w.testProjectVars(w.Vars.With(over))
+}
+
+// testProjectVars renders the env: entries again over the test series, so a
+// value composed from a test-series variable follows it.
+func (w *Workspace) testProjectVars(v env.Vars) env.Vars {
+	if w.EnvErr != nil || len(w.Cfg.Env) == 0 {
+		return v
+	}
+	project, err := renderEnv(w.Cfg.Env, v)
+	if err != nil {
+		return v
+	}
+	return v.With(project)
 }
 
 func (w *Workspace) SetHost(host string) {
@@ -187,7 +243,32 @@ func (w *Workspace) SetHost(host string) {
 func (w *Workspace) Environ(base []string) []string { return w.Vars.Environ(base) }
 
 func (w *Workspace) Adapters(environ []string) []adapter.Adapter {
-	return adapter.FromConfig(w.Cfg, adapter.Env{Dir: w.WT.Root, Worktree: w.WT.Root, Environ: environ})
+	return adapter.FromConfig(w.Cfg, adapter.Env{
+		Dir:         w.WT.Root,
+		Worktree:    w.WT.Root,
+		Environ:     environ,
+		WithoutLane: w.EnvironWithoutLane(),
+		MainRoot:    w.MainRoot,
+	})
+}
+
+func (w *Workspace) EnvironWithoutLane() []string {
+	listed := strings.Fields(os.Getenv("LANES_VARS"))
+	drop := map[string]bool{}
+	for _, n := range slices.Concat(env.Fixed, w.Vars.Names(), listed) {
+		drop[n] = true
+	}
+	if !slices.Contains(listed, "TMPDIR") {
+		delete(drop, "TMPDIR")
+	}
+	var out []string
+	for _, kv := range os.Environ() {
+		k, _, _ := strings.Cut(kv, "=")
+		if !drop[k] && !strings.HasPrefix(k, "LANES_MYSQL_") {
+			out = append(out, kv)
+		}
+	}
+	return out
 }
 
 func Touch(adminDir string) {
@@ -221,6 +302,10 @@ func (w *Workspace) retire(ctx context.Context, old lane.Record) error {
 			continue
 		}
 		if err := eraseFrom(ctx, en, old.ID, environ, w.WT.Root, w.MainRoot); err != nil {
+			if errors.Is(err, adapter.ErrDeferred) {
+				w.Deferred = append(w.Deferred, fmt.Errorf("lane %s: %w", old.ID, err))
+				continue
+			}
 			return err
 		}
 		if err := registry.Remove(w.WT.CommonDir, en); err != nil {
@@ -239,8 +324,8 @@ func eraseFrom(ctx context.Context, en registry.Entry, laneID string, environ []
 		if ferr != nil {
 			return ferr
 		}
-		if err = a.Erase(ctx, laneID, en.Resource); err == nil {
-			return nil
+		if err = a.Erase(ctx, laneID, en.Resource); err == nil || errors.Is(err, adapter.ErrDeferred) {
+			return err
 		}
 	}
 	return err
@@ -260,11 +345,19 @@ func StopStack(ctx context.Context, root, tmp string) error {
 	return c.Down(ctx)
 }
 
-// CreateResources runs each adapter's Create once per lane, registering what
-// it made before marking it done, so a crash leaves at worst an orphan that
-// reconcile finds through List and Owner.
+// CreateResources registers each resource before marking its adapter done, so
+// a crash leaves at worst an orphan that reconcile finds through List and Owner.
 func (w *Workspace) CreateResources(ctx context.Context, environ []string) error {
 	for _, a := range w.Adapters(environ) {
+		if e, ok := a.(adapter.Ensurer); ok {
+			if err := e.Ensure(ctx, w.Lane.ID, func(n string) error { return registry.Refresh(w.WT.CommonDir, w.entry(a, n)) }); err != nil {
+				return err
+			}
+			if err := w.markCreated(a); err != nil {
+				return err
+			}
+			continue
+		}
 		if w.Lane.HasCreated(a.Name()) {
 			continue
 		}
@@ -276,16 +369,30 @@ func (w *Workspace) CreateResources(ctx context.Context, environ []string) error
 			return err
 		}
 		for _, n := range names {
-			en := a.Entry(w.Lane.ID, n)
-			en.AdminDir = w.WT.AdminDir
-			if err := registry.Add(w.WT.CommonDir, en); err != nil {
+			if err := registry.Add(w.WT.CommonDir, w.entry(a, n)); err != nil {
 				return err
 			}
 		}
-		if err := lane.MarkCreated(w.WT, w.Lane.ID, a.Name()); err != nil {
+		if err := w.markCreated(a); err != nil {
 			return err
 		}
-		w.Lane.Created = append(w.Lane.Created, a.Name())
 	}
+	return nil
+}
+
+func (w *Workspace) entry(a adapter.Adapter, resource string) registry.Entry {
+	en := a.Entry(w.Lane.ID, resource)
+	en.AdminDir = w.WT.AdminDir
+	return en
+}
+
+func (w *Workspace) markCreated(a adapter.Adapter) error {
+	if w.Lane.HasCreated(a.Name()) {
+		return nil
+	}
+	if err := lane.MarkCreated(w.WT, w.Lane.ID, a.Name()); err != nil {
+		return err
+	}
+	w.Lane.Created = append(w.Lane.Created, a.Name())
 	return nil
 }

@@ -175,6 +175,18 @@ serve them: `LANES_TMPDIR_ROOT` moves the lanes' `TMPDIR` (the socket-length
 refusal), and `LANES_LAN_PROBE=unreachable` makes `lanes host lan` see no
 network.
 
+The demo's MySQL side is a private `mysqld` that `tool/mysql-server <port>`
+starts from the main checkout, its data under `.demo/mysql`, on port 3316 for
+the demo; the integration suite gives each test its own server on an
+ephemeral port and stops it by its pid file. Its cases need `mysqld`, from
+`brew install mysql@8.4`: the formula is keg-only, and the scripts find it
+through `brew --prefix mysql@8.4` when it is not on `PATH`. Without it they
+skip, unless `LANES_REQUIRE_MYSQL=1`, which CI sets. Two more `LANES_TEST=1`
+seams serve them: `LANES_MYSQL_WAKE_TIMEOUT` shortens the 2-minute wait for
+a woken server, `LANES_RECONCILE_RETRY` the 5 minutes between two attempts
+at an erase. Non-MySQL cases run on the demo turned back into a schema-1
+`lanes.yaml`, which proves 0.3.0 still runs schema 1.
+
 The seed (`examples/lanes-demo/seed`: 5 000 documents in `items`,
 `demo/hello`, one Auth user) comes from a dedicated emulator session, never
 from one tests ran against. To rebuild it, from `examples/lanes-demo`, on free
@@ -190,14 +202,15 @@ npx firebase emulators:exec --config firebase.emulator.json --project demo-lanes
 
 `.github/workflows/lint.yml` runs:
 - `go vet ./...`, `go test ./...`, and `golangci-lint run` on every PR
-- `shellcheck -x bin/*` when `bin/` isn't empty
+- `shellcheck -x bin/*` when `bin/` isn't empty, and on the lanes demo's
+  bash scripts
 - `brew audit --strict --online Formula/*.rb` if any formula changed
 - `go test -tags integration` for lanes on the macOS runner, when a PR
   touches `cmd/lanes*`, `internal/lanes`, `examples/lanes-demo`,
   `Formula/lanes.rb`, `go.mod`, `go.sum` or the workflow. It needs process-compose and cgo
-  (lanes reads processes through libproc), and Java 21 and Node 22 for the
-  Firebase cases; the emulators' jars are cached on the demo's firebase-tools
-  version.
+  (lanes reads processes through libproc), Java 21 and Node 22 for the
+  Firebase cases, and `mysql@8.4` from brew for the MySQL cases; the
+  emulators' jars are cached on the demo's firebase-tools version.
 
 Keep all jobs mandatory via branch protection on `main`.
 

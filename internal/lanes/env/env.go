@@ -10,13 +10,14 @@ import (
 
 const DefaultHost = "127.0.0.1"
 
-// Fixed names every variable lanes may export, so --unset clears them even
-// from a shell whose LANES_VARS is gone.
+// Fixed lists the variables whose names do not depend on lanes.yaml, so --unset
+// clears them even from a shell whose LANES_VARS is gone.
 var Fixed = []string{
 	"LANE_ID", "LANES_WORKTREE", "TMPDIR", "LANES_PORT_BASE", "LANES_PORT_SIZE", "LANES_HOST", "LANES_VARS",
 	"FIRESTORE_EMULATOR_HOST", "FIREBASE_AUTH_EMULATOR_HOST", "FIREBASE_STORAGE_EMULATOR_HOST",
 	"FIREBASE_DATABASE_EMULATOR_HOST", "PUBSUB_EMULATOR_HOST", "CLOUD_TASKS_EMULATOR_HOST",
 	"FIREBASE_EMULATOR_HUB", "LANES_FIREBASE_CONFIG",
+	"LANES_MYSQL_HOST", "LANES_MYSQL_PORT", "LANES_MYSQL_USER", "LANES_MYSQL_PASSWORD",
 }
 
 type Var struct{ Name, Value string }

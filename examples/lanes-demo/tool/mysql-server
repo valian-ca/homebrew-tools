@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<USAGE
+Usage: tool/mysql-server <port>
+
+Start the demo's MySQL server on 127.0.0.1:<port>, with its data under
+.demo/mysql of the current directory: lanes runs this start command from the
+main checkout. The first run initializes the data directory, root without a
+password. It returns once mysqld runs in the background, and leaves a server
+that already runs alone. Each run appends a begin and an end line to
+.demo/mysql-start.log.
+
+Stop the server with: kill "\$(cat .demo/mysql/mysqld.pid)"
+
+Environment:
+  MYSQLD  the mysqld to run (default: mysqld on PATH, else Homebrew's mysql@8.4)
+
+Examples:
+  tool/mysql-server 3316
+  MYSQLD=/usr/local/mysql/bin/mysqld tool/mysql-server 3316
+USAGE
+}
+
+case "${1:-}" in
+  -h | --help) usage; exit 0 ;;
+  "") usage >&2; exit 2 ;;
+esac
+port=$1
+
+resolve_mysqld() {
+  if [ -n "${MYSQLD:-}" ]; then
+    echo "$MYSQLD"
+  elif command -v mysqld >/dev/null 2>&1; then
+    command -v mysqld
+  elif command -v brew >/dev/null 2>&1 && [ -x "$(brew --prefix mysql@8.4)/bin/mysqld" ]; then
+    echo "$(brew --prefix mysql@8.4)/bin/mysqld"
+  else
+    echo "mysql-server: no mysqld found — brew install mysql@8.4" >&2
+    exit 1
+  fi
+}
+
+mkdir -p .demo
+log="$PWD/.demo/mysql-start.log"
+echo "begin $$" >>"$log"
+trap 'echo "end $$" >>"$log"' EXIT
+
+data="$PWD/.demo/mysql"
+pidfile="$data/mysqld.pid"
+if [ -f "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
+  exit 0
+fi
+
+mysqld=$(resolve_mysqld)
+# --no-defaults comes first: Homebrew's mysql@8.4 writes a my.cnf its mysqld
+# reads otherwise.
+if [ ! -d "$data/mysql" ]; then
+  rm -rf "$data"
+  "$mysqld" --no-defaults --initialize-insecure --datadir="$data" --log-error="$PWD/.demo/mysql-init.err"
+fi
+"$mysqld" --no-defaults --daemonize \
+  --datadir="$data" --pid-file="$pidfile" --log-error="$data/mysqld.err" \
+  --port="$port" --bind-address=127.0.0.1 --socket="/tmp/lanes-demo-mysql-$port.sock" \
+  --mysqlx=OFF --skip-log-bin --performance-schema=OFF --innodb-buffer-pool-size=32M --secure-file-priv=NULL

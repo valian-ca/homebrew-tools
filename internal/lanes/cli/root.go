@@ -92,6 +92,17 @@ func prepareCore(ctx context.Context, w *workspace.Workspace, log io.Writer) err
 	return generate.Run(ctx, w.WT.Root, w.Cfg.Generate, w.Vars.Map(), log)
 }
 
+func settle(ctx context.Context, dir string, log io.Writer) (*workspace.Workspace, error) {
+	w, err := workspace.Settle(ctx, dir)
+	if err != nil {
+		return nil, err
+	}
+	for _, d := range w.Deferred {
+		fmt.Fprintf(log, "lanes: %v — kept registered, lanesd erases it once it can\n", d)
+	}
+	return w, nil
+}
+
 func withTimeout(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(ctx, d)
 }

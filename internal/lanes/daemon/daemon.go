@@ -28,18 +28,18 @@ import (
 )
 
 const (
-	DefaultGrace        = 5 * time.Minute
-	DefaultInterval     = 10 * time.Second
-	DefaultStartTimeout = 20 * time.Minute
+	DefaultGrace          = 5 * time.Minute
+	DefaultInterval       = 10 * time.Second
+	DefaultStartTimeout   = 20 * time.Minute
+	DefaultReconcileRetry = 5 * time.Minute
 	// NotifyWindow is how long lanesd watches closely after SessionEnd: the
 	// hook fires while the closing claude process is still alive, so its
 	// absence only shows a moment later.
-	NotifyWindow   = 60 * time.Second
-	notifyPoll     = time.Second
-	reconcileRetry = 5 * time.Minute
-	downTimeout    = 60 * time.Second
-	sweepPatience  = 10 * time.Second
-	logTailLines   = 40
+	NotifyWindow  = 60 * time.Second
+	notifyPoll    = time.Second
+	downTimeout   = 60 * time.Second
+	sweepPatience = 10 * time.Second
+	logTailLines  = 40
 )
 
 // Runtime is the process-compose side of a stack, swapped for a fake in unit
@@ -62,14 +62,15 @@ func (pcRuntime) Down(ctx context.Context, tmp string) error {
 }
 
 type Daemon struct {
-	Procs        procinfo.Source
-	Runtime      Runtime
-	Kill         func(int, syscall.Signal) error
-	Now          func() time.Time
-	Grace        time.Duration
-	Interval     time.Duration
-	StartTimeout time.Duration
-	Log          *log.Logger
+	Procs          procinfo.Source
+	Runtime        Runtime
+	Kill           func(int, syscall.Signal) error
+	Now            func() time.Time
+	Grace          time.Duration
+	Interval       time.Duration
+	StartTimeout   time.Duration
+	ReconcileRetry time.Duration
+	Log            *log.Logger
 	// Go runs teardowns and reconcile passes off the watch loop, so one slow
 	// stack never delays another; unit tests run them inline.
 	Go func(func())
@@ -98,14 +99,15 @@ type stack struct {
 
 func New() *Daemon {
 	d := &Daemon{
-		Procs:        procinfo.System(),
-		Runtime:      pcRuntime{},
-		Kill:         syscall.Kill,
-		Now:          time.Now,
-		Grace:        durationOverride("LANES_GRACE", DefaultGrace),
-		Interval:     durationOverride("LANES_SCAN_INTERVAL", DefaultInterval),
-		StartTimeout: durationOverride("LANES_START_TIMEOUT", DefaultStartTimeout),
-		Log:          log.New(os.Stderr, "lanesd: ", log.LstdFlags),
+		Procs:          procinfo.System(),
+		Runtime:        pcRuntime{},
+		Kill:           syscall.Kill,
+		Now:            time.Now,
+		Grace:          durationOverride("LANES_GRACE", DefaultGrace),
+		Interval:       durationOverride("LANES_SCAN_INTERVAL", DefaultInterval),
+		StartTimeout:   durationOverride("LANES_START_TIMEOUT", DefaultStartTimeout),
+		ReconcileRetry: durationOverride("LANES_RECONCILE_RETRY", DefaultReconcileRetry),
+		Log:            log.New(os.Stderr, "lanesd: ", log.LstdFlags),
 	}
 	d.init()
 	return d
@@ -123,6 +125,9 @@ func (d *Daemon) init() {
 	}
 	if d.Go == nil {
 		d.Go = func(f func()) { go f() }
+	}
+	if d.ReconcileRetry == 0 {
+		d.ReconcileRetry = DefaultReconcileRetry
 	}
 }
 

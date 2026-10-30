@@ -57,7 +57,7 @@ ram_alert: 512MB
 }
 
 func TestParseRefusesNewerSchemaBeforeUnknownKeys(t *testing.T) {
-	_, err := Parse([]byte("schema: 2\nbrand_new_key: true\n"))
+	_, err := Parse([]byte("schema: 3\nbrand_new_key: true\n"))
 	var se *SchemaError
 	if !errors.As(err, &se) {
 		t.Fatalf("err = %v, want a SchemaError", err)

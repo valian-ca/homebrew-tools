@@ -19,9 +19,10 @@ type Entry struct {
 	AdminDir  string    `json:"adminDir"`
 	Worktree  string    `json:"worktree"`
 	CreatedAt time.Time `json:"createdAt"`
-	// Scripts snapshots the adapter's commands: the entry must stay erasable
-	// after its worktree, and the lanes.yaml in it, are gone.
+	// Scripts and MySQL snapshot the adapter's spec: the entry must stay
+	// erasable after its worktree, and the lanes.yaml in it, are gone.
 	Scripts *config.Scripts `json:"scripts,omitempty"`
+	MySQL   *config.MySQL   `json:"mysql,omitempty"`
 }
 
 type file struct {
@@ -42,6 +43,25 @@ func Add(commonDir string, entries ...Entry) error {
 			}
 		}
 		return cur
+	})
+}
+
+// Refresh replaces the entry the same lane of the same worktree registered,
+// so its snapshot follows lanes.yaml; another lane's claim on the resource is
+// kept as is.
+func Refresh(commonDir string, e Entry) error {
+	return update(commonDir, func(cur []Entry) []Entry {
+		for i, c := range cur {
+			if c.Kind != e.Kind || c.Adapter != e.Adapter || c.Resource != e.Resource {
+				continue
+			}
+			if c.Lane == e.Lane && c.AdminDir == e.AdminDir {
+				e.CreatedAt = c.CreatedAt
+				cur[i] = e
+			}
+			return cur
+		}
+		return append(cur, e)
 	})
 }
 

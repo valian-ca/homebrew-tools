@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -31,10 +32,26 @@ type Adapter interface {
 	Entry(lane, resource string) registry.Entry
 }
 
+// ErrDeferred marks an erase that could not reach its resource and must be
+// retried later; the entry stays registered.
+var ErrDeferred = errors.New("erase deferred")
+
+// Ensurer is an adapter whose resources are checked at every lanes start, not
+// only at the lane's first: a database dropped by hand comes back.
+type Ensurer interface {
+	Ensure(ctx context.Context, lane string, register func(resource string) error) error
+}
+
+type MultiOwner interface {
+	Owners(resource string) []string
+}
+
 type Env struct {
-	Dir      string
-	Worktree string
-	Environ  []string
+	Dir         string
+	Worktree    string
+	Environ     []string
+	WithoutLane []string
+	MainRoot    string
 }
 
 func FromConfig(cfg *config.Config, e Env) []Adapter {
@@ -45,6 +62,8 @@ func FromConfig(cfg *config.Config, e Env) []Adapter {
 			out = append(out, &Scripts{Spec: *r.Scripts, Env: e})
 		case r.Firebase != nil:
 			out = append(out, &Firebase{Spec: *r.Firebase, PortNames: cfg.Ports.Names, Env: e})
+		case r.MySQL != nil:
+			out = append(out, NewMySQL(*r.MySQL, e))
 		}
 	}
 	return out
@@ -58,8 +77,25 @@ func FromEntry(en registry.Entry, e Env) (Adapter, error) {
 		return &Scripts{Spec: *en.Scripts, Env: e}, nil
 	case en.Kind == KindFirebase:
 		return &Firebase{Env: e}, nil
+	case en.Kind == KindMySQL && en.MySQL != nil:
+		return NewMySQL(currentCredentials(*en.MySQL, e.Dir), e), nil
 	}
 	return nil, fmt.Errorf("registry entry %s/%s: unknown adapter kind %q", en.Adapter, en.Resource, en.Kind)
+}
+
+// currentCredentials takes the user and password from the lanes.yaml in dir
+// when it still declares a mysql resource: a retired lane is never registered
+// again, and its snapshot would keep a rotated password forever.
+func currentCredentials(spec config.MySQL, dir string) config.MySQL {
+	if dir == "" {
+		return spec
+	}
+	if cfg, err := config.Load(dir); err == nil {
+		if cur := cfg.MySQL(); cur != nil {
+			spec.User, spec.Password = cur.User, cur.Password
+		}
+	}
+	return spec
 }
 
 const KindScripts = "scripts"
