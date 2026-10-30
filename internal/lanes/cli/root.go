@@ -92,8 +92,6 @@ func prepareCore(ctx context.Context, w *workspace.Workspace, log io.Writer) err
 	return generate.Run(ctx, w.WT.Root, w.Cfg.Generate, w.Vars.Map(), log)
 }
 
-// settle reports on log the erases a lane change deferred: the lane changed
-// anyway, and lanesd retries them.
 func settle(ctx context.Context, dir string, log io.Writer) (*workspace.Workspace, error) {
 	w, err := workspace.Settle(ctx, dir)
 	if err != nil {

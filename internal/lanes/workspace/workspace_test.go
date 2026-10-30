@@ -7,7 +7,28 @@ import (
 
 	"github.com/valian-ca/homebrew-tools/internal/lanes/config"
 	"github.com/valian-ca/homebrew-tools/internal/lanes/env"
+	"github.com/valian-ca/homebrew-tools/internal/lanes/lane"
 )
+
+func TestTestVarsRendersTheEnvEntriesAgainOverTheTestSeries(t *testing.T) {
+	w := &Workspace{Tmpdir: "/t", Cfg: &config.Config{Env: config.EnvVars{{Name: "SCRATCH", Template: "{{.TMPDIR}}/x"}}}}
+	w.setLane(lane.Record{ID: "l_abc123"})
+	if got := w.Vars.Map()["SCRATCH"]; got != "/t/x" {
+		t.Fatalf("SCRATCH = %q in the lane", got)
+	}
+	if got := w.TestVars().Map()["SCRATCH"]; got != "/t/test/x" {
+		t.Fatalf("SCRATCH = %q under test-env, want it rendered over the test TMPDIR", got)
+	}
+
+	w.Cfg.Env = config.EnvVars{{Name: "SCRATCH", Template: "{{.NOPE}}"}}
+	w.setLane(lane.Record{ID: "l_abc123"})
+	if w.EnvErr == nil {
+		t.Fatal("an entry naming a missing variable rendered")
+	}
+	if _, ok := w.TestVars().Map()["SCRATCH"]; ok {
+		t.Fatal("test-env exported an entry that failed to render")
+	}
+}
 
 func TestRenderEnvSeesTheLaneAndThePreviousEntries(t *testing.T) {
 	base := env.Vars{{Name: "LANES_MYSQL_DATABASE_DEV", Value: "app_l_abc123"}, {Name: "PORT_WEB", Value: "42001"}}
@@ -30,7 +51,7 @@ func TestRenderEnvNamesTheFailingEntry(t *testing.T) {
 	}
 }
 
-func TestOutsideEnvironDropsTheLaneVariables(t *testing.T) {
+func TestEnvironWithoutLaneDropsTheLaneVariables(t *testing.T) {
 	t.Setenv("LANES_VARS", "LANE_ID PORT_WEB PROJECT_URL")
 	t.Setenv("LANE_ID", "old_abc123")
 	t.Setenv("PORT_WEB", "42001")
@@ -40,7 +61,7 @@ func TestOutsideEnvironDropsTheLaneVariables(t *testing.T) {
 	t.Setenv("KEEP_ME", "1")
 	w := &Workspace{Vars: env.Vars{{Name: "LANES_WORKTREE", Value: "/w"}}}
 	names := []string{}
-	for _, kv := range w.OutsideEnviron() {
+	for _, kv := range w.EnvironWithoutLane() {
 		k, _, _ := strings.Cut(kv, "=")
 		names = append(names, k)
 	}

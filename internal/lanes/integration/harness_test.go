@@ -82,8 +82,7 @@ type harness struct {
 }
 
 // profile picks how much of the demo's Firebase and MySQL sides a test repo
-// keeps: the core tests run without Java, Node or mysqld, on the demo turned
-// back into a schema-1 lanes.yaml.
+// keeps, so the core tests run without Java, Node or mysqld.
 type profile int
 
 const (

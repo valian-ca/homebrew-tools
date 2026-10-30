@@ -47,13 +47,12 @@ type MultiOwner interface {
 }
 
 type Env struct {
-	Dir      string
-	Worktree string
-	Environ  []string
-	// Outside is the caller's environment without the lane's variables.
-	Outside   []string
-	MainRoot  string
-	CommonDir string
+	Dir         string
+	Worktree    string
+	Environ     []string
+	WithoutLane []string
+	MainRoot    string
+	CommonDir   string
 }
 
 func FromConfig(cfg *config.Config, e Env) []Adapter {

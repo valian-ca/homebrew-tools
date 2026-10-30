@@ -165,7 +165,11 @@ error.
 | `LANES_VARS` | The names above, so `lanes env --unset` removes them all. |
 
 The stack's processes, the prep steps, the adapters' commands and the
-session's shells all get these variables. A project CLI that targets a remote
+session's shells all get these variables — except a `mysql` resource's
+`start`, which runs without them (see [below](#the-mysql-adapter)). Prep steps
+run before `lanes start` wakes the MySQL server and makes the lane's
+databases: they get the `LANES_MYSQL_*` variables but must not rely on the
+database, which a lane's first start has not made yet. A project CLI that targets a remote
 environment (`--env production`) applies `lanes env --unset` before loading
 its configuration.
 
@@ -304,13 +308,13 @@ below). Schema 2.
 
 | Key | Meaning |
 | --- | --- |
-| `host` | Default `127.0.0.1`. The server runs on this Mac: the port guard looks at its listener. |
+| `host` | Default `127.0.0.1`; `localhost` or a loopback address only. The server runs on this Mac: the port guard looks at its listener. |
 | `port` | Default `3306`. |
 | `user` | Default `root`. |
 | `password` | Default empty. |
 | `start` | The command that wakes the server, such as `docker compose -f pilote/docker-compose.yaml up -d --wait`. Optional. |
 | `listeners` | The process names that may hold `port`. Default `[mysqld]`. |
-| `databases` | Required, at least one: a key of letters, digits and `_`, and a name template holding `{lane}`. |
+| `databases` | Required, at least one: a key of letters, digits and `_`, and a name template holding `{lane}` after a fixed prefix (`app_{lane}`, not `{lane}`). |
 
 A template is refused when it can make a name over MySQL's 64 characters with
 the longest lane ID, 31 characters. A second `mysql` resource is refused too.
@@ -523,7 +527,11 @@ removes them, and `generate` templates see them.
 Runs a command in the foreground against the lane's test series. Every
 firebase `PORT_<NAME>`, the SDK variables and `LANES_FIREBASE_CONFIG` point at
 the `test_*` ports and `firebase.lanes.test.json`; `TMPDIR` is `$TMPDIR/test`;
-the caps apply. The command starts the emulators itself:
+the caps apply. The project's [`env`](#env) entries are rendered again over
+these values; the MySQL variables stay the lane's. An `env` entry that does
+not render is written to stderr and left out. `lanes test-env` never wakes a
+MySQL server nor creates the lane's databases: run `lanes start` once first.
+The command starts the emulators itself:
 
 ```sh
 lanes test-env -- firebase emulators:exec --config "$LANES_FIREBASE_CONFIG" "npm test"

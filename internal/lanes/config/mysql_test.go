@@ -71,6 +71,9 @@ func TestParseMySQLErrors(t *testing.T) {
 		"resources: [{mysql: {listeners: [], databases: {dev: 'a_{lane}'}}}]":                           "resources[0].mysql.listeners: must name at least one process (default [mysqld])",
 		"resources: [{mysql: {databases: {dev: 'a_{lane}', test: 'a_{lane}'}}}]":                        "resources[0].mysql.databases.test: same template as databases.dev",
 		"resources: [{mysql: {databases: {dev: 'a_{lane}'}}, firebase: {config: f.json}}]":              "resources[0]: declares 2 adapters, firebase and mysql — one per resource",
+		"resources: [{mysql: {host: db.prod.internal, databases: {dev: 'a_{lane}'}}}]":                  `resources[0].mysql.host: "db.prod.internal" is not this Mac — use localhost or a loopback address such as 127.0.0.1`,
+		"resources: [{mysql: {host: 10.0.0.5, databases: {dev: 'a_{lane}'}}}]":                          `resources[0].mysql.host: "10.0.0.5" is not this Mac — use localhost or a loopback address such as 127.0.0.1`,
+		"resources: [{mysql: {databases: {dev: '{lane}_db'}}}]":                                         `resources[0].mysql.databases.dev: "{lane}_db" must start with a fixed prefix before {lane} (e.g. app_{lane}), or reconcile could take other databases on the server for a lane's`,
 	}
 	for doc, want := range cases {
 		_, err := Parse([]byte(schema2 + doc + "\n"))

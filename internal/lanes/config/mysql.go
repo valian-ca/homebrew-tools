@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net"
 	"regexp"
 	"strings"
 
@@ -62,7 +63,12 @@ func (d Database) Name(laneID string) string {
 
 var databaseKey = regexp.MustCompile(`^[A-Za-z0-9_]+$`)
 
+// validate keeps the server on this Mac: the port guard looks at the local
+// listener, and could not vouch for a remote host behind the same port.
 func (m *MySQL) validate() error {
+	if m.Host != "" && !loopback(m.Host) {
+		return fmt.Errorf("host: %q is not this Mac — use localhost or a loopback address such as 127.0.0.1", m.Host)
+	}
 	if m.Port < 0 || m.Port > 65535 {
 		return fmt.Errorf("port: %d is not a TCP port (1-65535)", m.Port)
 	}
@@ -86,6 +92,9 @@ func (m *MySQL) validate() error {
 		if n == 0 {
 			return fmt.Errorf("databases.%s: %q must contain %s", d.Key, d.Template, LanePlaceholder)
 		}
+		if strings.HasPrefix(d.Template, LanePlaceholder) {
+			return fmt.Errorf("databases.%s: %q must start with a fixed prefix before %s (e.g. app_%s), or reconcile could take other databases on the server for a lane's", d.Key, d.Template, LanePlaceholder, LanePlaceholder)
+		}
 		if longest := len(d.Template) + n*(MaxLaneIDLen-len(LanePlaceholder)); longest > MaxDatabaseName {
 			return fmt.Errorf("databases.%s: %q can make a %d-character name with a %d-character lane ID, over MySQL's %d-character limit",
 				d.Key, d.Template, longest, MaxLaneIDLen, MaxDatabaseName)
@@ -96,6 +105,14 @@ func (m *MySQL) validate() error {
 		byTemplate[d.Template] = d.Key
 	}
 	return nil
+}
+
+func loopback(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func (m *MySQL) setDefaults() {

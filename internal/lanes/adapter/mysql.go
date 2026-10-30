@@ -2,6 +2,7 @@ package adapter
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"time"
@@ -48,7 +49,7 @@ func (m *MySQL) Ensure(ctx context.Context, lane string, register func(string) e
 	if err := m.Server.Wake(ctx, mysql.WakeOptions{
 		Dir:     m.Env.MainRoot,
 		Lock:    paths.MySQLStartLock(m.Env.CommonDir),
-		Environ: m.Env.Outside,
+		Environ: m.Env.WithoutLane,
 		Timeout: mysql.WakeTimeout(),
 	}); err != nil {
 		return err
@@ -67,13 +68,18 @@ func (m *MySQL) Erase(ctx context.Context, lane, resource string) error {
 		return fmt.Errorf("%w: %s adapter: %s: %w", ErrDeferred, KindMySQL, resource, err)
 	}
 	defer db.Close()
-	return m.Server.Drop(ctx, db, resource)
+	if err := m.Server.Drop(ctx, db, resource); errors.Is(err, mysql.ErrUnreachable) {
+		return fmt.Errorf("%w: %s adapter: %w", ErrDeferred, KindMySQL, err)
+	} else if err != nil {
+		return err
+	}
+	return nil
 }
 
 func (m *MySQL) List(ctx context.Context) ([]string, error) {
 	all, err := m.Server.Databases(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %s adapter: list: %w", ErrDeferred, KindMySQL, err)
 	}
 	return slices.DeleteFunc(all, func(n string) bool { return len(m.Owners(n)) == 0 }), nil
 }

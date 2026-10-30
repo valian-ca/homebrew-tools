@@ -125,8 +125,6 @@ jobs:
         if: steps.changed.outputs.lanes == 'true'
         run: brew install f1bonacc1/tap/process-compose
 
-      # mysql@8.4 is keg-only: the demo's start command and seed task find
-      # mysqld and mysql on PATH.
       - name: Install MySQL
         if: steps.changed.outputs.lanes == 'true'
         run: |

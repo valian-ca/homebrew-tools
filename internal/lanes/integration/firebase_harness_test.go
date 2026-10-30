@@ -48,7 +48,6 @@ func requireFirebase(t *testing.T) {
 	}
 }
 
-// shape trims the demo to the harness's profile and commits it as main.
 func (h *harness) shape(dir string) {
 	h.t.Helper()
 	noFirebase := h.profile == core || h.profile == mysqlStack

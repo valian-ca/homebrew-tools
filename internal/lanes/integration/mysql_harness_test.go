@@ -210,12 +210,10 @@ func (h *harness) tables(name string) []string {
 func devDB(lane string) string  { return "lanes_demo_" + lane }
 func testDB(lane string) string { return "lanes_demo_test_" + lane }
 
-// starts counts the runs of the demo's start command in a repo.
 func starts(repo string) int {
 	return strings.Count(read(filepath.Join(repo, ".demo", "mysql-start.log")), "begin ")
 }
 
-// seedLog is what the demo's seed task found at each of its runs in a lane.
 func (h *harness) seedLog(lane string) []string {
 	data := strings.TrimSpace(read(filepath.Join(h.store, "mysql-seed", lane+".log")))
 	if data == "" {

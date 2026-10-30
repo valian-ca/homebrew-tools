@@ -31,7 +31,8 @@ const (
 	DefaultWakeTimeout = 2 * time.Minute
 	startTimeout       = 10 * time.Minute
 	dialTimeout        = 3 * time.Second
-	ioTimeout          = 10 * time.Second
+	writeTimeout       = 10 * time.Second
+	readTimeout        = 2 * time.Minute
 	pollInterval       = 250 * time.Millisecond
 	startTailLines     = 40
 	erExists           = 1007
@@ -116,8 +117,8 @@ func (s *Server) open() (*sql.DB, error) {
 	c.User = s.Spec.User
 	c.Passwd = s.Spec.Password
 	c.Timeout = dialTimeout
-	c.ReadTimeout = ioTimeout
-	c.WriteTimeout = ioTimeout
+	c.ReadTimeout = readTimeout
+	c.WriteTimeout = writeTimeout
 	conn, err := driver.NewConnector(c)
 	if err != nil {
 		return nil, err
@@ -127,7 +128,7 @@ func (s *Server) open() (*sql.DB, error) {
 	return db, nil
 }
 
-// Connect guards the port, then connects; it never wakes the server.
+// Connect never wakes the server, whatever the guard finds: only Wake does.
 func (s *Server) Connect(ctx context.Context) (*sql.DB, error) {
 	if err := s.Guard(); err != nil {
 		return nil, err
@@ -269,10 +270,16 @@ func (s *Server) Ensure(ctx context.Context, names []string, register func(strin
 }
 
 func (s *Server) Drop(ctx context.Context, db *sql.DB, name string) error {
-	if _, err := db.ExecContext(ctx, "DROP DATABASE IF EXISTS "+quote(name)); err != nil {
+	_, err := db.ExecContext(ctx, "DROP DATABASE IF EXISTS "+quote(name))
+	var me *driver.MySQLError
+	switch {
+	case err == nil:
+		return nil
+	case errors.As(err, &me):
 		return fmt.Errorf("MySQL: drop %s: %w", name, err)
+	default:
+		return fmt.Errorf("%w: drop %s: %v", ErrUnreachable, name, err)
 	}
-	return nil
 }
 
 func (s *Server) Databases(ctx context.Context) ([]string, error) {

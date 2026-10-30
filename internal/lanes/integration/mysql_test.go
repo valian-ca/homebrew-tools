@@ -128,6 +128,9 @@ func TestMySQLConcurrentStartsRunTheStartCommandOnce(t *testing.T) {
 			t.Fatalf("a concurrent start failed: %s", r)
 		}
 	}
+	if n := starts(h.main); n != 1 {
+		t.Fatalf("the start command ran %d times", n)
+	}
 	runs := strings.Fields(strings.ReplaceAll(read(filepath.Join(h.main, ".demo", "mysql-start.log")), "\n", " "))
 	for i := 0; i+2 < len(runs); i += 4 {
 		if runs[i] != "begin" || runs[i+2] != "end" {
@@ -391,5 +394,36 @@ func TestLanesYAMLRefusals(t *testing.T) {
 		if r := h.lanes(wt, "env"); r.code == 0 || !strings.Contains(r.stderr, c.want) {
 			t.Errorf("%s: %s", name, r)
 		}
+	}
+}
+
+func TestEnvEntryThatDoesNotRender(t *testing.T) {
+	h := newHarness(t)
+	h.startDaemon()
+	wt := h.worktree("render", "feat/render")
+	h.editYAML(filepath.Join(wt, "lanes.yaml"), func(doc map[string]any) {
+		doc["schema"] = 2
+		doc["env"] = map[string]any{"GOOD": "x", "BROKEN": "{{.NOPE}}"}
+	})
+
+	if r := h.lanes(wt, "env"); r.code == 0 || !strings.Contains(r.stderr, "env.BROKEN") {
+		t.Fatalf("lanes env: %s", r)
+	}
+	if r := h.lanes(wt, "start"); r.code == 0 || !strings.Contains(r.stderr, "env.BROKEN") {
+		t.Fatalf("lanes start: %s", r)
+	}
+	if l := h.laneOf(wt); l.State != "stopped" {
+		t.Fatalf("a piece started: %+v", l)
+	}
+	envFile := filepath.Join(t.TempDir(), "claude-env")
+	r := h.lanesIn(h.main, payload(wt), []string{"CLAUDE_ENV_FILE=" + envFile}, "hook", "session-start")
+	if r.code != 0 || !strings.Contains(r.stderr, "env.BROKEN") || !strings.Contains(r.stderr, "the env: variables are left out") {
+		t.Fatalf("the hook: %s", r)
+	}
+	if got := read(envFile); !strings.Contains(got, "export LANE_ID=") || strings.Contains(got, "GOOD=") || strings.Contains(got, "BROKEN=") {
+		t.Fatalf("the session's env file:\n%s", got)
+	}
+	if r := h.lanes(wt, "test-env", "--", "true"); r.code != 0 || !strings.Contains(r.stderr, "the env: variables are left out") {
+		t.Fatalf("lanes test-env: %s", r)
 	}
 }

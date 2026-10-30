@@ -244,19 +244,16 @@ func (w *Workspace) Environ(base []string) []string { return w.Vars.Environ(base
 
 func (w *Workspace) Adapters(environ []string) []adapter.Adapter {
 	return adapter.FromConfig(w.Cfg, adapter.Env{
-		Dir:       w.WT.Root,
-		Worktree:  w.WT.Root,
-		Environ:   environ,
-		Outside:   w.OutsideEnviron(),
-		MainRoot:  w.MainRoot,
-		CommonDir: w.WT.CommonDir,
+		Dir:         w.WT.Root,
+		Worktree:    w.WT.Root,
+		Environ:     environ,
+		WithoutLane: w.EnvironWithoutLane(),
+		MainRoot:    w.MainRoot,
+		CommonDir:   w.WT.CommonDir,
 	})
 }
 
-// OutsideEnviron is the caller's environment without any lane's variables,
-// for a command that serves the whole repository. TMPDIR stays, unless the
-// caller's shell took it from a lane.
-func (w *Workspace) OutsideEnviron() []string {
+func (w *Workspace) EnvironWithoutLane() []string {
 	listed := strings.Fields(os.Getenv("LANES_VARS"))
 	drop := map[string]bool{}
 	for _, n := range slices.Concat(env.Fixed, w.Vars.Names(), listed) {
@@ -349,9 +346,8 @@ func StopStack(ctx context.Context, root, tmp string) error {
 	return c.Down(ctx)
 }
 
-// CreateResources runs each adapter's Create once per lane, registering what
-// it made before marking it done, so a crash leaves at worst an orphan that
-// reconcile finds through List and Owner. An Ensurer runs at every start.
+// CreateResources registers each resource before marking its adapter done, so
+// a crash leaves at worst an orphan that reconcile finds through List and Owner.
 func (w *Workspace) CreateResources(ctx context.Context, environ []string) error {
 	for _, a := range w.Adapters(environ) {
 		if e, ok := a.(adapter.Ensurer); ok {

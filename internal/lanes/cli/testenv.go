@@ -40,7 +40,10 @@ series: every firebase PORT_<NAME>, the SDK variables and LANES_FIREBASE_CONFIG
 name the test_* ports and firebase.lanes.test.json, TMPDIR is $TMPDIR/test,
 and the JVM heap and function load caps apply as in the stack.
 LANES_FIREBASE_JVM_HEAP and LANES_FIREBASE_FUNCTIONS_TIMEOUT, when set, replace
-the project's caps.
+the project's caps. The project's env: variables are rendered again over these
+values; the MySQL variables stay the lane's. An env: entry that does not render
+is reported on stderr and left out. test-env never wakes a MySQL server nor
+creates the lane's databases.
 
 The command starts the emulators itself, for instance with
   firebase emulators:exec --config "$LANES_FIREBASE_CONFIG" "<suite>"
