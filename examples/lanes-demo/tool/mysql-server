@@ -49,9 +49,22 @@ trap 'echo "end $$" >>"$log"' EXIT
 
 data="$PWD/.demo/mysql"
 pidfile="$data/mysqld.pid"
-if [ -f "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
+
+# running holds when the pid file names a mysqld of this data directory: the
+# file outlives its server, and after a reboot its PID can name any process.
+# -ef compares the directories themselves, whatever path each was given by.
+running() {
+  local pid cmd dir
+  pid=$(cat "$pidfile" 2>/dev/null) || return 1
+  cmd=$(ps -p "$pid" -o command= 2>/dev/null) || return 1
+  case "$cmd" in *mysqld*) ;; *) return 1 ;; esac
+  dir=$(sed -n 's/.* --datadir=\([^ ]*\).*/\1/p' <<<"$cmd")
+  [ -n "$dir" ] && [ "$dir" -ef "$data" ]
+}
+if running; then
   exit 0
 fi
+rm -f "$pidfile"
 
 mysqld=$(resolve_mysqld)
 # --no-defaults comes first: Homebrew's mysql@8.4 writes a my.cnf its mysqld

@@ -331,6 +331,41 @@ func TestMySQLNewLaneWhileTheServerSleeps(t *testing.T) {
 	})
 }
 
+// A pid file outlives its server, and after a reboot its PID can name any
+// process: neither the demo's start command nor the harness takes it for the
+// server.
+func TestMySQLStalePIDFileNamesAnotherProcess(t *testing.T) {
+	h := newHarness(t, withProfile(mysqlStack), withEnv("LANES_MYSQL_WAKE_TIMEOUT=20s"))
+	h.startDaemon()
+	decoy := h.spawn(t.TempDir(), "sleep", "600")
+	if err := os.MkdirAll(filepath.Dir(pidfile(h.main)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(pidfile(h.main), []byte(strconv.Itoa(decoy.Process.Pid)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if pid := h.mysqldPID(); pid != 0 {
+		t.Fatalf("the harness took pid %d, a sleep, for the server", pid)
+	}
+	h.stopMySQLServers()
+	if !alive(decoy) {
+		t.Fatal("the harness signalled the process the stale pid file names")
+	}
+
+	wt := h.worktree("stale", "feat/stale")
+	h.mustLanes(wt, "start")
+	if dev := devDB(h.laneOf(wt).Lane); !h.hasDB(dev) {
+		t.Fatalf("databases %v lack %s", h.databases(), dev)
+	}
+	if h.mysqldPID() == 0 || h.mysqldPID() == decoy.Process.Pid {
+		t.Fatalf("the pid file does not name the new server: %d", h.mysqldPID())
+	}
+	h.stopMySQLServers()
+	if !alive(decoy) {
+		t.Fatal("stopping the servers signalled the decoy")
+	}
+}
+
 func TestMySQLNewLaneAtAHookBehindAForeignListener(t *testing.T) {
 	h := newHarness(t, withProfile(mysqlStack), grace(time.Hour))
 	h.startDaemon()

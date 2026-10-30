@@ -19,6 +19,7 @@ import (
 
 	driver "github.com/go-sql-driver/mysql"
 
+	"github.com/valian-ca/homebrew-tools/internal/lanes/procinfo"
 	"github.com/valian-ca/homebrew-tools/internal/lanes/registry"
 )
 
@@ -93,12 +94,44 @@ func (h *harness) mysqlSpec(wt string, edit func(map[string]any)) {
 
 func pidfile(repo string) string { return filepath.Join(repo, ".demo", "mysql", "mysqld.pid") }
 
-func (h *harness) mysqldPID() int {
-	for _, r := range h.repos {
-		if data, err := os.ReadFile(pidfile(r)); err == nil {
-			if pid, err := strconv.Atoi(strings.TrimSpace(string(data))); err == nil && syscall.Kill(pid, 0) == nil {
+// demoMySQLD is the PID repo's pid file names when it is a mysqld of repo's
+// data directory, else 0: the file outlives its server, and after a reboot
+// its PID can name any process on the Mac.
+func demoMySQLD(repo string) int {
+	data, err := os.ReadFile(pidfile(repo))
+	if err != nil {
+		return 0
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		return 0
+	}
+	procs, err := procinfo.System().Snapshot()
+	if err != nil {
+		return 0
+	}
+	p, ok := procinfo.ByPID(procs)[pid]
+	if !ok || !p.NamedAs([]string{"mysqld"}) {
+		return 0
+	}
+	want, err := os.Stat(filepath.Dir(pidfile(repo)))
+	if err != nil {
+		return 0
+	}
+	for _, a := range p.Argv {
+		if dir, ok := strings.CutPrefix(a, "--datadir="); ok {
+			if got, err := os.Stat(dir); err == nil && os.SameFile(got, want) {
 				return pid
 			}
+		}
+	}
+	return 0
+}
+
+func (h *harness) mysqldPID() int {
+	for _, r := range h.repos {
+		if pid := demoMySQLD(r); pid != 0 {
+			return pid
 		}
 	}
 	return 0
@@ -117,12 +150,8 @@ func (h *harness) stopMySQL() {
 
 func (h *harness) stopMySQLServers() {
 	for _, r := range h.repos {
-		data, err := os.ReadFile(pidfile(r))
-		if err != nil {
-			continue
-		}
-		pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
-		if err != nil {
+		pid := demoMySQLD(r)
+		if pid == 0 {
 			continue
 		}
 		_ = syscall.Kill(pid, syscall.SIGTERM)
