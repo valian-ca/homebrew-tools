@@ -48,7 +48,7 @@ func (m *MySQL) Create(ctx context.Context, lane string) ([]string, error) {
 func (m *MySQL) Ensure(ctx context.Context, lane string, register func(string) error) error {
 	if err := m.Server.Wake(ctx, mysql.WakeOptions{
 		Dir:     m.Env.MainRoot,
-		Lock:    paths.MySQLStartLock(m.Env.CommonDir),
+		Lock:    paths.MySQLStartLock(m.Spec.Port),
 		Environ: m.Env.WithoutLane,
 		Timeout: mysql.WakeTimeout(),
 	}); err != nil {

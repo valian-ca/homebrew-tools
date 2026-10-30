@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -27,7 +29,7 @@ func freePort(t *testing.T) int {
 
 func mysqlAdapter(t *testing.T, procs procinfo.Source) *MySQL {
 	t.Helper()
-	spec := config.MySQL{Host: "127.0.0.1", Port: freePort(t), User: "root", Listeners: []string{"mysqld"},
+	spec := config.MySQL{Port: freePort(t), User: "root", Listeners: []string{"mysqld"},
 		Databases: config.Databases{{Key: "dev", Template: "app_{lane}"}, {Key: "test", Template: "app_test_{lane}"}}}
 	m := NewMySQL(spec, Env{})
 	m.Server.Procs = procs
@@ -88,6 +90,29 @@ func TestMySQLEntryRebuildsTheAdapter(t *testing.T) {
 	back.MySQL = nil
 	if _, err := FromEntry(back, Env{}); err == nil {
 		t.Fatal("a mysql entry without its spec was rebuilt")
+	}
+}
+
+func TestMySQLEntryErasesWithTheCurrentCredentials(t *testing.T) {
+	m := mysqlAdapter(t, &procinfo.Fake{})
+	m.Spec.Password = "old"
+	en := m.Entry("feat_abc123", "app_feat_abc123")
+	dir := t.TempDir()
+	yaml := "schema: 2\nports: {block: 2, names: [web]}\nresources:\n  - mysql:\n      user: app\n      password: rotated\n      databases:\n        dev: other_{lane}\n"
+	if err := os.WriteFile(filepath.Join(dir, "lanes.yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a, err := FromEntry(en, Env{Dir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := a.(*MySQL).Spec
+	if got.User != "app" || got.Password != "rotated" || got.Port != m.Spec.Port || got.Databases[0].Template != "app_{lane}" {
+		t.Fatalf("rebuilt spec = %+v: want lanes.yaml's credentials over the snapshot's port and templates", got)
+	}
+	a, err = FromEntry(en, Env{Dir: t.TempDir()})
+	if err != nil || a.(*MySQL).Spec.Password != "old" {
+		t.Fatalf("without a lanes.yaml, the snapshot's credentials: %+v, %v", a, err)
 	}
 }
 

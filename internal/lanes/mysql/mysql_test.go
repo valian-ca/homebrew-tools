@@ -46,7 +46,7 @@ func TestOwners(t *testing.T) {
 }
 
 func TestVars(t *testing.T) {
-	spec := config.MySQL{Host: "127.0.0.1", Port: 3316, User: "root", Databases: onr}
+	spec := config.MySQL{Port: 3316, User: "root", Databases: onr}
 	got := Vars(spec, "feat_x_abc123").Map()
 	want := map[string]string{
 		"LANES_MYSQL_HOST":          "127.0.0.1",
@@ -78,7 +78,7 @@ func freePort(t *testing.T) int {
 
 func server(port int, procs procinfo.Source, start string) *Server {
 	return &Server{
-		Spec:  config.MySQL{Host: "127.0.0.1", Port: port, User: "root", Start: start, Listeners: []string{"mysqld"}, Databases: onr},
+		Spec:  config.MySQL{Port: port, User: "root", Start: start, Listeners: []string{"mysqld"}, Databases: onr},
 		Procs: procs,
 	}
 }

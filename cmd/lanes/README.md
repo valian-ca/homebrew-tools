@@ -91,7 +91,7 @@ resources:                    # adapters, in creation order
       databases:
         dev: nezrouge_{lane}
         test: nezrouge_test_{lane}
-env:                          # schema 2; in order, each sees the ones before
+env:                          # schema 2; in order, each sees the ones before; a name once
   PILOTE_DATABASE_URL: jdbc:mysql://{{.LANES_MYSQL_HOST}}:{{.LANES_MYSQL_PORT}}/{{.LANES_MYSQL_DATABASE_DEV}}
 generate:
   - template: config/app.env.tmpl   # renders config/app.env
@@ -308,8 +308,7 @@ below). Schema 2.
 
 | Key | Meaning |
 | --- | --- |
-| `host` | Default `127.0.0.1`; `localhost` or a loopback address only. The server runs on this Mac: the port guard looks at its listener. |
-| `port` | Default `3306`. |
+| `port` | Default `3306`. The server runs on this Mac, and lanes always reaches it at `127.0.0.1`: there is no `host` key, since the port guard can only vouch for this Mac's listener. |
 | `user` | Default `root`. |
 | `password` | Default empty. |
 | `start` | The command that wakes the server, such as `docker compose -f pilote/docker-compose.yaml up -d --wait`. Optional. |
@@ -317,7 +316,9 @@ below). Schema 2.
 | `databases` | Required, at least one: a key of letters, digits and `_`, and a name template holding `{lane}` after a fixed prefix (`app_{lane}`, not `{lane}`). |
 
 A template is refused when it can make a name over MySQL's 64 characters with
-the longest lane ID, 31 characters. A second `mysql` resource is refused too.
+the longest lane ID, 31 characters, and so are two keys that differ only by
+case, since they would share one variable. A second `mysql` resource is
+refused too.
 
 **The server is the main checkout's, and shared.** No lane stops it: not
 `lanes stop`, not a teardown, a new lane or reconcile. lanes connects to it
@@ -345,8 +346,10 @@ to declare, run `lsof -nP -iTCP:<port> -sTCP:LISTEN` with the server up:
 **Waking.** At `lanes start`, when nothing listens on `port`, lanes runs
 `start` with `/bin/sh -c`, from the main checkout — a server's data never
 lives in a worktree that can disappear — with the caller's environment
-without the lane's variables, under a lock of the repository: two lanes
-starting together never run it at once, and the second finds the server up.
+without the lane's variables, under a lock of the Mac keyed on the port: two
+lanes starting together — of one repository, of two clones, or of two
+projects on the same server — never run it at once, and the second finds the
+server up.
 Then it waits up to 2 minutes for the server to accept connections. When
 `start` fails or the wait runs out, `lanes start` refuses with the end of
 `start`'s output and starts nothing. Without `start`, a sleeping server makes
@@ -366,6 +369,10 @@ databases before anything starts; reconcile erases a gone worktree's. Erasing
 one that no longer exists succeeds. When the server sleeps, does not answer
 or the guard refuses, the erase fails without waking it: the databases stay
 registered, reconcile retries every 5 minutes, and a new lane does not wait.
+An erase connects with the user and password of the current `lanes.yaml` —
+the worktree's, or the main checkout's once the worktree is gone — and falls
+back to those recorded at registration when that file has no `mysql`
+resource: a rotated password does not strand a retired lane's databases.
 A database belongs to a lane only when its name comes out of one of the
 project's templates with a valid lane ID — ending in `_` and 6 hex
 characters. The main checkout's databases (`nezrouge`, `nezrouge_test`) and
@@ -375,7 +382,8 @@ never registered whose lane is gone. A name can come out of two templates —
 and the `test` database of lane `foo_abc123` — and is then erased only when
 none of those lanes lives.
 
-**Variables.** `lanes env` and the hooks export `LANES_MYSQL_HOST`,
+**Variables.** `lanes env` and the hooks export `LANES_MYSQL_HOST` (always
+`127.0.0.1`),
 `LANES_MYSQL_PORT`, `LANES_MYSQL_USER`, `LANES_MYSQL_PASSWORD` (even empty) and
 `LANES_MYSQL_DATABASE_<KEY>` for each database, its key upper-cased:
 `LANES_MYSQL_DATABASE_DEV`, `LANES_MYSQL_DATABASE_TEST`. They are computed

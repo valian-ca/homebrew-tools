@@ -249,7 +249,6 @@ func (w *Workspace) Adapters(environ []string) []adapter.Adapter {
 		Environ:     environ,
 		WithoutLane: w.EnvironWithoutLane(),
 		MainRoot:    w.MainRoot,
-		CommonDir:   w.WT.CommonDir,
 	})
 }
 
@@ -351,7 +350,7 @@ func StopStack(ctx context.Context, root, tmp string) error {
 func (w *Workspace) CreateResources(ctx context.Context, environ []string) error {
 	for _, a := range w.Adapters(environ) {
 		if e, ok := a.(adapter.Ensurer); ok {
-			if err := e.Ensure(ctx, w.Lane.ID, func(n string) error { return w.register(a, n) }); err != nil {
+			if err := e.Ensure(ctx, w.Lane.ID, func(n string) error { return registry.Refresh(w.WT.CommonDir, w.entry(a, n)) }); err != nil {
 				return err
 			}
 			if err := w.markCreated(a); err != nil {
@@ -370,7 +369,7 @@ func (w *Workspace) CreateResources(ctx context.Context, environ []string) error
 			return err
 		}
 		for _, n := range names {
-			if err := w.register(a, n); err != nil {
+			if err := registry.Add(w.WT.CommonDir, w.entry(a, n)); err != nil {
 				return err
 			}
 		}
@@ -381,10 +380,10 @@ func (w *Workspace) CreateResources(ctx context.Context, environ []string) error
 	return nil
 }
 
-func (w *Workspace) register(a adapter.Adapter, resource string) error {
+func (w *Workspace) entry(a adapter.Adapter, resource string) registry.Entry {
 	en := a.Entry(w.Lane.ID, resource)
 	en.AdminDir = w.WT.AdminDir
-	return registry.Add(w.WT.CommonDir, en)
+	return en
 }
 
 func (w *Workspace) markCreated(a adapter.Adapter) error {

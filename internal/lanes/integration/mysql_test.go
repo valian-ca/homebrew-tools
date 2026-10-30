@@ -145,6 +145,37 @@ func TestMySQLConcurrentStartsRunTheStartCommandOnce(t *testing.T) {
 	}
 }
 
+func TestMySQLStartsFromTwoRepositoriesWakeTheServerOnce(t *testing.T) {
+	h := newHarness(t, withProfile(mysqlStack))
+	h.startDaemon()
+	other := h.repo("other")
+	a := h.worktree("a", "feat/a")
+	b := h.worktreeIn(other, "b", "feat/b")
+	var wg sync.WaitGroup
+	results := make([]result, 2)
+	for i, wt := range []string{a, b} {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			results[i] = h.lanes(wt, "start")
+		}()
+	}
+	wg.Wait()
+	for _, r := range results {
+		if r.code != 0 {
+			t.Fatalf("a concurrent start from another repository failed: %s", r)
+		}
+	}
+	if n := starts(h.main) + starts(other); n != 1 {
+		t.Fatalf("the start command ran %d times across the two repositories", n)
+	}
+	for _, wt := range []string{a, b} {
+		if lane := h.laneOf(wt).Lane; !h.hasDB(devDB(lane)) || h.laneOf(wt).State != "running" {
+			t.Fatalf("%s: databases %v, state %s", wt, h.databases(), h.laneOf(wt).State)
+		}
+	}
+}
+
 func TestMySQLStartRefusals(t *testing.T) {
 	h := newHarness(t, withProfile(mysqlStack), withEnv("LANES_MYSQL_WAKE_TIMEOUT=2s"))
 	h.startDaemon()

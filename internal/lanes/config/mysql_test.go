@@ -25,7 +25,7 @@ resources:
 		t.Fatal(err)
 	}
 	m := cfg.MySQL()
-	if m.Host != "127.0.0.1" || m.Port != 3306 || m.User != "root" || m.Password != "" || m.Start != "" || !slices.Equal(m.Listeners, []string{"mysqld"}) {
+	if m.Port != 3306 || m.User != "root" || m.Password != "" || m.Start != "" || !slices.Equal(m.Listeners, []string{"mysqld"}) {
 		t.Errorf("defaults = %+v", m)
 	}
 	want := Databases{{Key: "dev", Template: "app_{lane}"}, {Key: "test", Template: "app_test_{lane}"}}
@@ -41,7 +41,6 @@ func TestParseMySQLFull(t *testing.T) {
 	cfg, err := Parse([]byte(schema2 + `
 resources:
   - mysql:
-      host: localhost
       port: 3307
       user: app
       password: secret
@@ -53,7 +52,7 @@ resources:
 		t.Fatal(err)
 	}
 	m := cfg.MySQL()
-	if m.Host != "localhost" || m.Port != 3307 || m.User != "app" || m.Password != "secret" || m.Start == "" || m.Listeners[0] != "com.docker.backend" {
+	if m.Port != 3307 || m.User != "app" || m.Password != "secret" || m.Start == "" || m.Listeners[0] != "com.docker.backend" {
 		t.Errorf("mysql = %+v", m)
 	}
 }
@@ -71,8 +70,9 @@ func TestParseMySQLErrors(t *testing.T) {
 		"resources: [{mysql: {listeners: [], databases: {dev: 'a_{lane}'}}}]":                           "resources[0].mysql.listeners: must name at least one process (default [mysqld])",
 		"resources: [{mysql: {databases: {dev: 'a_{lane}', test: 'a_{lane}'}}}]":                        "resources[0].mysql.databases.test: same template as databases.dev",
 		"resources: [{mysql: {databases: {dev: 'a_{lane}'}}, firebase: {config: f.json}}]":              "resources[0]: declares 2 adapters, firebase and mysql — one per resource",
-		"resources: [{mysql: {host: db.prod.internal, databases: {dev: 'a_{lane}'}}}]":                  `resources[0].mysql.host: "db.prod.internal" is not this Mac — use localhost or a loopback address such as 127.0.0.1`,
-		"resources: [{mysql: {host: 10.0.0.5, databases: {dev: 'a_{lane}'}}}]":                          `resources[0].mysql.host: "10.0.0.5" is not this Mac — use localhost or a loopback address such as 127.0.0.1`,
+		"resources: [{mysql: {host: 127.0.0.1, databases: {dev: 'a_{lane}'}}}]":                         "resources[0].mysql.host: not a key — lanes always connects to 127.0.0.1, the server on this Mac",
+		"resources: [{mysql: {databases: {dev: 'a_{lane}', DEV: 'b_{lane}'}}}]":                         "resources[0].mysql.databases.DEV: same variable as databases.dev (LANES_MYSQL_DATABASE_DEV)",
+		"resources: [{mysql: {databases: {dev: 'a_{lane}', dev: 'b_{lane}'}}}]":                         "resources[0].mysql.databases.dev: same variable as databases.dev (LANES_MYSQL_DATABASE_DEV)",
 		"resources: [{mysql: {databases: {dev: '{lane}_db'}}}]":                                         `resources[0].mysql.databases.dev: "{lane}_db" must start with a fixed prefix before {lane} (e.g. app_{lane}), or reconcile could take other databases on the server for a lane's`,
 	}
 	for doc, want := range cases {
@@ -132,10 +132,11 @@ func TestParseEnvErrors(t *testing.T) {
 		}
 	}
 	for doc, prefix := range map[string]string{
-		"env:\n  1BAD: x\n":         "env.1BAD: not a variable name",
-		"env:\n  URL: '{{.PORT_'\n": "env.URL: template:",
-		"env:\n  URL: [a]\n":        "env.URL: must be a template string",
-		"env: [a]\n":                "env: must map each variable name",
+		"env:\n  1BAD: x\n":          "env.1BAD: not a variable name",
+		"env:\n  URL: a\n  URL: b\n": "env.URL: declared twice",
+		"env:\n  URL: '{{.PORT_'\n":  "env.URL: template:",
+		"env:\n  URL: [a]\n":         "env.URL: must be a template string",
+		"env: [a]\n":                 "env: must map each variable name",
 	} {
 		_, err := Parse([]byte(schema2 + doc))
 		if err == nil || !strings.Contains(err.Error(), prefix) {

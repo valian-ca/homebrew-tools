@@ -44,10 +44,15 @@ func (v EnvVar) Parse() (*template.Template, error) {
 var envName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 func (e EnvVars) validate() error {
+	seen := map[string]bool{}
 	for _, v := range e {
 		if !envName.MatchString(v.Name) {
 			return fmt.Errorf("env.%s: not a variable name (letters, digits, '_', not starting with a digit)", v.Name)
 		}
+		if seen[v.Name] {
+			return fmt.Errorf("env.%s: declared twice", v.Name)
+		}
+		seen[v.Name] = true
 		if reserved(v.Name) {
 			return fmt.Errorf("env.%s: redefines a variable lanes sets (TMPDIR, LANE_ID, PORT_*, LANES_*, the Firebase emulator variables)", v.Name)
 		}

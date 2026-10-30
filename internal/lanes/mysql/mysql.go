@@ -71,7 +71,7 @@ type Server struct {
 
 func New(spec config.MySQL) *Server { return &Server{Spec: spec, Procs: procinfo.System()} }
 
-func (s *Server) Addr() string { return net.JoinHostPort(s.Spec.Host, strconv.Itoa(s.Spec.Port)) }
+func (s *Server) Addr() string { return net.JoinHostPort(config.MySQLHost, strconv.Itoa(s.Spec.Port)) }
 
 // Guard identifies the program that listens on the port, before any MySQL
 // connection: it tells a sleeping server (ErrAsleep) from a foreign one.
@@ -347,7 +347,7 @@ func DatabaseVar(key string) string { return "LANES_MYSQL_DATABASE_" + strings.T
 // Vars needs no server: lanes env and the hooks export them while it sleeps.
 func Vars(spec config.MySQL, laneID string) env.Vars {
 	v := env.Vars{
-		{Name: "LANES_MYSQL_HOST", Value: spec.Host},
+		{Name: "LANES_MYSQL_HOST", Value: config.MySQLHost},
 		{Name: "LANES_MYSQL_PORT", Value: strconv.Itoa(spec.Port)},
 		{Name: "LANES_MYSQL_USER", Value: spec.User},
 		{Name: "LANES_MYSQL_PASSWORD", Value: spec.Password},

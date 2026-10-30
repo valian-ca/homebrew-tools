@@ -46,6 +46,25 @@ func Add(commonDir string, entries ...Entry) error {
 	})
 }
 
+// Refresh replaces the entry the same lane of the same worktree registered,
+// so its snapshot follows lanes.yaml; another lane's claim on the resource is
+// kept as is.
+func Refresh(commonDir string, e Entry) error {
+	return update(commonDir, func(cur []Entry) []Entry {
+		for i, c := range cur {
+			if c.Kind != e.Kind || c.Adapter != e.Adapter || c.Resource != e.Resource {
+				continue
+			}
+			if c.Lane == e.Lane && c.AdminDir == e.AdminDir {
+				e.CreatedAt = c.CreatedAt
+				cur[i] = e
+			}
+			return cur
+		}
+		return append(cur, e)
+	})
+}
+
 func Remove(commonDir string, e Entry) error {
 	return update(commonDir, func(cur []Entry) []Entry {
 		return slices.DeleteFunc(cur, func(c Entry) bool {

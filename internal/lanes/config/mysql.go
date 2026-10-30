@@ -3,7 +3,6 @@ package config
 import (
 	"errors"
 	"fmt"
-	"net"
 	"regexp"
 	"strings"
 
@@ -11,7 +10,9 @@ import (
 )
 
 const (
-	DefaultMySQLHost = "127.0.0.1"
+	// MySQLHost is the only address lanes connects to: the port guard looks at
+	// this Mac's listener, and could not vouch for another host.
+	MySQLHost        = "127.0.0.1"
 	DefaultMySQLPort = 3306
 	DefaultMySQLUser = "root"
 	LanePlaceholder  = "{lane}"
@@ -23,7 +24,8 @@ const (
 var DefaultMySQLListeners = []string{"mysqld"}
 
 type MySQL struct {
-	Host      string    `yaml:"host" json:"host"`
+	// Host catches a host key, refused with its reason rather than as unknown.
+	Host      yaml.Node `yaml:"host" json:"-"`
 	Port      int       `yaml:"port" json:"port"`
 	User      string    `yaml:"user" json:"user"`
 	Password  string    `yaml:"password" json:"password"`
@@ -63,11 +65,9 @@ func (d Database) Name(laneID string) string {
 
 var databaseKey = regexp.MustCompile(`^[A-Za-z0-9_]+$`)
 
-// validate keeps the server on this Mac: the port guard looks at the local
-// listener, and could not vouch for a remote host behind the same port.
 func (m *MySQL) validate() error {
-	if m.Host != "" && !loopback(m.Host) {
-		return fmt.Errorf("host: %q is not this Mac — use localhost or a loopback address such as 127.0.0.1", m.Host)
+	if !m.Host.IsZero() {
+		return fmt.Errorf("host: not a key — lanes always connects to %s, the server on this Mac", MySQLHost)
 	}
 	if m.Port < 0 || m.Port > 65535 {
 		return fmt.Errorf("port: %d is not a TCP port (1-65535)", m.Port)
@@ -83,11 +83,15 @@ func (m *MySQL) validate() error {
 	if len(m.Databases) == 0 {
 		return errors.New("databases: required, at least one (e.g. dev: app_{lane})")
 	}
-	byTemplate := map[string]string{}
+	byTemplate, byVar := map[string]string{}, map[string]string{}
 	for _, d := range m.Databases {
 		if !databaseKey.MatchString(d.Key) {
 			return fmt.Errorf("databases.%s: the key must be letters, digits or '_'", d.Key)
 		}
+		if first, ok := byVar[strings.ToUpper(d.Key)]; ok {
+			return fmt.Errorf("databases.%s: same variable as databases.%s (LANES_MYSQL_DATABASE_%s)", d.Key, first, strings.ToUpper(d.Key))
+		}
+		byVar[strings.ToUpper(d.Key)] = d.Key
 		n := strings.Count(d.Template, LanePlaceholder)
 		if n == 0 {
 			return fmt.Errorf("databases.%s: %q must contain %s", d.Key, d.Template, LanePlaceholder)
@@ -107,18 +111,7 @@ func (m *MySQL) validate() error {
 	return nil
 }
 
-func loopback(host string) bool {
-	if host == "localhost" {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
-}
-
 func (m *MySQL) setDefaults() {
-	if m.Host == "" {
-		m.Host = DefaultMySQLHost
-	}
 	if m.Port == 0 {
 		m.Port = DefaultMySQLPort
 	}
