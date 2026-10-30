@@ -416,6 +416,10 @@ func TestLanesYAMLRefusals(t *testing.T) {
 		"env in schema 1":   {func(d map[string]any) { d["env"] = map[string]any{"A": "b"} }, "env: requires schema: 2"},
 		"two mysql":         {func(d map[string]any) { d["schema"] = 2; d["resources"] = append(d["resources"].([]any), mysql, mysql) }, "resources[2].mysql: at most one mysql resource"},
 		"env redefines":     {func(d map[string]any) { d["schema"] = 2; d["env"] = map[string]any{"PORT_WEB": "1"} }, "env.PORT_WEB: redefines a variable lanes sets"},
+		"dotted template": {func(d map[string]any) {
+			d["schema"] = 2
+			d["resources"] = append(d["resources"].([]any), map[string]any{"mysql": map[string]any{"databases": map[string]any{"dev": "app.{lane}"}}})
+		}, `lanes.yaml: resources[1].mysql.databases.dev: "app.{lane}" may hold only letters, digits, '_' and '$' around {lane}`},
 	}
 	for name, c := range cases {
 		if err := os.WriteFile(path, good, 0o644); err != nil {
