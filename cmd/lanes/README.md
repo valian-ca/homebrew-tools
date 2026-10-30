@@ -597,8 +597,11 @@ A physical device reaches the lane's emulators by the Mac's IP, not by
   A live session keeps its stack, however idle; only `lanes stop` stops it
   then.
 - A teardown shuts process-compose down — one stop signal per process, which
-  `shutdown.parent_only` aims at a group's leader — then stops every process
-  still working in the worktree, by `SIGTERM` then `SIGKILL` after 10 s. It
+  `shutdown.parent_only` aims at a group's leader — and waits for it as long
+  as the slowest `shutdown.timeout_seconds` of the stack plus 15 s, a minute
+  at least: Firebase declares its `export_timeout` plus 15 s. Then it stops
+  every process still working in the worktree, by `SIGTERM` then `SIGKILL`
+  after 10 s. It
   spares sessions, `shared`, `spare`, lanes itself, shells
   (`sh bash zsh fish dash nu`), editors (`vim nvim nano emacs code Code cursor
   Cursor Electron zed hx`) and terminals or multiplexers (`tmux screen zellij
