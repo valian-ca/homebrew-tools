@@ -2,6 +2,7 @@ package config
 
 import (
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -80,6 +81,19 @@ func TestParseMySQLErrors(t *testing.T) {
 		if err == nil || err.Error() != want {
 			t.Errorf("Parse(%s)\n got %v\nwant %s", doc, err, want)
 		}
+	}
+}
+
+func TestParseMySQLTemplateCharacters(t *testing.T) {
+	for _, tpl := range []string{"app.{lane}", "app/{lane}", `app\{lane}`, "app_{lane} ", "app-{lane}", "app_{lane}.db", "café_{lane}"} {
+		doc := "resources: [{mysql: {databases: {dev: '" + tpl + "'}}}]"
+		want := `resources[0].mysql.databases.dev: ` + strconv.Quote(tpl) + ` may hold only letters, digits, '_' and '$' around {lane}`
+		if _, err := Parse([]byte(schema2 + doc + "\n")); err == nil || err.Error() != want {
+			t.Errorf("Parse(%s)\n got %v\nwant %s", doc, err, want)
+		}
+	}
+	if _, err := Parse([]byte(schema2 + "resources: [{mysql: {databases: {dev: 'App_$2_{lane}'}}}]\n")); err != nil {
+		t.Fatalf("a template of letters, digits, '_' and '$' was refused: %v", err)
 	}
 }
 

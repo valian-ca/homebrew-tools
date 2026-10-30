@@ -313,7 +313,7 @@ below). Schema 2.
 | `password` | Default empty. |
 | `start` | The command that wakes the server, such as `docker compose -f pilote/docker-compose.yaml up -d --wait`. Optional. |
 | `listeners` | The process names that may hold `port`. Default `[mysqld]`. |
-| `databases` | Required, at least one: a key of letters, digits and `_`, and a name template holding `{lane}` after a fixed prefix (`app_{lane}`, not `{lane}`). |
+| `databases` | Required, at least one: a key of letters, digits and `_`, and a name template holding `{lane}` after a fixed prefix (`app_{lane}`, not `{lane}`), with only letters, digits, `_` and `$` around it (`app.{lane}` is an error). |
 
 A template is refused when it can make a name over MySQL's 64 characters with
 the longest lane ID, 31 characters, and so are two keys that differ only by

@@ -65,6 +65,11 @@ func (d Database) Name(laneID string) string {
 
 var databaseKey = regexp.MustCompile(`^[A-Za-z0-9_]+$`)
 
+// templateText is what a database template may hold around {lane}: the
+// characters of an unquoted MySQL identifier, ASCII only, so no name reaches
+// CREATE DATABASE with a character the server refuses.
+var templateText = regexp.MustCompile(`^[A-Za-z0-9_$]*$`)
+
 func (m *MySQL) validate() error {
 	if !m.Host.IsZero() {
 		return fmt.Errorf("host: not a key — lanes always connects to %s, the server on this Mac", MySQLHost)
@@ -95,6 +100,9 @@ func (m *MySQL) validate() error {
 		n := strings.Count(d.Template, LanePlaceholder)
 		if n == 0 {
 			return fmt.Errorf("databases.%s: %q must contain %s", d.Key, d.Template, LanePlaceholder)
+		}
+		if !templateText.MatchString(strings.ReplaceAll(d.Template, LanePlaceholder, "")) {
+			return fmt.Errorf("databases.%s: %q may hold only letters, digits, '_' and '$' around %s", d.Key, d.Template, LanePlaceholder)
 		}
 		if strings.HasPrefix(d.Template, LanePlaceholder) {
 			return fmt.Errorf("databases.%s: %q must start with a fixed prefix before %s (e.g. app_%s), or reconcile could take other databases on the server for a lane's", d.Key, d.Template, LanePlaceholder, LanePlaceholder)
