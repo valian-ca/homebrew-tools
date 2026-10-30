@@ -212,7 +212,14 @@ npx firebase emulators:exec --config firebase.emulator.json --project demo-lanes
   Firebase cases, and `mysql@8.4` from brew for the MySQL cases; the
   emulators' jars are cached on the demo's firebase-tools version.
 
-Keep all jobs mandatory via branch protection on `main`.
+All four jobs are required checks on `main`. `.github/settings.yml` (the
+Probot Settings app) declares that branch protection, along with the
+repository's settings, labels and team access: a PR without an approving
+review, the four jobs passing on a branch up to date with `main`, signed
+commits, resolved conversations, admins included. Renaming a job in
+`lint.yml` means renaming its check in `settings.yml` in the same PR, or
+every PR waits on a check that never reports. The tap stays public
+(`private: false`).
 
 ## When working with Claude Code in this repo
 
