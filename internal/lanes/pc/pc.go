@@ -178,8 +178,16 @@ func (c *Client) Restart(ctx context.Context, name string) error {
 // Down asks the server to shut the project down, which sends each process its
 // own shutdown signal once, then waits for the server to go away.
 func (c *Client) Down(ctx context.Context) error {
-	if err := c.do(ctx, http.MethodPost, "/project/stop", nil); err != nil && c.Alive(ctx) {
-		return err
+	if err := c.do(ctx, http.MethodPost, "/project/stop", nil); err != nil {
+		// The server holds the request while its processes shut down: past
+		// the deadline it is still stopping, whatever Alive answers with the
+		// spent context.
+		if ctx.Err() != nil {
+			return fmt.Errorf("process-compose did not stop: %w", ctx.Err())
+		}
+		if c.Alive(ctx) {
+			return err
+		}
 	}
 	for c.Alive(ctx) {
 		select {

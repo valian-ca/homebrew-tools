@@ -139,7 +139,7 @@ func (d *Daemon) launch(ctx context.Context, w *workspace.Workspace, req proto.R
 		return err
 	}
 	if err := d.awaitReady(ctx, w.Tmpdir, "", d.StartTimeout); err != nil {
-		if downErr := d.Runtime.Down(context.WithoutCancel(ctx), w.Tmpdir); downErr != nil {
+		if downErr := d.down(context.WithoutCancel(ctx), w.WT.Root, w.Tmpdir); downErr != nil {
 			d.Log.Printf("%s: down after a failed start: %v", w.WT.Root, downErr)
 		}
 		return err

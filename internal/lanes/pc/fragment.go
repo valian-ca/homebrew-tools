@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -26,6 +27,32 @@ func ProjectProcesses(path string) ([]string, error) {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	return slices.Sorted(maps.Keys(f.Processes)), nil
+}
+
+// ShutdownTimeout is the longest shutdown.timeout_seconds the files declare
+// for a process. A file that is gone or unreadable declares none.
+func ShutdownTimeout(files ...string) time.Duration {
+	var longest time.Duration
+	for _, path := range files {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		var f struct {
+			Processes map[string]struct {
+				Shutdown struct {
+					TimeoutSeconds int `yaml:"timeout_seconds"`
+				} `yaml:"shutdown"`
+			} `yaml:"processes"`
+		}
+		if yaml.Unmarshal(data, &f) != nil {
+			continue
+		}
+		for _, p := range f.Processes {
+			longest = max(longest, time.Duration(p.Shutdown.TimeoutSeconds)*time.Second)
+		}
+	}
+	return longest
 }
 
 // Fragment renders the file merged ahead of the project's own. It carries the

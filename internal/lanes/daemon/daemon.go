@@ -35,11 +35,15 @@ const (
 	// NotifyWindow is how long lanesd watches closely after SessionEnd: the
 	// hook fires while the closing claude process is still alive, so its
 	// absence only shows a moment later.
-	NotifyWindow  = 60 * time.Second
-	notifyPoll    = time.Second
-	downTimeout   = 60 * time.Second
-	sweepPatience = 10 * time.Second
-	logTailLines  = 40
+	NotifyWindow = 60 * time.Second
+	notifyPoll   = time.Second
+	// minDownTimeout covers process-compose's own 10-second default
+	// shutdown; downMargin lets the server exit once its slowest process
+	// has.
+	minDownTimeout = 60 * time.Second
+	downMargin     = 15 * time.Second
+	sweepPatience  = 10 * time.Second
+	logTailLines   = 40
 )
 
 // Runtime is the process-compose side of a stack, swapped for a fake in unit
@@ -56,8 +60,6 @@ func (pcRuntime) Alive(ctx context.Context, tmp string) bool {
 }
 
 func (pcRuntime) Down(ctx context.Context, tmp string) error {
-	ctx, cancel := context.WithTimeout(ctx, downTimeout)
-	defer cancel()
 	return pc.NewClient(paths.PCSocket(tmp)).Down(ctx)
 }
 
@@ -480,12 +482,22 @@ func (d *Daemon) teardown(ctx context.Context, s *stack) error {
 func (d *Daemon) teardownLocked(ctx context.Context, s *stack, yield bool) error {
 	var downErr error
 	if d.Runtime.Alive(ctx, s.Tmp) {
-		downErr = d.Runtime.Down(ctx, s.Tmp)
+		downErr = d.down(ctx, s.Root, s.Tmp)
 	}
 	d.sweep(ctx, s, yield)
 	d.setRunning(s, false)
 	d.save()
 	return downErr
+}
+
+// down waits for the slowest shutdown a piece of the stack declares, a
+// Firebase export among them: cut short, the sweep would end the piece
+// mid-export.
+func (d *Daemon) down(ctx context.Context, root, tmp string) error {
+	timeout := pc.ShutdownTimeout(paths.Fragment(root), filepath.Join(root, pc.ProjectFile)) + downMargin
+	ctx, cancel := context.WithTimeout(ctx, max(timeout, minDownTimeout))
+	defer cancel()
+	return d.Runtime.Down(ctx, tmp)
 }
 
 func (d *Daemon) sweep(ctx context.Context, s *stack, yield bool) {

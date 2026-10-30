@@ -144,11 +144,32 @@ func TestProjectProcesses(t *testing.T) {
 	}
 }
 
+func TestShutdownTimeout(t *testing.T) {
+	dir := t.TempDir()
+	fragment := filepath.Join(dir, "adapters.yaml")
+	project := filepath.Join(dir, ProjectFile)
+	if err := os.WriteFile(fragment, []byte("processes:\n  firebase: {shutdown: {signal: 15, timeout_seconds: 90}}\n  web: {log_location: /x}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(project, []byte("processes:\n  web: {command: a, shutdown: {timeout_seconds: 20}}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := ShutdownTimeout(fragment, project); got != 90*time.Second {
+		t.Errorf("ShutdownTimeout = %s, want 90s", got)
+	}
+	if got := ShutdownTimeout(project, filepath.Join(dir, "gone.yaml")); got != 20*time.Second {
+		t.Errorf("ShutdownTimeout with a missing file = %s, want 20s", got)
+	}
+}
+
 type fakeServer struct {
 	mu      sync.Mutex
 	states  []State
 	calls   []string
 	stopped chan struct{}
+	// stopDelay holds the stop request, as process-compose holds it while
+	// its processes shut down.
+	stopDelay time.Duration
 }
 
 func serveFake(t *testing.T, f *fakeServer) string {
@@ -184,6 +205,7 @@ func serveFake(t *testing.T, f *fakeServer) string {
 	srv := &http.Server{Handler: mux}
 	mux.HandleFunc("POST /project/stop", func(w http.ResponseWriter, r *http.Request) {
 		record(r)
+		time.Sleep(f.stopDelay)
 		go func() {
 			time.Sleep(100 * time.Millisecond)
 			srv.Close()
@@ -225,4 +247,15 @@ func TestClient(t *testing.T) {
 	if strings.Join(f.calls, ",") != "POST /process/start/extra,POST /process/restart/nope,POST /project/stop" {
 		t.Errorf("calls = %v", f.calls)
 	}
+}
+
+func TestDownPastItsDeadlineFails(t *testing.T) {
+	f := &fakeServer{stopDelay: 2 * time.Second}
+	c := NewClient(serveFake(t, f))
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	if err := c.Down(ctx); err == nil {
+		t.Fatal("Down reported a server still shutting down as stopped")
+	}
+	<-f.stopped
 }

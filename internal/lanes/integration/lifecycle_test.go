@@ -58,6 +58,41 @@ func TestSessionEndFromTheMainCheckoutFindsTheWorktree(t *testing.T) {
 	h.eventually("ports freed after a SessionEnd naming the main checkout", 90*time.Second, func() bool { return !listening(web) })
 }
 
+// A piece may take longer than a minute to stop, as Firebase does while it
+// exports: lanesd waits for its declared shutdown instead of counting the
+// teardown a failure.
+func TestSessionEndWaitsForASlowShutdown(t *testing.T) {
+	h := newHarness(t, grace(time.Hour))
+	h.startDaemon()
+	wt := h.worktree("slow", "feat/slow")
+	h.editYAML(filepath.Join(wt, "process-compose.yaml"), func(doc map[string]any) {
+		doc["processes"].(map[string]any)["slow-stop"] = map[string]any{
+			"command":  "trap 'sleep 70; exit 0' TERM; while :; do sleep 1; done",
+			"shutdown": map[string]any{"signal": 15, "timeout_seconds": 90},
+		}
+	})
+	s := h.session(wt)
+	h.mustLanes(wt, "start")
+	web := h.port(wt, "web")
+
+	if r := sessionEnd(h, wt); r.code != 0 {
+		t.Fatalf("session-end: %s", r)
+	}
+	_ = s.Process.Kill()
+	began := time.Now()
+	h.eventually("the stack stopped after its slow shutdown", 2*time.Minute, func() bool { return h.laneOf(wt).State == "stopped" })
+	if listening(web) {
+		t.Fatal("the stopped stack still holds its port")
+	}
+	log := h.daemonLog()
+	if took := time.Since(began); took < 70*time.Second || strings.Contains(log, "stopping process-compose") {
+		t.Fatalf("lanesd cut the slow piece's shutdown short after %s:\n%s", took, log)
+	}
+	if strings.Contains(log, "teardown:") {
+		t.Fatalf("lanesd counted the slow shutdown a failure:\n%s", log)
+	}
+}
+
 func TestTwoSessionsOneLeaves(t *testing.T) {
 	h := newHarness(t, grace(time.Hour))
 	h.startDaemon()

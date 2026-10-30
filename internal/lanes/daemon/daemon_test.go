@@ -29,14 +29,18 @@ import (
 const root = "/w/demo-wt"
 
 type fakeRuntime struct {
-	alive map[string]bool
-	downs []string
+	alive     map[string]bool
+	downs     []string
+	deadlines []time.Duration
 }
 
 func (f *fakeRuntime) Alive(_ context.Context, tmp string) bool { return f.alive[tmp] }
 
-func (f *fakeRuntime) Down(_ context.Context, tmp string) error {
+func (f *fakeRuntime) Down(ctx context.Context, tmp string) error {
 	f.downs = append(f.downs, tmp)
+	if deadline, ok := ctx.Deadline(); ok {
+		f.deadlines = append(f.deadlines, time.Until(deadline))
+	}
 	f.alive[tmp] = false
 	return nil
 }
@@ -180,6 +184,25 @@ func TestStackThatDiedOnItsOwnIsMarkedStopped(t *testing.T) {
 	h.tick(t)
 	if h.s.Running {
 		t.Fatal("a dead process-compose still counts as running")
+	}
+}
+
+func TestTeardownWaitsForTheLongestShutdown(t *testing.T) {
+	h := newHarness(t)
+	wt := t.TempDir()
+	if err := os.MkdirAll(paths.FragmentDir(wt), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fragment := "processes:\n  firebase: {shutdown: {signal: 15, parent_only: true, timeout_seconds: 90}}\n"
+	if err := os.WriteFile(paths.Fragment(wt), []byte(fragment), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h.s.Root = wt
+	if err := h.d.teardown(context.Background(), h.s); err != nil {
+		t.Fatal(err)
+	}
+	if len(h.rt.deadlines) != 1 || h.rt.deadlines[0] <= 90*time.Second {
+		t.Fatalf("down deadlines = %v, want one past the 90s shutdown", h.rt.deadlines)
 	}
 }
 
