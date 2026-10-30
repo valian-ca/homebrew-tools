@@ -19,9 +19,10 @@ type Entry struct {
 	AdminDir  string    `json:"adminDir"`
 	Worktree  string    `json:"worktree"`
 	CreatedAt time.Time `json:"createdAt"`
-	// Scripts snapshots the adapter's commands: the entry must stay erasable
-	// after its worktree, and the lanes.yaml in it, are gone.
+	// Scripts and MySQL snapshot the adapter's spec: the entry must stay
+	// erasable after its worktree, and the lanes.yaml in it, are gone.
 	Scripts *config.Scripts `json:"scripts,omitempty"`
+	MySQL   *config.MySQL   `json:"mysql,omitempty"`
 }
 
 type file struct {

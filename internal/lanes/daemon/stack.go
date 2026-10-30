@@ -285,6 +285,7 @@ func (d *Daemon) reconcile(ctx context.Context) {
 	}
 	for _, e := range t.Entries {
 		if gone, _ := gitx.Gone(e.AdminDir); !gone {
+			d.eraseRetired(ctx, e)
 			continue
 		}
 		d.mu.Lock()
@@ -297,16 +298,80 @@ func (d *Daemon) reconcile(ctx context.Context) {
 		err := d.clear(ctx, t, e)
 		d.mu.Lock()
 		if err != nil {
-			d.retryAt[e.AdminDir] = d.Now().Add(reconcileRetry)
+			d.retryAt[e.AdminDir] = d.Now().Add(d.ReconcileRetry)
 		} else {
 			delete(d.retryAt, e.AdminDir)
 			delete(d.stacks, e.AdminDir)
 		}
 		d.mu.Unlock()
 		if err != nil {
-			d.Log.Printf("%s: reconcile, retrying in %s: %v", e.Worktree, reconcileRetry, err)
+			d.Log.Printf("%s: reconcile, retrying in %s: %v", e.Worktree, d.ReconcileRetry, err)
 		}
 	}
+}
+
+// eraseRetired erases what a live worktree's earlier lanes still have
+// registered: an erase deferred at the lane change because its resource could
+// not be reached.
+func (d *Daemon) eraseRetired(ctx context.Context, e ports.Entry) {
+	retired, err := retiredEntries(e)
+	if err != nil {
+		d.Log.Printf("%s: reconcile: %v", e.Worktree, err)
+		return
+	}
+	if len(retired) == 0 {
+		return
+	}
+	mainRoot, _ := gitx.MainRoot(ctx, e.CommonDir)
+	for _, en := range retired {
+		key := e.AdminDir + "\x00" + en.Adapter + "\x00" + en.Resource
+		d.mu.Lock()
+		retry := d.retryAt[key]
+		d.mu.Unlock()
+		if d.Now().Before(retry) {
+			continue
+		}
+		err := erase(ctx, en, e, mainRoot)
+		if err == nil {
+			err = registry.Remove(e.CommonDir, en)
+		}
+		d.mu.Lock()
+		if err != nil {
+			d.retryAt[key] = d.Now().Add(d.ReconcileRetry)
+		} else {
+			delete(d.retryAt, key)
+		}
+		d.mu.Unlock()
+		if err != nil {
+			d.Log.Printf("%s: %s of retired lane %s, retrying in %s: %v", e.Worktree, en.Resource, en.Lane, d.ReconcileRetry, err)
+		} else {
+			d.Log.Printf("%s: erased %s of retired lane %s", e.Worktree, en.Resource, en.Lane)
+		}
+	}
+}
+
+// retiredEntries reads the lane and the registry under the lane lock: a lane
+// born after the read cannot have registered anything yet, so no entry of the
+// current lane is ever taken for a retired one.
+func retiredEntries(e ports.Entry) ([]registry.Entry, error) {
+	var out []registry.Entry
+	err := fsx.WithLock(paths.LaneLock(e.AdminDir), func() error {
+		rec, err := lane.Load(e.AdminDir)
+		if err != nil || rec == nil {
+			return err
+		}
+		entries, err := registry.Load(e.CommonDir)
+		if err != nil {
+			return err
+		}
+		for _, en := range entries {
+			if en.AdminDir == e.AdminDir && en.Kind != registry.KindTmpdir && en.Lane != "" && en.Lane != rec.ID {
+				out = append(out, en)
+			}
+		}
+		return nil
+	})
+	return out, err
 }
 
 func (d *Daemon) clear(ctx context.Context, t ports.Table, e ports.Entry) error {
@@ -413,14 +478,28 @@ func (d *Daemon) eraseOrphans(ctx context.Context, t ports.Table, gone ports.Ent
 			if registered[a.Name()+"\x00"+n] {
 				continue
 			}
-			owner, err := a.Owner(ctx, n)
-			if err != nil || owner == "" || live[owner] {
+			owners, err := owners(ctx, a, n)
+			if err != nil || len(owners) == 0 || slices.ContainsFunc(owners, func(o string) bool { return live[o] }) {
 				continue
 			}
+			owner := owners[0]
 			d.Log.Printf("%s: erasing orphan %s of lane %s", a.Name(), n, owner)
 			if err := a.Erase(ctx, owner, n); err != nil {
 				d.Log.Printf("%s: erase %s: %v", a.Name(), n, err)
 			}
 		}
 	}
+}
+
+// owners lists every lane a resource may belong to: a name that two of the
+// adapter's templates can yield is kept while any of its lanes lives.
+func owners(ctx context.Context, a adapter.Adapter, resource string) ([]string, error) {
+	if m, ok := a.(adapter.MultiOwner); ok {
+		return m.Owners(resource), nil
+	}
+	owner, err := a.Owner(ctx, resource)
+	if err != nil || owner == "" {
+		return nil, err
+	}
+	return []string{owner}, nil
 }

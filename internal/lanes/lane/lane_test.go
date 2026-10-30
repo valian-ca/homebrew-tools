@@ -6,9 +6,16 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/valian-ca/homebrew-tools/internal/lanes/config"
 	"github.com/valian-ca/homebrew-tools/internal/lanes/gitx"
 	"github.com/valian-ca/homebrew-tools/internal/lanes/testutil"
 )
+
+func TestLongestIDIsTheOneConfigBudgets(t *testing.T) {
+	if got := len(NewID(strings.Repeat("x", 100))); got != config.MaxLaneIDLen {
+		t.Fatalf("the longest lane ID has %d characters, lanes.yaml budgets %d for database names", got, config.MaxLaneIDLen)
+	}
+}
 
 func TestSlugAndID(t *testing.T) {
 	cases := map[string]string{

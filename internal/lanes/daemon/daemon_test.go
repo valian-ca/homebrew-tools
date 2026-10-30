@@ -17,6 +17,7 @@ import (
 
 	"github.com/valian-ca/homebrew-tools/internal/lanes/adapter"
 	"github.com/valian-ca/homebrew-tools/internal/lanes/config"
+	"github.com/valian-ca/homebrew-tools/internal/lanes/lane"
 	"github.com/valian-ca/homebrew-tools/internal/lanes/paths"
 	"github.com/valian-ca/homebrew-tools/internal/lanes/ports"
 	"github.com/valian-ca/homebrew-tools/internal/lanes/procinfo"
@@ -448,13 +449,63 @@ func TestReconcileBacksOffAFailedCleanup(t *testing.T) {
 	if err := os.WriteFile(okFile, nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	h.advance(reconcileRetry)
+	h.advance(h.d.ReconcileRetry)
 	h.d.reconcile(ctx)
 	if erases() != 2 || held() {
 		t.Fatalf("after the backoff: %d erases, block held %v", erases(), held())
 	}
 	if _, ok := h.d.retryAt[gone]; ok {
 		t.Fatal("the retry date outlived a successful cleanup")
+	}
+}
+
+func TestReconcileErasesRetiredLaneEntriesOfALiveWorktree(t *testing.T) {
+	h := newHarness(t)
+	common := testutil.RealTemp(t)
+	t.Setenv("LANES_PORT_RANGE", "43600-43699")
+	live := liveAdminDir(t, filepath.Join(common, "worktrees", "live"))
+	if _, err := ports.Ensure(ports.Entry{CommonDir: common, AdminDir: live, Worktree: "/w/live", Size: 5}); err != nil {
+		t.Fatal(err)
+	}
+	if err := lane.Save(live, lane.Record{ID: "cur_aaaaaa"}); err != nil {
+		t.Fatal(err)
+	}
+	counter, okFile := filepath.Join(common, "erases"), filepath.Join(common, "ok")
+	spec := &config.Scripts{Name: "store", Erase: `echo "$LANES_RESOURCE" >> ` + counter + "; test -f " + okFile}
+	retired := registry.Entry{Kind: adapter.KindScripts, Adapter: "store", Resource: "old", Lane: "old_bbbbbb", AdminDir: live, Scripts: spec}
+	current := registry.Entry{Kind: adapter.KindScripts, Adapter: "store", Resource: "cur", Lane: "cur_aaaaaa", AdminDir: live, Scripts: spec}
+	if err := registry.Add(common, retired, current); err != nil {
+		t.Fatal(err)
+	}
+	erased := func() string { data, _ := os.ReadFile(counter); return string(data) }
+	registered := func(r string) bool {
+		entries, _ := registry.Load(common)
+		return slices.ContainsFunc(entries, func(e registry.Entry) bool { return e.Resource == r })
+	}
+	ctx := context.Background()
+
+	h.d.reconcile(ctx)
+	if erased() != "old\n" || !registered("old") {
+		t.Fatalf("after an unreachable erase: erased %q, still registered %v", erased(), registered("old"))
+	}
+	h.advance(time.Minute)
+	h.d.reconcile(ctx)
+	if erased() != "old\n" {
+		t.Fatal("a deferred erase was retried before the backoff ended")
+	}
+	if err := os.WriteFile(okFile, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h.advance(h.d.ReconcileRetry)
+	h.d.reconcile(ctx)
+	if erased() != "old\nold\n" || registered("old") {
+		t.Fatalf("after the backoff: erased %q, still registered %v", erased(), registered("old"))
+	}
+	if !registered("cur") {
+		t.Fatal("the current lane's entry was erased")
+	}
+	if _, ok, _ := ports.Find(live); !ok {
+		t.Fatal("the live worktree lost its block")
 	}
 }
 

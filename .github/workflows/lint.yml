@@ -38,11 +38,15 @@ jobs:
             echo "has_scripts=false" >> "$GITHUB_OUTPUT"
           fi
       - name: Install shellcheck
-        if: steps.check.outputs.has_scripts == 'true'
         run: sudo apt-get update && sudo apt-get install -y shellcheck
       - name: Run shellcheck
         if: steps.check.outputs.has_scripts == 'true'
         run: shellcheck -x bin/*
+      - name: Run shellcheck on the lanes demo's scripts
+        run: |
+          shellcheck -x examples/lanes-demo/make-repo.sh examples/lanes-demo/tool/install.sh \
+            examples/lanes-demo/tool/lane-store examples/lanes-demo/tool/lanes-demo-shared \
+            examples/lanes-demo/tool/mysql-server examples/lanes-demo/tool/mysql-seed
 
   brew-audit:
     name: brew audit (if formulae changed)
@@ -121,6 +125,14 @@ jobs:
         if: steps.changed.outputs.lanes == 'true'
         run: brew install f1bonacc1/tap/process-compose
 
+      # mysql@8.4 is keg-only: the demo's start command and seed task find
+      # mysqld and mysql on PATH.
+      - name: Install MySQL
+        if: steps.changed.outputs.lanes == 'true'
+        run: |
+          brew install mysql@8.4
+          echo "$(brew --prefix mysql@8.4)/bin" >> "$GITHUB_PATH"
+
       - uses: actions/setup-java@v4
         if: steps.changed.outputs.lanes == 'true'
         with:
@@ -159,4 +171,5 @@ jobs:
         if: steps.changed.outputs.lanes == 'true'
         env:
           LANES_REQUIRE_FIREBASE: "1"
+          LANES_REQUIRE_MYSQL: "1"
         run: go test -tags integration -timeout 30m ./internal/lanes/... ./cmd/lanes/... ./cmd/lanesd/...

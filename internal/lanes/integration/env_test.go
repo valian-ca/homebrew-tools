@@ -144,7 +144,7 @@ func TestRefusals(t *testing.T) {
 
 	cfg := filepath.Join(wt, "lanes.yaml")
 	orig := read(cfg)
-	if err := os.WriteFile(cfg, []byte(strings.Replace(orig, "schema: 1", "schema: 2", 1)), 0o644); err != nil {
+	if err := os.WriteFile(cfg, []byte(strings.Replace(orig, "schema: 1", "schema: 3", 1)), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if r := h.lanes(wt, "start"); r.code == 0 || !strings.Contains(r.stderr, "brew upgrade valian-ca/tools/lanes") {

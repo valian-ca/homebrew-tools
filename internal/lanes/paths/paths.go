@@ -98,3 +98,7 @@ func PCLog(tmpdir string) string { return filepath.Join(Logs(tmpdir), "process-c
 func Fragment(worktree string) string { return filepath.Join(worktree, ".lanes", "adapters.yaml") }
 
 func FragmentDir(worktree string) string { return filepath.Join(worktree, ".lanes") }
+
+func MySQLStartLock(commonDir string) string {
+	return filepath.Join(RepoDir(commonDir), "mysql-start.lock")
+}

@@ -18,6 +18,7 @@ import (
 	"github.com/valian-ca/homebrew-tools/internal/lanes/ports"
 	"github.com/valian-ca/homebrew-tools/internal/lanes/procinfo"
 	"github.com/valian-ca/homebrew-tools/internal/lanes/proto"
+	"github.com/valian-ca/homebrew-tools/internal/lanes/registry"
 	"github.com/valian-ca/homebrew-tools/internal/lanes/tmpdir"
 	"github.com/valian-ca/homebrew-tools/internal/lanes/workspace"
 )
@@ -48,6 +49,7 @@ type Lane struct {
 	Tmpdir       string         `json:"tmpdir"`
 	Logs         string         `json:"logs"`
 	Pieces       []Piece        `json:"pieces"`
+	Resources    []Resource     `json:"resources"`
 	RAM          int64          `json:"ram"`
 	RAMThreshold int64          `json:"ramThreshold"`
 	RAMAlert     bool           `json:"ramAlert"`
@@ -56,6 +58,12 @@ type Lane struct {
 type Block struct {
 	Start int `json:"start"`
 	End   int `json:"end"`
+}
+
+type Resource struct {
+	Adapter  string `json:"adapter"`
+	Kind     string `json:"kind"`
+	Resource string `json:"resource"`
 }
 
 type Piece struct {
@@ -107,6 +115,7 @@ func describe(ctx context.Context, e ports.Entry, stacks map[string]proto.StackS
 		Tmpdir:       tmp,
 		Logs:         paths.Logs(tmp),
 		Pieces:       []Piece{},
+		Resources:    []Resource{},
 		RAMThreshold: int64(config.DefaultRAMAlert),
 	}
 	if rec, err := lane.Load(e.AdminDir); err == nil && rec != nil {
@@ -114,6 +123,7 @@ func describe(ctx context.Context, e ports.Entry, stacks map[string]proto.StackS
 		if rec.Host != "" {
 			l.Host = rec.Host
 		}
+		l.Resources = resources(e, rec.ID)
 	}
 	if cfg, err := config.Load(e.Worktree); err == nil {
 		for i, n := range cfg.Ports.Names {
@@ -159,6 +169,20 @@ func describe(ctx context.Context, e ports.Entry, stacks map[string]proto.StackS
 		}
 	}
 	return l
+}
+
+func resources(e ports.Entry, laneID string) []Resource {
+	out := []Resource{}
+	entries, err := registry.Load(e.CommonDir)
+	if err != nil {
+		return out
+	}
+	for _, en := range entries {
+		if en.AdminDir == e.AdminDir && en.Lane == laneID && en.Kind != registry.KindTmpdir {
+			out = append(out, Resource{Adapter: en.Adapter, Kind: en.Kind, Resource: en.Resource})
+		}
+	}
+	return out
 }
 
 func WriteText(w io.Writer, r Report) {

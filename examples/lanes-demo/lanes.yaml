@@ -1,4 +1,4 @@
-schema: 1
+schema: 2
 ports:
   block: 24
   names: [web, extra,
@@ -14,8 +14,18 @@ resources:
   - firebase:
       config: firebase.emulator.json
       seed: seed
+  - mysql:
+      port: 3316
+      start: tool/mysql-server 3316
+      databases:
+        dev: lanes_demo_{lane}
+        test: lanes_demo_test_{lane}
+env:
+  DEMO_WEB_URL: http://{{.LANES_HOST}}:{{.PORT_WEB}}
+  DEMO_DATABASE_URL: mysql://{{.LANES_MYSQL_USER}}@{{.LANES_MYSQL_HOST}}:{{.LANES_MYSQL_PORT}}/{{.LANES_MYSQL_DATABASE_DEV}}
 generate:
   - template: app.env.tmpl
+  - template: db.env.tmpl
 setup:
   - name: deps
     run: tool/install.sh

@@ -30,7 +30,10 @@ func newStartCmd() *cobra.Command {
 		Long: `Start the stack of the worktree around the current directory, under lanesd,
 and return once every piece is ready.
 
-On the lane's first start, the project's adapters create its resources. Prep
+On the lane's first start, the project's adapters create its resources. With
+a mysql resource, every start wakes the project's MySQL server when nothing
+listens on its port — running the resource's start command from the main
+checkout — and creates the lane's databases that are missing, empty. Prep
 steps whose trigger changed run first, and templates are rendered. A stack
 that already runs is left untouched.
 
@@ -38,7 +41,11 @@ The command fails, with a non-zero status, when lanesd is not running, when a
 port of the block is held by another process, when a piece dies — then it
 prints the piece's name and the end of its log — when the firebase resource
 lacks a named port, when firebase-tools is missing from node_modules, or when
-its socket path under TMPDIR is too long. A start may take up to 20 minutes.
+its socket path under TMPDIR is too long. It also fails when a process the
+mysql resource's listeners do not name holds the server's port, when the
+server sleeps and no start command is declared, when the start command fails
+or the server does not accept connections 2 minutes after it, and when an
+env: entry of lanes.yaml does not render. A start may take up to 20 minutes.
 
 With a firebase resource, LANES_FIREBASE_JVM_HEAP (768MB) and
 LANES_FIREBASE_FUNCTIONS_TIMEOUT (300, or 5m), when set, replace the
@@ -62,9 +69,12 @@ stops after 5 minutes unless a session arrives.`,
 			if err != nil {
 				return err
 			}
-			w, err := workspace.Settle(ctx, dir)
+			w, err := settle(ctx, dir, cmd.ErrOrStderr())
 			if err != nil {
 				return err
+			}
+			if w.EnvErr != nil {
+				return w.EnvErr
 			}
 			if err := prepare(ctx, w, cmd.ErrOrStderr()); err != nil {
 				return err
@@ -163,7 +173,8 @@ func newListCmd() *cobra.Command {
 		Long: `List every lane on this Mac, across repositories, stopped ones included:
 worktree, lane, port block, state, session state, RAM per piece, last
 activity and log directory. A lane above its RAM alert threshold is flagged,
-never stopped. Main checkouts never appear.`,
+never stopped. Main checkouts never appear. With --json, each lane also lists
+its resources: what its current lane registered, MySQL databases included.`,
 		Example: `  lanes list
   lanes list --json | jq '.lanes[] | select(.ramAlert)'`,
 		Args: cobra.NoArgs,
@@ -210,11 +221,15 @@ LANE_ID, LANES_WORKTREE, TMPDIR, PORT_<NAME> for each named port,
 LANES_PORT_BASE, LANES_PORT_SIZE, LANES_HOST and LANES_VARS. With a firebase
 resource, also the SDK variable of each emulator that starts, on 127.0.0.1
 (FIRESTORE_EMULATOR_HOST, FIREBASE_AUTH_EMULATOR_HOST…), FIREBASE_EMULATOR_HUB
-and LANES_FIREBASE_CONFIG. With --unset, print the unset line that removes
-every variable lanes exports.
+and LANES_FIREBASE_CONFIG. With a mysql resource, LANES_MYSQL_HOST,
+LANES_MYSQL_PORT, LANES_MYSQL_USER, LANES_MYSQL_PASSWORD and
+LANES_MYSQL_DATABASE_<KEY> for each of the lane's databases, without touching
+the server. Then the project's env: variables, in order. With --unset, print
+the unset line that removes every variable lanes exports.
 
 On a main checkout, outside a repository, or without lanes.yaml, it prints
-nothing. It never runs a prep step.`,
+nothing. It never runs a prep step, and never wakes a MySQL server. It fails
+when an env: entry does not render.`,
 		Example: `  eval "$(lanes env)"
   eval "$(lanes env --unset)"`,
 		Args: cobra.NoArgs,
@@ -224,7 +239,7 @@ nothing. It never runs a prep step.`,
 			if err != nil {
 				return err
 			}
-			w, err := workspace.Settle(ctx, dir)
+			w, err := settle(ctx, dir, cmd.ErrOrStderr())
 			if workspace.IsQuiet(err) {
 				return nil
 			}
@@ -234,6 +249,9 @@ nothing. It never runs a prep step.`,
 			if unset {
 				printf(cmd.OutOrStdout(), "%s", env.Unsets(w.Vars))
 				return nil
+			}
+			if w.EnvErr != nil {
+				return w.EnvErr
 			}
 			printf(cmd.OutOrStdout(), "%s", w.Vars.Exports())
 			return nil
@@ -283,7 +301,7 @@ func runProcessOp(cmd *cobra.Command, op, proc, done string) error {
 	if _, err := daemonReady(ctx); err != nil {
 		return err
 	}
-	w, err := workspace.Settle(ctx, dir)
+	w, err := settle(ctx, dir, cmd.ErrOrStderr())
 	if err != nil {
 		return err
 	}
@@ -316,7 +334,7 @@ stay readable after the stack stops; they go away with the worktree.`,
 			if err != nil {
 				return err
 			}
-			w, err := workspace.Settle(ctx, dir)
+			w, err := settle(ctx, dir, cmd.ErrOrStderr())
 			if err != nil {
 				return err
 			}

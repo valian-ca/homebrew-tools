@@ -68,10 +68,10 @@ and data — must be ignored by git; lanes refuses to write a generated file tha
 git tracks, and warns when one is not ignored. It never edits `.gitignore` or
 `.git/info/exclude`.
 
-## `lanes.yaml`, schema 1
+## `lanes.yaml`, schema 2
 
 ```yaml
-schema: 1                     # required
+schema: 2                     # required: 1 or 2
 ports:
   block: 20                   # required: ports reserved for the worktree, 1 to 1000
   names: [web, admin]         # PORT_WEB = block start, PORT_ADMIN = block start + 1
@@ -85,6 +85,14 @@ resources:                    # adapters, in creation order
   - firebase:                 # at most one per project
       config: firebase.emulator.json
       seed: seed
+  - mysql:                    # at most one per project; schema 2
+      start: docker compose -f pilote/docker-compose.yaml up -d --wait
+      listeners: [com.docker.backend]
+      databases:
+        dev: nezrouge_{lane}
+        test: nezrouge_test_{lane}
+env:                          # schema 2; in order, each sees the ones before
+  PILOTE_DATABASE_URL: jdbc:mysql://{{.LANES_MYSQL_HOST}}:{{.LANES_MYSQL_PORT}}/{{.LANES_MYSQL_DATABASE_DEV}}
 generate:
   - template: config/app.env.tmpl   # renders config/app.env
 setup:
@@ -98,13 +106,17 @@ ram_alert: 4GB                # default 4GB; KB, MB or GB
 ```
 
 An unknown key is an error that names its path. A `schema` newer than the
-installed lanes is refused with `brew upgrade valian-ca/tools/lanes`.
+installed lanes is refused with `brew upgrade valian-ca/tools/lanes`: lanes
+0.2.0 refuses a schema-2 file that way. lanes 0.3.0 reads schemas 1 and 2. A
+schema-1 file runs as it did under 0.2.0; in it, a `mysql` resource or an
+`env` key is an error that names the key and `schema: 2`.
 
 | Key | Meaning |
 | --- | --- |
 | `ports.block` | Size of the worktree's block. Blocks come from one table shared by every project on the Mac, between 20000 and 48999, below macOS's ephemeral ports. A block is given only when no other worktree holds it and none of its ports is open. |
 | `ports.names` | Named ports, in block order. Each becomes `PORT_<NAME>`. |
-| `resources` | The adapters, one per entry: `scripts` and `firebase`. MySQL and Postgres adapters come as separate releases. |
+| `resources` | The adapters, one per entry: `scripts`, `firebase` and `mysql`. A Postgres adapter comes as a separate release. |
+| `env` | The project's own variables, see [below](#env). |
 | `generate` | Templates rendered with Go's `text/template` and the lane's variables (`{{.PORT_WEB}}`). The output is the template's path without `.tmpl`; it must be ignored by git, and is rewritten only when its content changes. |
 | `setup` | Prep steps, run in order with `/bin/sh -c` from the worktree root and the lane's variables. A step reruns only when one of its `when_changed` files changed since it last succeeded. |
 | `sessions` | Process names that count as a session. |
@@ -115,6 +127,25 @@ installed lanes is refused with `brew upgrade valian-ca/tools/lanes`.
 A process matches `shared` or `spare` when its kernel name or the basename of
 its `argv[0]` equals the entry, or when one of its arguments equals it or ends
 with `/<entry>` or `.<entry>` — a JVM daemon's main class, for instance.
+
+### `env`
+
+`env` declares the project's variables, in order, each a Go `text/template`
+like `generate`'s. A template sees every lane variable, adapters' included,
+and the `env` entries before it. A variable it names but the lane lacks is an
+error.
+
+- `lanes env` and the hooks export them, the stack's processes, the prep
+  steps, the `generate` templates and `lanes test-env` get them, and they are
+  in `LANES_VARS`, so `lanes env --unset` removes them. Under `lanes
+  test-env`, they are rendered again over the test series' values.
+- An entry that redefines a variable lanes sets — `TMPDIR`, `LANE_ID`,
+  `PORT_*`, `LANES_*`, a Firebase emulator variable — is an error of
+  `lanes.yaml` that names the entry's path (`env.PORT_WEB`).
+- A template that fails to render fails `lanes start` and `lanes env`, naming
+  the entry; a hook writes the error to stderr and exports everything else.
+- It serves any project, with or without `mysql`. On the main checkout,
+  nothing is exported.
 
 ## Environment
 
@@ -129,6 +160,8 @@ with `/<entry>` or `.<entry>` — a JVM daemon's main class, for instance.
 | `LANES_PORT_BASE`, `LANES_PORT_SIZE` | The block. |
 | `LANES_HOST` | The host the lane's clients reach its stack by: `127.0.0.1`, or the Mac's network IP after `lanes host lan`. |
 | Firebase variables | With a `firebase` resource, see [below](#the-firebase-adapter). |
+| MySQL variables | With a `mysql` resource, see [below](#the-mysql-adapter). |
+| The project's `env` | See [`env`](#env). |
 | `LANES_VARS` | The names above, so `lanes env --unset` removes them all. |
 
 The stack's processes, the prep steps, the adapters' commands and the
@@ -202,6 +235,11 @@ every resource the old lane registered is erased by the adapter that created
 it — from the worktree, or from the main checkout when the new branch lacks
 the adapter's scripts — then the new lane is recorded. The port block and `TMPDIR` do not change.
 
+An erase whose resource cannot be reached — a `mysql` server that sleeps or
+sits behind a foreign listener — does not hold the new lane back: the
+resource stays registered, the command writes the error to stderr, and
+`lanesd` retries every 5 minutes. The new lane's resources have new names.
+
 ## Prep
 
 The hooks `session-start` and `cwd-changed` and `lanes start` prepare the
@@ -223,7 +261,7 @@ An adapter implements:
 
 | Operation | Contract |
 | --- | --- |
-| create | Make the lane's resources and return their names. Runs once per lane, at the lane's first `lanes start`. Must keep what already exists. |
+| create | Make the lane's resources and return their names. Runs once per lane, at the lane's first `lanes start` — at every `lanes start` for `mysql`. Must keep what already exists. |
 | erase | Remove one resource of a lane. |
 | list | Every resource of this adapter on the machine, whichever lane owns it. |
 | owner | The lane a resource belongs to, or nothing when it is not a lane resource. |
@@ -238,8 +276,10 @@ registry (`<git common dir>/lanes/registry.json`) as soon as `create` returns
 it. Reconcile erases it once its worktree is gone, then asks each adapter of
 the main checkout's `lanes.yaml` for `list` and `owner`, to catch a resource
 created but never registered; the live lanes of every repository on the Mac
-are kept. When an erase fails, the worktree keeps its port block and
-reconcile tries again 5 minutes later.
+are kept, and a resource that may belong to several lanes is kept while any
+of them lives. When an erase fails, the worktree keeps its port block and
+reconcile tries again 5 minutes later. Reconcile also erases what a live
+worktree's earlier lanes still have registered, at the same pace.
 
 ### The `scripts` adapter
 
@@ -255,6 +295,116 @@ the main checkout, with `lanesd`'s environment (Homebrew's `PATH`).
 | `owner` | `LANES_RESOURCE` | the owning lane id, or nothing |
 
 A non-zero exit fails the operation, and its stderr is reported.
+
+### The `mysql` adapter
+
+It wakes the project's shared MySQL server and keeps each lane's databases
+existing and empty. Filling them is the project's business (the seed task,
+below). Schema 2.
+
+| Key | Meaning |
+| --- | --- |
+| `host` | Default `127.0.0.1`. The server runs on this Mac: the port guard looks at its listener. |
+| `port` | Default `3306`. |
+| `user` | Default `root`. |
+| `password` | Default empty. |
+| `start` | The command that wakes the server, such as `docker compose -f pilote/docker-compose.yaml up -d --wait`. Optional. |
+| `listeners` | The process names that may hold `port`. Default `[mysqld]`. |
+| `databases` | Required, at least one: a key of letters, digits and `_`, and a name template holding `{lane}`. |
+
+A template is refused when it can make a name over MySQL's 64 characters with
+the longest lane ID, 31 characters. A second `mysql` resource is refused too.
+
+**The server is the main checkout's, and shared.** No lane stops it: not
+`lanes stop`, not a teardown, a new lane or reconcile. lanes connects to it
+over TCP by itself; no `mysql` client is needed on the Mac. The adapter adds
+no process to the stack.
+
+**Port guard.** Before any operation on the server — waking it, creating,
+erasing, reconciling — lanes looks at which process listens on `port`. When
+it is not one of `listeners`, lanes refuses without connecting, naming the
+process and its PID. A Cloud SQL proxy or an SSH tunnel on the port speaks
+MySQL and leads to production; the guard keeps lanes off it. It knows the
+program holding the port, not the container: another Docker container
+published on the same port would pass. A port that answers while lanes sees
+no listener — a process of another user — is refused too. To find the name
+to declare, run `lsof -nP -iTCP:<port> -sTCP:LISTEN` with the server up:
+
+| Installation | `listeners` | Proven |
+| --- | --- | --- |
+| Homebrew `mysql@8.4` or `mysql`, MAMP, DBngin | `[mysqld]`, the default | Homebrew, in CI |
+| Docker Desktop | `[com.docker.backend]` | by hand, before the 0.3.0 release |
+| Official `.pkg` (runs as `_mysql`) | refused: lanes cannot see another user's listener | — |
+| OrbStack, Colima, Podman, MariaDB | find it with `lsof` | no |
+| Cloud SQL proxy, SSH tunnel | refused, by design | — |
+
+**Waking.** At `lanes start`, when nothing listens on `port`, lanes runs
+`start` with `/bin/sh -c`, from the main checkout — a server's data never
+lives in a worktree that can disappear — with the caller's environment
+without the lane's variables, under a lock of the repository: two lanes
+starting together never run it at once, and the second finds the server up.
+Then it waits up to 2 minutes for the server to accept connections. When
+`start` fails or the wait runs out, `lanes start` refuses with the end of
+`start`'s output and starts nothing. Without `start`, a sleeping server makes
+`lanes start` refuse, naming `host:port`: start it with the project's own
+commands. Only `lanes start` wakes the server — never a hook, `lanes env`, a
+new lane, reconcile or `lanesd` at login.
+
+**The lane's databases.** Each is its template with `{lane}` replaced by the
+lane ID. At every `lanes start`, before the stack starts, the adapter makes
+sure each exists: it creates the missing ones empty and registers each the
+moment it exists. A database dropped by hand comes back empty at the next
+`lanes start`; one that exists is never modified. Stopping the stack leaves
+them alone.
+
+**Erasing and ownership.** A new lane erases the old lane's registered
+databases before anything starts; reconcile erases a gone worktree's. Erasing
+one that no longer exists succeeds. When the server sleeps, does not answer
+or the guard refuses, the erase fails without waking it: the databases stay
+registered, reconcile retries every 5 minutes, and a new lane does not wait.
+A database belongs to a lane only when its name comes out of one of the
+project's templates with a valid lane ID — ending in `_` and 6 hex
+characters. The main checkout's databases (`nezrouge`, `nezrouge_test`) and
+those made by hand are never touched. Reconcile also erases a lane database
+never registered whose lane is gone. A name can come out of two templates —
+`nezrouge_test_foo_abc123` is the `dev` database of lane `test_foo_abc123`
+and the `test` database of lane `foo_abc123` — and is then erased only when
+none of those lanes lives.
+
+**Variables.** `lanes env` and the hooks export `LANES_MYSQL_HOST`,
+`LANES_MYSQL_PORT`, `LANES_MYSQL_USER`, `LANES_MYSQL_PASSWORD` (even empty) and
+`LANES_MYSQL_DATABASE_<KEY>` for each database, its key upper-cased:
+`LANES_MYSQL_DATABASE_DEV`, `LANES_MYSQL_DATABASE_TEST`. They are computed
+without the server, so a sleeping server does not stop them. They are in
+`LANES_VARS`; the stack's processes, the prep steps and the `generate`
+templates get them; `lanes test-env` leaves them unchanged.
+
+**The seed task.** lanes never fills a database. The project seeds in a task
+of its `process-compose.yaml`, which the stack runs once the lane's databases
+exist: a new lane, or a database dropped by hand, reaches it empty. A first
+`lanes start` that fails can leave a database half filled, and lanes never
+erases one because a start failed, so the task must tell a half-filled
+database from a filled one. MySQL commits each `CREATE TABLE` at once, so a
+transaction alone cannot: keep a marker table, created last.
+
+```yaml
+processes:
+  mysql-seed:
+    command: tool/mysql-seed
+```
+
+```sh
+# without the marker, drop whatever tables a cut-short seed left, then seed
+if [ "$(sql -e "SELECT COUNT(*) FROM information_schema.TABLES
+              WHERE TABLE_SCHEMA = '$LANES_MYSQL_DATABASE_DEV' AND TABLE_NAME = 'lanes_seed'")" = 0 ]; then
+  drop_every_table "$LANES_MYSQL_DATABASE_DEV"
+  load_the_seed "$LANES_MYSQL_DATABASE_DEV"
+  sql "$LANES_MYSQL_DATABASE_DEV" -e 'CREATE TABLE lanes_seed (seeded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)'
+fi
+```
+
+The demo's `tool/mysql-seed` follows this model. Pieces that need the seed
+depend on the task with `condition: process_completed_successfully`.
 
 ### The `firebase` adapter
 
@@ -451,9 +601,9 @@ A physical device reaches the lane's emulators by the Mac's IP, not by
 
 | Command | Does |
 | --- | --- |
-| `lanes start` | Settle the lane, prep, create resources on the lane's first start, start the stack and wait until it is ready. |
+| `lanes start` | Settle the lane, prep, create resources on the lane's first start — wake the MySQL server and ensure the lane's databases at every start — start the stack and wait until it is ready. |
 | `lanes stop [worktree]` | Stop a stack, the current worktree's by default, and keep its data. |
-| `lanes list [--json]` | Every lane on the Mac, stopped ones included. |
+| `lanes list [--json]` | Every lane on the Mac, stopped ones included. With `--json`, each lane's `resources`: its current lane's registered resources, `{adapter, kind, resource}`. |
 | `lanes env [--unset]` | The lane's exports, or the unset line for them. |
 | `lanes up <process>` | Start a process `process-compose.yaml` declares `disabled: true`. |
 | `lanes restart <process>` | Restart one piece; the others keep running. |

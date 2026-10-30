@@ -17,7 +17,7 @@ import (
 
 const (
 	FileName        = "lanes.yaml"
-	SupportedSchema = 1
+	SupportedSchema = 2
 	DefaultRAMAlert = ByteSize(4 << 30)
 	MaxBlockSize    = 1000
 )
@@ -34,6 +34,7 @@ type Config struct {
 	Shared    []string   `yaml:"shared"`
 	Spare     []string   `yaml:"spare"`
 	RAMAlert  ByteSize   `yaml:"ram_alert"`
+	Env       EnvVars    `yaml:"env"`
 }
 
 type Ports struct {
@@ -44,6 +45,21 @@ type Ports struct {
 type Resource struct {
 	Scripts  *Scripts  `yaml:"scripts"`
 	Firebase *Firebase `yaml:"firebase"`
+	MySQL    *MySQL    `yaml:"mysql"`
+}
+
+func (r Resource) adapters() []string {
+	var out []string
+	if r.Scripts != nil {
+		out = append(out, "scripts")
+	}
+	if r.Firebase != nil {
+		out = append(out, "firebase")
+	}
+	if r.MySQL != nil {
+		out = append(out, "mysql")
+	}
+	return out
 }
 
 type Scripts struct {
@@ -82,6 +98,15 @@ type Firebase struct {
 
 type FirebaseTest struct {
 	Only []string `yaml:"only"`
+}
+
+func (c *Config) MySQL() *MySQL {
+	for _, r := range c.Resources {
+		if r.MySQL != nil {
+			return r.MySQL
+		}
+	}
+	return nil
 }
 
 func (c *Config) Firebase() *Firebase {
@@ -142,6 +167,9 @@ func Parse(data []byte) (*Config, error) {
 	if head.Schema > SupportedSchema {
 		return nil, &SchemaError{Got: head.Schema}
 	}
+	if err := checkSchema2Keys(data, head.Schema); err != nil {
+		return nil, err
+	}
 
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
@@ -154,6 +182,9 @@ func Parse(data []byte) (*Config, error) {
 	}
 	if fb := cfg.Firebase(); fb != nil {
 		fb.setDefaults()
+	}
+	if m := cfg.MySQL(); m != nil {
+		m.setDefaults()
 	}
 	if len(cfg.Sessions) == 0 {
 		cfg.Sessions = DefaultSessions
@@ -171,7 +202,7 @@ var (
 
 func (c *Config) validate() error {
 	if c.Schema < 1 {
-		return errors.New("schema: required (schema: 1)")
+		return errors.New("schema: required (schema: 1 or schema: 2)")
 	}
 	if c.Ports.Block < 1 || c.Ports.Block > MaxBlockSize {
 		return fmt.Errorf("ports.block: must be between 1 and %d", MaxBlockSize)
@@ -191,13 +222,22 @@ func (c *Config) validate() error {
 	}
 
 	seen = map[string]bool{}
-	firebaseAt := -1
+	firebaseAt, mysqlAt := -1, -1
 	for i, r := range c.Resources {
-		switch {
-		case r.Scripts == nil && r.Firebase == nil:
+		switch kinds := r.adapters(); {
+		case len(kinds) == 0:
 			return fmt.Errorf("resources[%d]: declares no adapter", i)
-		case r.Scripts != nil && r.Firebase != nil:
-			return fmt.Errorf("resources[%d]: declares two adapters, scripts and firebase — one per resource", i)
+		case len(kinds) > 1:
+			return fmt.Errorf("resources[%d]: declares %d adapters, %s — one per resource", i, len(kinds), strings.Join(kinds, " and "))
+		case r.MySQL != nil:
+			if mysqlAt >= 0 {
+				return fmt.Errorf("resources[%d].mysql: at most one mysql resource per project (first at resources[%d])", i, mysqlAt)
+			}
+			mysqlAt = i
+			if err := r.MySQL.validate(); err != nil {
+				return fmt.Errorf("resources[%d].mysql.%w", i, err)
+			}
+			continue
 		case r.Firebase != nil:
 			if firebaseAt >= 0 {
 				return fmt.Errorf("resources[%d].firebase: at most one firebase resource per project (first at resources[%d])", i, firebaseAt)
@@ -250,7 +290,7 @@ func (c *Config) validate() error {
 			}
 		}
 	}
-	return nil
+	return c.Env.validate()
 }
 
 func (f *Firebase) validate() error {

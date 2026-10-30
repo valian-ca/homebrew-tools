@@ -16,6 +16,8 @@ processes:
   crashy:
     command: 'echo "crashy: cannot open the database"; exit 3'
     disabled: true
+  mysql-seed:
+    command: tool/mysql-seed
   functions-build:
     command: 'sleep 1; echo "build done"'
   firebase:

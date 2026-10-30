@@ -48,22 +48,34 @@ func requireFirebase(t *testing.T) {
 	}
 }
 
-func (h *harness) trimFirebase(dir string) {
+// shape trims the demo to the harness's profile and commits it as main.
+func (h *harness) shape(dir string) {
 	h.t.Helper()
+	noFirebase := h.profile == core || h.profile == mysqlStack
 	h.editYAML(filepath.Join(dir, "lanes.yaml"), func(doc map[string]any) {
-		doc["setup"] = slices.DeleteFunc(doc["setup"].([]any), func(s any) bool { return s.(map[string]any)["name"] == "node" })
-		if h.profile == core {
+		if h.profile != firebaseFull {
+			doc["setup"] = slices.DeleteFunc(doc["setup"].([]any), func(s any) bool { return s.(map[string]any)["name"] == "node" })
+		}
+		if noFirebase {
 			doc["resources"] = slices.DeleteFunc(doc["resources"].([]any), func(r any) bool { return r.(map[string]any)["firebase"] != nil })
 		}
+		if h.profile == mysqlStack {
+			h.pointMySQL(doc)
+		} else {
+			trimMySQL(doc)
+		}
 	})
-	if h.profile == core {
-		h.editYAML(filepath.Join(dir, "process-compose.yaml"), func(doc map[string]any) {
-			procs := doc["processes"].(map[string]any)
+	h.editYAML(filepath.Join(dir, "process-compose.yaml"), func(doc map[string]any) {
+		procs := doc["processes"].(map[string]any)
+		if noFirebase {
 			delete(procs, "firebase")
 			delete(procs, "functions-build")
-		})
-	}
-	h.commitAll(dir, "trim the demo's firebase side")
+		}
+		if h.profile != mysqlStack {
+			delete(procs, "mysql-seed")
+		}
+	})
+	h.commitAll(dir, "shape the demo for the test")
 	h.git(dir, "push", "-q", "origin", "main")
 }
 

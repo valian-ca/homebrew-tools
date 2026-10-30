@@ -117,7 +117,7 @@ func runEnvHook(ctx context.Context, p hookPayload, log io.Writer) error {
 		}
 		se.Files = append(se.Files, f)
 	}
-	w, err := workspace.Settle(ctx, p.Cwd)
+	w, err := settle(ctx, p.Cwd, log)
 	var genErr error
 	switch {
 	case workspace.IsQuiet(err):
@@ -134,6 +134,9 @@ func runEnvHook(ctx context.Context, p hookPayload, log io.Writer) error {
 			if err := fsx.WriteAtomic(paths.SessionMark(w.WT.AdminDir, p.SessionID), nil, paths.FileMode); err != nil {
 				return err
 			}
+		}
+		if w.EnvErr != nil {
+			fmt.Fprintf(log, "lanes: %v — the env: variables are left out\n", w.EnvErr)
 		}
 		if err := prepareCore(ctx, w, log); err != nil {
 			return err

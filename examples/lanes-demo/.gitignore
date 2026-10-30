@@ -1,5 +1,6 @@
 .demo/
 app.env
+db.env
 .env.local
 secrets.local
 node_modules/

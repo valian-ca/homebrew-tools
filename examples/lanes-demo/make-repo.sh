@@ -30,7 +30,7 @@ if [ -e "$dest" ]; then
 fi
 
 mkdir -p "$dest"
-(cd "$src" && tar cf - --exclude make-repo.sh --exclude .lanes --exclude .demo --exclude app.env --exclude .env.local --exclude secrets.local \
+(cd "$src" && tar cf - --exclude make-repo.sh --exclude .lanes --exclude .demo --exclude app.env --exclude db.env --exclude .env.local --exclude secrets.local \
   --exclude node_modules --exclude '.emu-data*' --exclude 'firebase.lanes*.json' --exclude '*-debug.log' .) | (cd "$dest" && tar xf -)
 git -C "$dest" init -q -b main
 git -C "$dest" add -A

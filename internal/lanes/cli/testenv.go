@@ -67,9 +67,12 @@ command runs as is. The exit status is the command's.`,
 			} else if err != nil {
 				return err
 			}
-			w, err := workspace.Settle(ctx, dir)
+			w, err := settle(ctx, dir, cmd.ErrOrStderr())
 			if err != nil {
 				return err
+			}
+			if w.EnvErr != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "lanes: %v — the env: variables are left out\n", w.EnvErr)
 			}
 			testTmp := filepath.Join(w.Tmpdir, "test")
 			environ, held, err := testEnviron(ctx, w, testTmp)

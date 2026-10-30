@@ -10,7 +10,6 @@ import (
 	"github.com/valian-ca/homebrew-tools/internal/lanes/env"
 	"github.com/valian-ca/homebrew-tools/internal/lanes/lane"
 	"github.com/valian-ca/homebrew-tools/internal/lanes/paths"
-	"github.com/valian-ca/homebrew-tools/internal/lanes/workspace"
 )
 
 const lanProbe = "1.1.1.1:53"
@@ -43,7 +42,7 @@ both modes, so the local network reaches them either way.`,
 			if err != nil {
 				return err
 			}
-			w, err := workspace.Settle(ctx, dir)
+			w, err := settle(ctx, dir, cmd.ErrOrStderr())
 			if err != nil {
 				return err
 			}
