@@ -490,6 +490,7 @@ func TestEnvEntryThatDoesNotRender(t *testing.T) {
 	if r.code != 0 || !strings.Contains(r.stderr, "env.BROKEN") || !strings.Contains(r.stderr, "the env: variables are left out") {
 		t.Fatalf("the hook: %s", r)
 	}
+	hasAll(t, hookContext(t, r, "SessionStart"), "Problem: env.BROKEN", "the env: variables are left out")
 	if got := read(envFile); !strings.Contains(got, "export LANE_ID=") || strings.Contains(got, "GOOD=") || strings.Contains(got, "BROKEN=") {
 		t.Fatalf("the session's env file:\n%s", got)
 	}

@@ -16,6 +16,7 @@ import (
 	"github.com/valian-ca/homebrew-tools/internal/lanes/firebase"
 	"github.com/valian-ca/homebrew-tools/internal/lanes/gitx"
 	"github.com/valian-ca/homebrew-tools/internal/lanes/lane"
+	"github.com/valian-ca/homebrew-tools/internal/lanes/prep"
 	"github.com/valian-ca/homebrew-tools/internal/lanes/proto"
 	"github.com/valian-ca/homebrew-tools/internal/lanes/workspace"
 )
@@ -119,6 +120,14 @@ func unsettledContextFor(ctx context.Context, dir string, err error) string {
 
 func oneLine(err error) string {
 	return strings.Join(strings.Fields(err.Error()), " ")
+}
+
+func problem(err error) error {
+	var se *prep.StepError
+	if errors.As(err, &se) {
+		return fmt.Errorf("prep step %s failed: %w — its output is on the hook's stderr", se.Step, se.Err)
+	}
+	return err
 }
 
 type hookOutput struct {

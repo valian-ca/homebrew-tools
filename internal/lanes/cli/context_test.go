@@ -12,6 +12,7 @@ import (
 	"github.com/valian-ca/homebrew-tools/internal/lanes/gitx"
 	"github.com/valian-ca/homebrew-tools/internal/lanes/lane"
 	"github.com/valian-ca/homebrew-tools/internal/lanes/ports"
+	"github.com/valian-ca/homebrew-tools/internal/lanes/prep"
 	"github.com/valian-ca/homebrew-tools/internal/lanes/proto"
 	"github.com/valian-ca/homebrew-tools/internal/lanes/workspace"
 )
@@ -66,6 +67,16 @@ func TestLaneContextWithoutPortsOrWithProblems(t *testing.T) {
 	}
 	if n := strings.Count(got, "\n") + 1; n > 12 {
 		t.Errorf("%d lines", n)
+	}
+}
+
+func TestPrepFailureStaysOneShortLine(t *testing.T) {
+	got := laneContext(demoWorkspace("web"), stackRunning, notExported(problem(&prep.StepError{Step: "deps", Err: errors.New("exit status 1"), Tail: "npm ERR! a\nnpm ERR! b\nnpm ERR! c"})))
+	if !strings.Contains(got, "Problem: prep step deps failed: exit status 1") {
+		t.Errorf("the prep failure is not named in one line:\n%s", got)
+	}
+	if strings.Contains(got, "npm ERR!") {
+		t.Errorf("the step's output reached the context:\n%s", got)
 	}
 }
 

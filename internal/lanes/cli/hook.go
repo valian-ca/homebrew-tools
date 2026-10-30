@@ -175,7 +175,7 @@ func runEnvHook(ctx context.Context, p hookPayload, withContext bool, log io.Wri
 			}
 		}
 		if err := prepareCore(ctx, w, log); err != nil {
-			return block(notExported(err), envErr), err
+			return block(notExported(problem(err)), envErr), err
 		}
 		genErr = generateFirebase(ctx, w, log)
 		if err := rewrite(se.Files, w.Vars.Exports()); err != nil {

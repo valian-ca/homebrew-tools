@@ -98,6 +98,7 @@ func TestFirebaseGeneratedConfigs(t *testing.T) {
 	if !strings.Contains(r.stderr, "firebase.emulator.json") {
 		t.Fatalf("the session-start hook did not report the invalid config: %s", r)
 	}
+	hasAll(t, hookContext(t, r, "SessionStart"), "Problem: ", "firebase.emulator.json")
 	if !strings.Contains(read(envFile), "LANE_ID=") {
 		t.Fatalf("the hook did not export the lane: %q", read(envFile))
 	}

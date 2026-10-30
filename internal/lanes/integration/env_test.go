@@ -299,6 +299,12 @@ func TestRefusals(t *testing.T) {
 	if r := h.lanesIn(h.main, payload(wt), nil, "hook", "session-start"); r.code != 0 || r.stdout != "" || r.stderr != "" {
 		t.Fatalf("no lanes.yaml, hook: %s", r)
 	}
+	if err := os.Remove(filepath.Join(h.main, "lanes.yaml")); err != nil {
+		t.Fatal(err)
+	}
+	if r := h.lanesIn(h.main, payload(h.main), nil, "hook", "session-start"); r.code != 0 || r.stdout != "" || r.stderr != "" {
+		t.Fatalf("no lanes.yaml, hook on the main checkout: %s", r)
+	}
 }
 
 func TestMainCheckout(t *testing.T) {
