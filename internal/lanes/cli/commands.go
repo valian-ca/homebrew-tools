@@ -14,6 +14,7 @@ import (
 	"github.com/valian-ca/homebrew-tools/internal/lanes/daemon"
 	"github.com/valian-ca/homebrew-tools/internal/lanes/env"
 	"github.com/valian-ca/homebrew-tools/internal/lanes/gitx"
+	"github.com/valian-ca/homebrew-tools/internal/lanes/lane"
 	"github.com/valian-ca/homebrew-tools/internal/lanes/list"
 	"github.com/valian-ca/homebrew-tools/internal/lanes/paths"
 	"github.com/valian-ca/homebrew-tools/internal/lanes/ports"
@@ -94,6 +95,9 @@ stops after 5 minutes unless a session arrives.`,
 			if err != nil {
 				return err
 			}
+			if err := lane.MarkStarted(w.WT, w.Lane.ID); err != nil {
+				return err
+			}
 			out := cmd.OutOrStdout()
 			if resp.AlreadyRunning {
 				printf(out, "the stack of %s is already running — nothing restarted\n", w.WT.Root)
@@ -120,7 +124,7 @@ func newStopCmd() *cobra.Command {
 		Long: `Stop the stack of a worktree — the current one by default — and keep its
 data for the next lanes start. Processes started by hand from the worktree
 stop too; shells, editors, terminals and the project's shared processes are
-spared.`,
+spared. A mysql resource's server is shared by the project and keeps running.`,
 		Example: `  lanes stop
   lanes stop ~/code/acme/.claude/worktrees/fix-login`,
 		Args: cobra.MaximumNArgs(1),

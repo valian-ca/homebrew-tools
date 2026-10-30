@@ -215,6 +215,37 @@ func TestMarkCreated(t *testing.T) {
 	}
 }
 
+func TestMarkStarted(t *testing.T) {
+	f := newFixture(t, "feat/started")
+	rec, _ := f.check()
+	if rec.StartedAt != nil {
+		t.Fatalf("a new lane is already started: %v", rec.StartedAt)
+	}
+	if err := MarkStarted(f.wt, "other_lane_000000"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := f.check(); got.StartedAt != nil {
+		t.Fatal("another lane's start marked this one")
+	}
+	if err := MarkStarted(f.wt, rec.ID); err != nil {
+		t.Fatal(err)
+	}
+	first, _ := f.check()
+	if first.StartedAt == nil {
+		t.Fatal("the start was not recorded")
+	}
+	if err := MarkStarted(f.wt, rec.ID); err != nil {
+		t.Fatal(err)
+	}
+	if again, _ := f.check(); !again.StartedAt.Equal(*first.StartedAt) {
+		t.Fatalf("a second start moved the mark: %v, then %v", first.StartedAt, again.StartedAt)
+	}
+	f.git("switch", "-q", "-c", "feat/other")
+	if next, born := f.check(); !born || next.StartedAt != nil {
+		t.Fatalf("a new lane inherits the start: born=%v %+v", born, next)
+	}
+}
+
 func TestSetHost(t *testing.T) {
 	f := newFixture(t, "feat/host")
 	rec, _ := f.check()

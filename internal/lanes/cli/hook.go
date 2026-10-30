@@ -27,8 +27,9 @@ import (
 const sessionEndBudget = 500 * time.Millisecond
 
 type hookPayload struct {
-	Cwd       string `json:"cwd"`
-	SessionID string `json:"session_id"`
+	Cwd           string `json:"cwd"`
+	SessionID     string `json:"session_id"`
+	HookEventName string `json:"hook_event_name"`
 }
 
 var sessionID = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
@@ -41,15 +42,21 @@ func newHookCmd() *cobra.Command {
 payload on stdin and works on the directory the payload names — the worktree,
 even when Claude Desktop runs the hook from the main checkout.
 
-Hooks never block a session: they exit 0 and report problems on stderr. On a
-main checkout, or without lanes.yaml, they do nothing.
+In a worktree, session-start adds the lane's context block to the session:
+its lane, worktree, host, stack state, ports and commands. On a main checkout
+it adds a two-line note and exports nothing. cwd-changed adds the same text
+after EnterWorktree or ExitWorktree, never under CwdChanged, from which Claude
+Code takes no context. Without lanes.yaml, the hooks add nothing.
 
-Wire them as the contract shows, guarded so a Mac without lanes stays silent:
+Hooks never block a session: they exit 0 and report problems on stderr.
+
+Wire them as lanes help contract shows, guarded so a Mac without lanes stays
+silent:
   command -v lanes >/dev/null 2>&1 && lanes hook session-start || true`,
 	}
 	c.AddCommand(
-		envHook("session-start", "SessionStart: settle the lane, run prep steps, export the lane's variables"),
-		envHook("cwd-changed", "CwdChanged, and PostToolUse after EnterWorktree or ExitWorktree: settle the lane of the new directory, run prep steps, export its variables"),
+		envHook("session-start", "SessionStart: settle the lane, run prep steps, export the lane's variables, add its context block"),
+		envHook("cwd-changed", "CwdChanged, and PostToolUse after EnterWorktree or ExitWorktree: settle the lane of the new directory, run prep steps, export its variables; after EnterWorktree or ExitWorktree, add its context block"),
 		&cobra.Command{
 			Use:   "session-end",
 			Short: "SessionEnd: tell lanesd a session ended, in well under a second",
@@ -79,12 +86,24 @@ func envHook(name, short string) *cobra.Command {
 		Long: short + `.
 
 The variables are appended to $CLAUDE_ENV_FILE, so every Bash command of the
-session sees the lane's ports and TMPDIR, over the TMPDIR Claude Code sets.`,
+session sees the lane's ports and TMPDIR, over the TMPDIR Claude Code sets.
+
+The context — the lane's block in a worktree, a two-line note on a main
+checkout — goes to stdout as the hook's JSON additionalContext. It never
+starts the stack.`,
 		Example: `  echo '{"cwd":"'"$PWD"'"}' | lanes hook ` + name,
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if err := runEnvHook(cmd.Context(), readPayload(cmd.InOrStdin()), cmd.ErrOrStderr()); err != nil {
+			p := readPayload(cmd.InOrStdin())
+			event := contextEvent(name, p)
+			text, err := runEnvHook(cmd.Context(), p, event != "", cmd.ErrOrStderr())
+			if err != nil {
 				fmt.Fprintf(cmd.ErrOrStderr(), "lanes: %v\n", err)
+			}
+			if text != "" {
+				if err := writeContext(cmd.OutOrStdout(), event, text); err != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "lanes: %v\n", err)
+				}
 			}
 			return nil
 		},
@@ -105,7 +124,7 @@ const staleSession = 30 * 24 * time.Hour
 // hooks: within one file the first value of a variable wins, so appending
 // could never move a session to another lane. A hook given no file, such as
 // PostToolUse after EnterWorktree, still reaches the session's.
-func runEnvHook(ctx context.Context, p hookPayload, log io.Writer) error {
+func runEnvHook(ctx context.Context, p hookPayload, withContext bool, log io.Writer) (string, error) {
 	known := sessionID.MatchString(p.SessionID)
 	var se sessionEnv
 	if known {
@@ -118,40 +137,74 @@ func runEnvHook(ctx context.Context, p hookPayload, log io.Writer) error {
 		se.Files = append(se.Files, f)
 	}
 	w, err := settle(ctx, p.Cwd, log)
-	var genErr error
+	var (
+		text   string
+		genErr error
+	)
 	switch {
 	case workspace.IsQuiet(err):
+		if withContext {
+			text = quietContext(ctx, p.Cwd, err)
+		}
 		if len(se.Vars) > 0 {
 			if err := rewrite(se.Files, cleared(se.Vars, se.Tmpdir)); err != nil {
-				return err
+				return text, err
 			}
 			se.Vars = nil
 		}
 	case err != nil:
-		return err
+		if withContext {
+			text = unsettledContextFor(ctx, p.Cwd, err)
+		}
+		return text, err
 	default:
+		var envErr error
+		if w.EnvErr != nil {
+			envErr = fmt.Errorf("%w — the env: variables are left out", w.EnvErr)
+			fmt.Fprintf(log, "lanes: %v\n", envErr)
+		}
+		block := func(problems ...error) string {
+			if !withContext {
+				return ""
+			}
+			return laneContext(w, stackState(ctx, w), problems...)
+		}
 		if known {
 			if err := fsx.WriteAtomic(paths.SessionMark(w.WT.AdminDir, p.SessionID), nil, paths.FileMode); err != nil {
-				return err
+				return block(notExported(err), envErr), err
 			}
 		}
-		if w.EnvErr != nil {
-			fmt.Fprintf(log, "lanes: %v — the env: variables are left out\n", w.EnvErr)
-		}
 		if err := prepareCore(ctx, w, log); err != nil {
-			return err
+			return block(notExported(err), envErr), err
 		}
 		genErr = generateFirebase(ctx, w, log)
 		if err := rewrite(se.Files, w.Vars.Exports()); err != nil {
-			return err
+			return block(notExported(err), envErr, genErr), err
 		}
 		se.Vars = w.Vars.Names()
+		text = block(envErr, genErr)
 	}
 	if !known || len(se.Files) == 0 {
-		return genErr
+		return text, genErr
 	}
 	pruneSessions()
-	return errors.Join(genErr, fsx.WriteJSON(paths.SessionEnv(p.SessionID), se))
+	return text, errors.Join(genErr, fsx.WriteJSON(paths.SessionEnv(p.SessionID), se))
+}
+
+func notExported(err error) error {
+	return fmt.Errorf("%w — the lane's variables are not exported", err)
+}
+
+// contextEvent is empty under CwdChanged: Claude Code takes no context from
+// that event.
+func contextEvent(hook string, p hookPayload) string {
+	switch {
+	case hook == "session-start":
+		return "SessionStart"
+	case p.HookEventName == "PostToolUse":
+		return "PostToolUse"
+	}
+	return ""
 }
 
 // cleared exports each variable empty, TMPDIR back to the session's own:

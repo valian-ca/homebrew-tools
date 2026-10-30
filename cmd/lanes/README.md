@@ -7,8 +7,10 @@ ports, a short `TMPDIR`, the project's resources and its processes, run by
 to use it, and a project that adopts it keeps working on its main checkout
 without it.
 
-This page is the contract a project follows to adopt lanes. The demo project
-in [`examples/lanes-demo`](../../examples/lanes-demo) follows it.
+This page is the contract a project follows to adopt lanes. `lanes help
+contract` prints it, as markdown and without the network, for the installed
+version. The demo project, `examples/lanes-demo` in the homebrew-tools
+repository (https://github.com/valian-ca/homebrew-tools), follows it.
 
 ## Install
 
@@ -48,7 +50,15 @@ lanes serves linked worktrees only. On the main checkout:
   to the project's own commands;
 - `lanes test-env -- <command>` runs the command as is;
 - `lanes env` prints nothing;
-- the hooks return at once without doing anything;
+- the hooks export nothing; `session-start`, and `cwd-changed` after
+  `ExitWorktree`, add a two-line note to the session's context (see
+  [Context block](#context-block)):
+
+  ```text
+  lanes: this project gives each worktree its own stack; this session is on the main checkout, which has no lane — use the project's own commands here.
+  Run `lanes help contract` for the contract: ports, TMPDIR and stack per worktree.
+  ```
+
 - `lanes list` never shows it.
 
 In a repository without `lanes.yaml`, `lanes env` and the hooks do nothing,
@@ -210,6 +220,48 @@ Mac without lanes stays silent:
   `session_id`.
 - Hooks never block a session: they exit 0 and write problems to stderr.
 
+### Context block
+
+In a worktree, `session-start` adds the lane's context block to the session,
+at most 12 lines, as the hook's JSON `additionalContext` on stdout — nothing
+else ever reaches the hooks' stdout. In the demo project:
+
+```text
+lanes: this session works in lane feature_val_374_discov_3f9a1c (worktree /Users/me/code/acme/.claude/worktrees/val-374), host 127.0.0.1.
+Stack: stopped. Run `lanes start` before using the ports.
+Ports: web=20000 extra=20001 auth=20002 firestore=20003 …
+Commands: lanes start · lanes stop · lanes logs <piece> · lanes restart <piece> · lanes test-env -- <command> · lanes list · lanes help contract (the full contract)
+```
+
+- The lane ID, the worktree and `LANES_HOST`.
+- The stack's state at that moment: `running`; `stopped`; `never started` for
+  a lane whose stack has not started yet; `unknown` with
+  `brew services start lanes` when `lanesd` is not running. When the stack
+  does not run, the block says to run `lanes start` before using the ports.
+  The block never starts anything: `lanes start` stays the only way a stack
+  starts.
+- The named ports, `name=port` in block order, without the `test_*` ports,
+  which only `lanes test-env` uses. A project that names no port has no
+  `Ports:` line.
+- A `Problem:` line for each error the hook met while it still settled the
+  lane: a failed prep step, an `env` entry that does not render, a `firebase`
+  config it could not generate.
+- The commands to know.
+
+When the lane cannot be settled — an invalid `lanes.yaml`, no free port block,
+a git error — the block names the worktree, the lane last recorded there if
+any, and the error on one line — the path of `lanes.yaml` and, for an
+unknown key, its line and name — in place of the state and the ports; the
+variables are not exported.
+
+The block comes at every `SessionStart` — a new session, `resume`, `clear`,
+`compact`, a fork — with the stack's state at that moment. `cwd-changed` adds the new
+worktree's block after `EnterWorktree`, and the main checkout's note after an
+`ExitWorktree` back to it, through the `PostToolUse` hook. **Limit:** a `cd`
+into another worktree fires `CwdChanged`, which updates the session's
+variables but cannot add a block: Claude Code takes no context from a
+`CwdChanged` hook.
+
 No `WorktreeRemove` hook is needed: `lanesd` notices a deleted worktree on its
 own, as git does, by the missing `gitdir` file in its admin directory, even
 when the directory itself is left behind.
@@ -369,10 +421,12 @@ databases before anything starts; reconcile erases a gone worktree's. Erasing
 one that no longer exists succeeds. When the server sleeps, does not answer
 or the guard refuses, the erase fails without waking it: the databases stay
 registered, reconcile retries every 5 minutes, and a new lane does not wait.
-An erase connects with the user and password of the current `lanes.yaml` —
-the worktree's, or the main checkout's once the worktree is gone — and falls
-back to those recorded at registration when that file has no `mysql`
-resource: a rotated password does not strand a retired lane's databases.
+An erase a new lane runs connects with the user and password of the
+worktree's `lanes.yaml`. An erase reconcile runs — a gone worktree's, or a
+deferred erase it retries for a live worktree — connects with the main
+checkout's. Each falls back to those recorded at registration when its file
+has no `mysql` resource: a rotated password does not strand a retired lane's
+databases.
 A database belongs to a lane only when its name comes out of one of the
 project's templates with a valid lane ID — ending in `_` and 6 hex
 characters. The main checkout's databases (`nezrouge`, `nezrouge_test`) and
@@ -629,7 +683,8 @@ A physical device reaches the lane's emulators by the Mac's IP, not by
 | `lanes logs <piece> [-f] [-n N]` | The end of a piece's log, followed with `-f`. |
 | `lanes test-env -- <command>` | Run a command against the lane's test series of emulators. |
 | `lanes host [lan\|local]` | Show or switch `LANES_HOST`. |
-| `lanes hook session-start\|cwd-changed\|session-end` | The hooks' entry points. |
+| `lanes hook session-start\|cwd-changed\|session-end` | The hooks' entry points; `session-start` and `cwd-changed` add the [context block](#context-block). |
+| `lanes help contract` | This contract, as markdown, for the installed version, without the network. |
 
 Every command has `--help`.
 
@@ -638,6 +693,7 @@ Every command has `--help`.
 | What | Where |
 | --- | --- |
 | Port table, daemon socket and state | `~/.local/state/lanes/` |
+| MySQL wake lock, keyed on the server's port | `~/.local/state/lanes/mysql-<port>.lock` |
 | Lane record, prep stamps | `<worktree's git dir>/lanes/`, gone with the worktree |
 | Registry of out-of-worktree resources | `<git common dir>/lanes/registry.json` |
 | Logs, process-compose socket | the lane's `TMPDIR` |
