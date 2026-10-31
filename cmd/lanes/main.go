@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	_ "embed"
 	"fmt"
 	"os"
 	"os/signal"
@@ -12,11 +13,14 @@ import (
 
 var version = "dev"
 
+//go:embed README.md
+var contract string
+
 func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	root := cli.NewRoot(version)
+	root := cli.NewRoot(version, contract)
 	root.SetOut(os.Stdout)
 	root.SetErr(os.Stderr)
 	if err := root.ExecuteContext(ctx); err != nil {

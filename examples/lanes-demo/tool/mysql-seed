@@ -11,7 +11,7 @@ leaves it alone otherwise. The marker is created last: MySQL commits every
 CREATE TABLE at once, so a seed cut short leaves tables without the marker,
 and the next run drops them and seeds again.
 
-Before seeding, it appends what it found to \$LANES_DEMO_STATE/mysql-seed/<lane>.log:
+At every run, it appends what it found to \$LANES_DEMO_STATE/mysql-seed/<lane>.log:
 whether each database existed and how many tables it held, and DEMO_DATABASE_URL.
 
 Environment:

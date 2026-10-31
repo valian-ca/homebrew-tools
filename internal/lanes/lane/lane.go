@@ -18,13 +18,14 @@ import (
 const slugMax = 24
 
 type Record struct {
-	ID                   string    `json:"id"`
-	Branch               string    `json:"branch"`
-	BornAt               time.Time `json:"bornAt"`
-	LastTip              string    `json:"lastTip,omitempty"`
-	LastTipHadOwnCommits bool      `json:"lastTipHadOwnCommits"`
-	Created              []string  `json:"created,omitempty"`
-	Host                 string    `json:"host,omitempty"`
+	ID                   string     `json:"id"`
+	Branch               string     `json:"branch"`
+	BornAt               time.Time  `json:"bornAt"`
+	LastTip              string     `json:"lastTip,omitempty"`
+	LastTipHadOwnCommits bool       `json:"lastTipHadOwnCommits"`
+	Created              []string   `json:"created,omitempty"`
+	Host                 string     `json:"host,omitempty"`
+	StartedAt            *time.Time `json:"startedAt,omitempty"`
 }
 
 func (r Record) HasCreated(adapter string) bool { return slices.Contains(r.Created, adapter) }
@@ -120,6 +121,18 @@ func MarkCreated(wt gitx.Worktree, laneID, adapter string) error {
 			return err
 		}
 		cur.Created = append(cur.Created, adapter)
+		return Save(wt.AdminDir, *cur)
+	})
+}
+
+func MarkStarted(wt gitx.Worktree, laneID string) error {
+	return fsx.WithLock(paths.LaneLock(wt.AdminDir), func() error {
+		cur, err := Load(wt.AdminDir)
+		if err != nil || cur == nil || cur.ID != laneID || cur.StartedAt != nil {
+			return err
+		}
+		now := time.Now().UTC()
+		cur.StartedAt = &now
 		return Save(wt.AdminDir, *cur)
 	})
 }

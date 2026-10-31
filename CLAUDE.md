@@ -178,7 +178,8 @@ network.
 The demo's MySQL side is a private `mysqld` that `tool/mysql-server <port>`
 starts from the main checkout, its data under `.demo/mysql`, on port 3316 for
 the demo; the integration suite gives each test its own server on an
-ephemeral port and stops it by its pid file. Its cases need `mysqld`, from
+ephemeral port, runs at most 3 MySQL servers at once, and stops each by its
+pid file. Its cases need `mysqld`, from
 `brew install mysql@8.4`: the formula is keg-only, and the scripts find it
 through `brew --prefix mysql@8.4` when it is not on `PATH`. Without it they
 skip, unless `LANES_REQUIRE_MYSQL=1`, which CI sets. Two more `LANES_TEST=1`
