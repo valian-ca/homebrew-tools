@@ -22,10 +22,8 @@ func (s composeService) String() string {
 }
 
 type mysqlFound struct {
-	service composeService
-	port    int
-	// portIssue and passwordIssue say what lanes init could not read; the
-	// key is then left for the agent to fill in.
+	service       composeService
+	port          int
 	portIssue     string
 	password      string
 	passwordIssue string
@@ -58,7 +56,9 @@ func (p *project) detectCompose() {
 					p.report.check("%s: another MySQL service — lanes.yaml uses %s, and a project has at most one mysql resource", svc, p.mysql.service)
 					continue
 				}
-				p.mysql = readMySQL(svc, s)
+				r := &resolver{dotenv: p.dotenv(path.Join(path.Dir(f), ".env"))}
+				p.mysql = readMySQL(svc, s, r)
+				p.reportResolved(svc, r)
 			case "postgres":
 				p.postgres = append(p.postgres, svc)
 				p.report.NotWritten = append(p.report.NotWritten, "Postgres: adapter not available in this lanes — "+svc.String())
@@ -108,9 +108,9 @@ func imageName(image string) string {
 	return img
 }
 
-func readMySQL(svc composeService, s serviceSpec) *mysqlFound {
+func readMySQL(svc composeService, s serviceSpec, r *resolver) *mysqlFound {
 	m := &mysqlFound{service: svc}
-	port, raw, found := publishedPort(s.Ports, mysqlContainerPort)
+	port, raw, found := publishedPort(s.Ports, mysqlContainerPort, r)
 	switch {
 	case !found:
 		m.portIssue = fmt.Sprintf("%s publishes no host port for 3306", svc)
@@ -120,13 +120,11 @@ func readMySQL(svc composeService, s serviceSpec) *mysqlFound {
 		m.port = port
 	}
 	env := environment(s.Environment)
-	m.password, m.passwordIssue = rootPassword(svc, env)
+	m.password, m.passwordIssue = rootPassword(svc, env, r)
 	return m
 }
 
-// publishedPort finds the host port mapped to container; found without a
-// port means the mapping exists but its host side is not a plain number.
-func publishedPort(ports []yaml.Node, container string) (port int, raw string, found bool) {
+func publishedPort(ports []yaml.Node, container string, r *resolver) (port int, raw string, found bool) {
 	for _, n := range ports {
 		var host, target string
 		switch n.Kind {
@@ -146,10 +144,10 @@ func publishedPort(ports []yaml.Node, container string) (port int, raw string, f
 		default:
 			continue
 		}
-		if t, ok := resolve(target); !ok || t != container {
+		if t, ok := r.resolve(target); !ok || t != container {
 			continue
 		}
-		if h, ok := resolve(host); ok {
+		if h, ok := r.resolve(host); ok {
 			if v, err := strconv.Atoi(h); err == nil && v > 0 && v <= 65535 {
 				return v, raw, true
 			}
@@ -192,21 +190,70 @@ func splitShortPort(s string) (host, container string) {
 	}
 }
 
-var defaultRef = regexp.MustCompile(`^\$\{[A-Za-z_][A-Za-z0-9_]*:?-([^}$]*)\}$`)
+var (
+	varRef     = regexp.MustCompile(`^\$\{([A-Za-z_][A-Za-z0-9_]*)(?:(:?-)([^}$]*))?\}$|^\$([A-Za-z_][A-Za-z0-9_]*)$`)
+	dotenvLine = regexp.MustCompile(`^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$`)
+)
 
-// resolve reads a compose value as docker compose would without the
-// environment: a literal, or the default of ${VAR:-default}. $$ is compose's
-// escaped dollar.
-func resolve(s string) (string, bool) {
+// resolver reads a compose value as docker compose would from the .env
+// beside the compose file, without the shell's environment: a literal, a
+// variable that .env sets, or the default of ${VAR:-default}. $$ is
+// compose's escaped dollar.
+type resolver struct {
+	dotenv   map[string]string
+	fromEnv  []string
+	defaults []string
+}
+
+func (r *resolver) resolve(s string) (string, bool) {
 	s = strings.TrimSpace(s)
-	if m := defaultRef.FindStringSubmatch(s); m != nil {
-		return m[1], true
+	if m := varRef.FindStringSubmatch(s); m != nil {
+		name := m[1] + m[4]
+		v, set := r.dotenv[name]
+		if set && (v != "" || m[2] != ":-") {
+			r.fromEnv = append(r.fromEnv, name)
+			return v, true
+		}
+		if m[2] != "" {
+			r.defaults = append(r.defaults, name)
+			return m[3], true
+		}
+		return "", false
 	}
 	literal := strings.ReplaceAll(s, "$$", "")
 	if strings.Contains(literal, "$") {
 		return "", false
 	}
 	return strings.ReplaceAll(s, "$$", "$"), true
+}
+
+func (p *project) dotenv(rel string) map[string]string {
+	env := map[string]string{}
+	data, err := p.read(rel)
+	if err != nil {
+		return env
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		m := dotenvLine.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		v := m[2]
+		if len(v) >= 2 && (v[0] == '"' || v[0] == '\'') && v[len(v)-1] == v[0] {
+			v = v[1 : len(v)-1]
+		}
+		env[m[1]] = v
+	}
+	return env
+}
+
+func (p *project) reportResolved(svc composeService, r *resolver) {
+	if len(r.fromEnv) > 0 {
+		p.report.check("%s: %s read from the .env beside it in this checkout — check the values lanes.yaml took", svc, strings.Join(slices.Compact(r.fromEnv), ", "))
+	}
+	if len(r.defaults) > 0 {
+		p.report.check("%s: %s not set in the .env beside it — lanes.yaml took the compose default; check the server runs with it", svc, strings.Join(slices.Compact(r.defaults), ", "))
+	}
 }
 
 type envValue struct {
@@ -231,7 +278,7 @@ func environment(n yaml.Node) map[string]envValue {
 	return env
 }
 
-func rootPassword(svc composeService, env map[string]envValue) (password, issue string) {
+func rootPassword(svc composeService, env map[string]envValue, r *resolver) (password, issue string) {
 	for _, key := range []string{"MYSQL_ROOT_PASSWORD", "MARIADB_ROOT_PASSWORD"} {
 		e, ok := env[key]
 		if !ok {
@@ -240,7 +287,7 @@ func rootPassword(svc composeService, env map[string]envValue) (password, issue 
 		if !e.set {
 			return "", fmt.Sprintf("%s takes %s from the shell's environment", svc, key)
 		}
-		v, ok := resolve(e.value)
+		v, ok := r.resolve(e.value)
 		if !ok {
 			return "", fmt.Sprintf("%s sets %s to %q, which lanes init does not copy", svc, key, e.value)
 		}

@@ -34,9 +34,8 @@ type File struct {
 	Path    string
 	Mode    Mode
 	Content []byte
-	// Added is what an append adds, shown alone by a dry run.
-	Added []byte
-	perm  fs.FileMode
+	Added   []byte
+	perm    fs.FileMode
 }
 
 type Result struct {
@@ -136,14 +135,26 @@ func (p *project) read(rel string) ([]byte, error) {
 	return os.ReadFile(filepath.Join(p.root, rel))
 }
 
+// existing refuses a symbolic link on the way to a merged file: the atomic
+// rename would replace the link with a regular copy of its target, and the
+// report would then ask to commit that copy.
 func (p *project) existing(rel string) ([]byte, fs.FileMode, bool, error) {
 	path := filepath.Join(p.root, rel)
-	info, err := os.Stat(path)
+	for at := filepath.Dir(rel); at != "."; at = filepath.Dir(at) {
+		if info, err := os.Lstat(filepath.Join(p.root, at)); err == nil && info.Mode()&fs.ModeSymlink != 0 {
+			return nil, 0, false, fmt.Errorf("lanes init: %s is a symbolic link — lanes init does not write through it; nothing was written", filepath.Join(p.root, at))
+		}
+	}
+	info, err := os.Lstat(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, versionedPerm, false, nil
 	}
 	if err != nil {
 		return nil, 0, false, err
+	}
+	if info.Mode()&fs.ModeSymlink != 0 {
+		target, _ := os.Readlink(path)
+		return nil, 0, false, fmt.Errorf("lanes init: %s is a symbolic link to %s — lanes init does not replace a link; add the lanes lines to its target by hand, or replace the link with a file; nothing was written", path, target)
 	}
 	if !info.Mode().IsRegular() {
 		return nil, 0, false, fmt.Errorf("lanes init: %s is not a regular file", path)

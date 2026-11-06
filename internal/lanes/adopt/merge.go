@@ -30,15 +30,13 @@ var lanesHooks = []hookSpec{
 	{event: "SessionEnd", name: "session-end"},
 }
 
-// harnessEvents are the events a former worktree harness hooked to set up
-// and tear down its stack.
-var harnessEvents = []string{"SessionStart", "CwdChanged", "SessionEnd"}
+var formerHarnessEvents = []string{"SessionStart", "CwdChanged", "SessionEnd"}
 
 func HookCommand(name string) string {
 	return "command -v lanes >/dev/null 2>&1 && lanes hook " + name + " || true"
 }
 
-func (h hookSpec) group(withSetup bool) *object {
+func (h hookSpec) group(withSetup bool) *orderedObject {
 	hook := newObject()
 	hook.set("type", "command")
 	hook.set("command", HookCommand(h.name))
@@ -83,13 +81,13 @@ func (p *project) settings() (*File, error) {
 	if err != nil {
 		return nil, fmt.Errorf("lanes init: %s is not valid JSON (%v) — fix it, then run lanes init again; nothing was written", SettingsFile, err)
 	}
-	root, ok := v.(*object)
+	root, ok := v.(*orderedObject)
 	if !ok {
 		return nil, fmt.Errorf("lanes init: %s is not a JSON object — fix it, then run lanes init again; nothing was written", SettingsFile)
 	}
 	hooks := newObject()
 	if hv, ok := root.get("hooks"); ok {
-		if hooks, ok = hv.(*object); !ok {
+		if hooks, ok = hv.(*orderedObject); !ok {
 			return nil, fmt.Errorf("lanes init: %s: hooks is not a JSON object — fix it, then run lanes init again; nothing was written", SettingsFile)
 		}
 	}
@@ -133,23 +131,23 @@ func lanesHookIn(groups []any, name string) (present, timeout bool) {
 	return false, false
 }
 
-func hookObjects(group any) []*object {
-	g, ok := group.(*object)
+func hookObjects(group any) []*orderedObject {
+	g, ok := group.(*orderedObject)
 	if !ok {
 		return nil
 	}
 	list, _ := g.vals["hooks"].([]any)
-	var out []*object
+	var out []*orderedObject
 	for _, h := range list {
-		if o, ok := h.(*object); ok {
+		if o, ok := h.(*orderedObject); ok {
 			out = append(out, o)
 		}
 	}
 	return out
 }
 
-func (p *project) scanSettingsHarness(hooks *object) {
-	for _, event := range harnessEvents {
+func (p *project) scanSettingsHarness(hooks *orderedObject) {
+	for _, event := range formerHarnessEvents {
 		groups, _ := hooks.vals[event].([]any)
 		for i, g := range groups {
 			for j, h := range hookObjects(g) {

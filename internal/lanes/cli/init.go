@@ -1,10 +1,14 @@
 package cli
 
 import (
+	"time"
+
 	"github.com/spf13/cobra"
 
 	"github.com/valian-ca/homebrew-tools/internal/lanes/adopt"
 )
+
+const initTimeout = time.Minute
 
 func newInitCmd() *cobra.Command {
 	var dryRun bool
@@ -54,7 +58,9 @@ The contract: lanes help contract`,
 			if err != nil {
 				return err
 			}
-			res, err := adopt.Plan(cmd.Context(), dir)
+			ctx, cancel := withTimeout(cmd.Context(), initTimeout)
+			defer cancel()
+			res, err := adopt.Plan(ctx, dir)
 			if err != nil {
 				return err
 			}

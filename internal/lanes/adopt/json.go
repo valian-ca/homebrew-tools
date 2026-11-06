@@ -9,21 +9,19 @@ import (
 	"strings"
 )
 
-// object is a JSON object that keeps its keys in file order, so a merged
-// settings file changes only where lanes init adds to it.
-type object struct {
+type orderedObject struct {
 	keys []string
 	vals map[string]any
 }
 
-func newObject() *object { return &object{vals: map[string]any{}} }
+func newObject() *orderedObject { return &orderedObject{vals: map[string]any{}} }
 
-func (o *object) get(key string) (any, bool) {
+func (o *orderedObject) get(key string) (any, bool) {
 	v, ok := o.vals[key]
 	return v, ok
 }
 
-func (o *object) set(key string, v any) {
+func (o *orderedObject) set(key string, v any) {
 	if _, ok := o.vals[key]; !ok {
 		o.keys = append(o.keys, key)
 	}
@@ -94,7 +92,7 @@ func encodePretty(v any) []byte {
 func writePretty(b *strings.Builder, v any, indent string) {
 	inner := indent + "  "
 	switch t := v.(type) {
-	case *object:
+	case *orderedObject:
 		if len(t.keys) == 0 {
 			b.WriteString("{}")
 			return
@@ -134,7 +132,7 @@ func writePretty(b *strings.Builder, v any, indent string) {
 // encodeCompact writes the contract's one-line form: { "k": v } and [a, b].
 func encodeCompact(v any) string {
 	switch t := v.(type) {
-	case *object:
+	case *orderedObject:
 		if len(t.keys) == 0 {
 			return "{}"
 		}

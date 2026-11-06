@@ -27,7 +27,7 @@ func (p *project) scanPackages() {
 			continue
 		}
 		v, err := decodeJSON(data)
-		o, ok := v.(*object)
+		o, ok := v.(*orderedObject)
 		if err != nil || !ok {
 			p.report.check("%s: not a valid package.json — skipped", f)
 			continue
@@ -37,7 +37,7 @@ func (p *project) scanPackages() {
 			k.name, _ = n.(string)
 		}
 		if s, ok := o.get("scripts"); ok {
-			if so, ok := s.(*object); ok {
+			if so, ok := s.(*orderedObject); ok {
 				for _, name := range so.keys {
 					if text, ok := so.vals[name].(string); ok {
 						k.scripts = append(k.scripts, [2]string{name, text})
@@ -47,7 +47,7 @@ func (p *project) scanPackages() {
 		}
 		for _, key := range []string{"dependencies", "devDependencies"} {
 			if d, ok := o.get(key); ok {
-				if do, ok := d.(*object); ok {
+				if do, ok := d.(*orderedObject); ok {
 					k.deps = append(k.deps, do.keys...)
 				}
 			}
@@ -59,11 +59,8 @@ func (p *project) scanPackages() {
 type devServer struct {
 	pkgDir, script, name, port string
 	command                    string
-	// fill is the comment left in process-compose.yaml when the command
-	// still needs a hand; rewritten marks a script whose own port flag was
-	// replaced.
-	fill      string
-	rewritten bool
+	fillNote                   string
+	portFlagRewritten          bool
 }
 
 func (d devServer) portVar() string { return "PORT_" + strings.ToUpper(d.port) }
@@ -86,8 +83,6 @@ type scriptShape struct {
 	flag      string
 }
 
-// devCommand finds the command of a script that starts a dev server: vite
-// with no subcommand or dev or serve, storybook dev, start-storybook.
 func devCommand(text string) (scriptShape, bool) {
 	cmds := commandSep.Split(text, -1)
 	for i, c := range cmds {
@@ -157,12 +152,12 @@ func (p *project) detectDevServers() {
 		d := devServer{pkgDir: f.k.dir, script: f.name}
 		d.name = unique(strings.Trim(nonNameChar.ReplaceAllString(strings.ToLower(labels[f.k.dir]+"-"+f.name), "-"), "-"), "-", usedNames)
 		d.port = unique(portName(d.name), "_", usedPorts)
-		d.command, d.fill, d.rewritten = p.devServerCommand(f.k.dir, f.name, f.text, f.shape, d.portVar())
-		if d.rewritten {
+		d.command, d.fillNote, d.portFlagRewritten = p.devServerCommand(f.k.dir, f.name, f.text, f.shape, d.portVar())
+		if d.portFlagRewritten {
 			p.report.check("process-compose.yaml %s: rewritten from %s (%s) to take its port from %s — check the command", d.name, d.source(), f.shape.flag, d.portVar())
 		}
-		if d.fill != "" {
-			p.report.fill(Item{File: "process-compose.yaml", Key: "processes." + d.name + ".command", What: d.fill})
+		if d.fillNote != "" {
+			p.report.fill(Item{File: "process-compose.yaml", Key: "processes." + d.name + ".command", What: d.fillNote})
 		}
 		p.devs = append(p.devs, d)
 	}
@@ -232,7 +227,6 @@ func splitAssignments(text string) (lead, rest string) {
 	return strings.Join(words[:i], " ") + " ", rest
 }
 
-// packageManager is the one whose lockfile is nearest at or above dir.
 func (p *project) packageManager(dir string) string {
 	for d := dir; ; d = path.Dir(d) {
 		for _, lm := range []struct{ file, pm string }{{"pnpm-lock.yaml", "pnpm"}, {"yarn.lock", "yarn"}, {"package-lock.json", "npm"}} {

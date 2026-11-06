@@ -21,7 +21,6 @@ import (
 
 var laneFiles = []string{"lanes.yaml", "process-compose.yaml", ".envrc", ".claude/settings.json"}
 
-// unadopt turns the demo back into a project that has never seen lanes.
 func (h *harness) unadopt(dir string) {
 	h.t.Helper()
 	h.git(dir, append([]string{"rm", "-q"}, laneFiles...)...)

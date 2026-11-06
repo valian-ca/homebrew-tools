@@ -73,7 +73,7 @@ func hasEmulators(data []byte) bool {
 	if err != nil {
 		return false
 	}
-	o, ok := v.(*object)
+	o, ok := v.(*orderedObject)
 	if !ok {
 		return false
 	}
@@ -81,7 +81,7 @@ func hasEmulators(data []byte) bool {
 	if !ok {
 		return false
 	}
-	_, ok = em.(*object)
+	_, ok = em.(*orderedObject)
 	return ok
 }
 

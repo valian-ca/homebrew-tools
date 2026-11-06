@@ -111,8 +111,8 @@ func (p *project) renderProcessCompose() []byte {
 	w("processes:")
 	for _, d := range p.devs {
 		w("  %s:", d.name)
-		if d.fill != "" {
-			w("    %s%s", fillMark, d.fill)
+		if d.fillNote != "" {
+			w("    %s%s", fillMark, d.fillNote)
 		}
 		w("    command: %s", scalar(d.command))
 		if d.pkgDir != "." {
