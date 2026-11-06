@@ -14,7 +14,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -26,14 +25,14 @@ import (
 	"github.com/valian-ca/homebrew-tools/internal/lanes/tmpdir"
 )
 
-var (
-	binDir    string
-	nextRange atomic.Int32
-)
+var binDir string
 
 // The stand-ins for a session, an editor and the demo's shared process are a
 // Go sleeper built under each name: macOS kills a renamed copy of /bin/sleep.
 func TestMain(m *testing.M) {
+	if path := os.Getenv("LANES_IT_HOLD"); path != "" {
+		holdWindowLock(path)
+	}
 	for _, kv := range testutil.GitEnv {
 		k, v, _ := strings.Cut(kv, "=")
 		os.Setenv(k, v)
@@ -71,7 +70,7 @@ type harness struct {
 	daemon   *exec.Cmd
 	trees    []string
 	children []*exec.Cmd
-	lo       int
+	window   window
 	profile  profile
 	slot     bool
 	repos    []string
@@ -114,8 +113,9 @@ func newHarness(t *testing.T, opts ...option) *harness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	lo := 42000 + int(nextRange.Add(1)%69)*100
-	h := &harness{t: t, state: state, store: testutil.RealTemp(t), lo: lo}
+	h := &harness{t: t, state: state, store: testutil.RealTemp(t), window: claimWindow(t)}
+	t.Cleanup(h.window.release)
+	lo := h.window.lo
 	h.env = append(os.Environ(), testutil.GitEnv...)
 	h.env = append(h.env,
 		"PATH="+binDir+":"+os.Getenv("PATH"),
