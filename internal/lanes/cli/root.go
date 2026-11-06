@@ -44,6 +44,7 @@ versioned. See the contract: lanes help contract`,
 		SilenceUsage:  true,
 	}
 	root.AddCommand(
+		newInitCmd(),
 		newStartCmd(),
 		newStopCmd(),
 		newListCmd(),

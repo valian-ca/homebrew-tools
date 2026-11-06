@@ -188,6 +188,24 @@ func IsIgnored(ctx context.Context, root, path string) bool {
 	return err == nil
 }
 
+// ProjectFiles lists the files git tracks plus the untracked ones it does not
+// ignore, which leaves out dependencies and build output.
+func ProjectFiles(ctx context.Context, root string) ([]string, error) {
+	out, err := run(ctx, root, "ls-files", "-z", "--cached", "--others", "--exclude-standard")
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]bool{}
+	var files []string
+	for _, f := range strings.Split(out, "\x00") {
+		if f != "" && !strings.HasSuffix(f, "/") && !seen[f] {
+			seen[f] = true
+			files = append(files, f)
+		}
+	}
+	return files, nil
+}
+
 func TrackedMatching(ctx context.Context, root, glob string) ([]string, error) {
 	out, err := run(ctx, root, "ls-files", "-z", "--", ":(glob)"+glob)
 	if err != nil {
