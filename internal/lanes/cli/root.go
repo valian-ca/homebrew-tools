@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -95,7 +96,24 @@ with its release. It needs no network.`,
 			return err
 		},
 	})
+	help.ValidArgsFunction = completeHelpTopics
 	return help
+}
+
+// completeHelpTopics completes command names after lanes help, as cobra's
+// default help command does; contract comes from help's own subcommand.
+func completeHelpTopics(c *cobra.Command, args []string, toComplete string) ([]cobra.Completion, cobra.ShellCompDirective) {
+	cmd, _, err := c.Root().Find(args)
+	if err != nil {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	var completions []cobra.Completion
+	for _, sub := range cmd.Commands() {
+		if (sub.IsAvailableCommand() || sub == c) && strings.HasPrefix(sub.Name(), toComplete) {
+			completions = append(completions, cobra.CompletionWithDesc(sub.Name(), sub.Short))
+		}
+	}
+	return completions, cobra.ShellCompDirectiveNoFileComp
 }
 
 func cwd() (string, error) {
