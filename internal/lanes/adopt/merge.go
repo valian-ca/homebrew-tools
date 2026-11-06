@@ -153,7 +153,7 @@ func (p *project) scanSettingsHarness(hooks *orderedObject) {
 			for j, h := range hookObjects(g) {
 				cmd, _ := h.vals["command"].(string)
 				if !strings.Contains(cmd, "lanes hook") {
-					p.report.Harness = append(p.report.Harness, fmt.Sprintf("%s hooks.%s[%d].hooks[%d]: %s", SettingsFile, event, i, j, cmd))
+					p.report.Harness = append(p.report.Harness, fmt.Sprintf("%s hooks.%s[%d].hooks[%d]: a %s hook that is not lanes'", SettingsFile, event, i, j, event))
 				}
 			}
 		}
@@ -187,7 +187,7 @@ func (p *project) envrc() (*File, error) {
 			continue
 		}
 		if m := envAssign.FindStringSubmatch(line); m != nil && harnessVar(m[1]) {
-			p.report.Harness = append(p.report.Harness, fmt.Sprintf("%s:%d: %s", EnvrcFile, i+1, strings.TrimSpace(line)))
+			p.report.Harness = append(p.report.Harness, fmt.Sprintf("%s:%d: sets %s", EnvrcFile, i+1, m[1]))
 		}
 	}
 	if present {

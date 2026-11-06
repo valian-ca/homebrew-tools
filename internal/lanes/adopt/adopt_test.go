@@ -134,7 +134,7 @@ func TestMySQLFromCompose(t *testing.T) {
 	_, report := initRepo(t, dir)
 	y := readFile(t, dir, "lanes.yaml")
 	for _, want := range []string{
-		"  - mysql:\n      port: 3306\n      user: root\n      password: secret\n      start: docker compose -f pilote/docker-compose.yaml up -d --wait\n      listeners: [com.docker.backend]\n      # lanes init: databases",
+		"  - mysql:\n      port: 3306\n      user: root\n      password: secret\n      start: docker compose -f pilote/docker-compose.yaml up -d --wait db\n      listeners: [com.docker.backend]\n      # lanes init: databases",
 		"      databases: {}\n",
 	} {
 		if !strings.Contains(y, want) {
@@ -526,22 +526,24 @@ func TestExistingLanesHookNotDuplicated(t *testing.T) {
 }
 
 func TestFormerHarness(t *testing.T) {
-	settings := `{"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "./scripts/worktree-up.sh"}]}]}}`
-	envrc := "export DB_PORT=3307\nexport DATABASE_URL=mysql://localhost:3307/app\nexport FIRESTORE_EMULATOR_HOST=127.0.0.1:8080\nexport EDITOR=vim\n"
+	settings := `{"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "TOKEN=s3cr3t ./scripts/worktree-up.sh"}]}]}}`
+	envrc := "export DB_PORT=3307\nexport DATABASE_URL=mysql://app:s3cr3t@localhost:3307/app\nexport FIRESTORE_EMULATOR_HOST=127.0.0.1:8080\nexport EDITOR=vim\n"
 	dir := repo(t, map[string]string{SettingsFile: settings, EnvrcFile: envrc})
 	_, report := initRepo(t, dir)
 	for _, w := range []string{
-		".envrc:1: export DB_PORT=3307",
-		".envrc:2: export DATABASE_URL=",
-		".envrc:3: export FIRESTORE_EMULATOR_HOST=",
-		".claude/settings.json hooks.SessionStart[0].hooks[0]: ./scripts/worktree-up.sh",
+		".envrc:1: sets DB_PORT",
+		".envrc:2: sets DATABASE_URL",
+		".envrc:3: sets FIRESTORE_EMULATOR_HOST",
+		".claude/settings.json hooks.SessionStart[0].hooks[0]: a SessionStart hook that is not lanes'",
 	} {
 		if !strings.Contains(report, w) {
 			t.Errorf("the report lacks %q:\n%s", w, report)
 		}
 	}
-	if strings.Contains(report, "EDITOR") {
-		t.Errorf("EDITOR reported as harness:\n%s", report)
+	for _, leak := range []string{"EDITOR", "s3cr3t", "3307", "worktree-up.sh"} {
+		if strings.Contains(report, leak) {
+			t.Errorf("the report shows %q:\n%s", leak, report)
+		}
 	}
 	if got := readFile(t, dir, EnvrcFile); !strings.HasPrefix(got, envrc) {
 		t.Errorf("the harness lines were touched:\n%s", got)

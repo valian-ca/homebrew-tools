@@ -1,6 +1,7 @@
 package adopt
 
 import (
+	"cmp"
 	"fmt"
 	"path"
 	"regexp"
@@ -148,9 +149,14 @@ func (p *project) detectDevServers() {
 		}
 	}
 	usedNames, usedPorts := map[string]bool{}, map[string]bool{}
+	if p.firebase != nil {
+		for _, n := range append(slices.Clone(p.firebase.stack), p.firebase.test...) {
+			usedPorts[n] = true
+		}
+	}
 	for _, f := range all {
 		d := devServer{pkgDir: f.k.dir, script: f.name}
-		d.name = unique(strings.Trim(nonNameChar.ReplaceAllString(strings.ToLower(labels[f.k.dir]+"-"+f.name), "-"), "-"), "-", usedNames)
+		d.name = unique(cmp.Or(slug(labels[f.k.dir]+"-"+f.name), "dev-server"), "-", usedNames)
 		d.port = unique(portName(d.name), "_", usedPorts)
 		d.command, d.fillNote, d.portFlagRewritten = p.devServerCommand(f.k.dir, f.name, f.text, f.shape, d.portVar())
 		if d.portFlagRewritten {
@@ -216,15 +222,15 @@ func (p *project) devServerCommand(dir, script, text string, shape scriptShape, 
 
 func splitAssignments(text string) (lead, rest string) {
 	words := strings.Fields(text)
-	i := 0
+	i, end := 0, 0
 	for i < len(words) && assignment.MatchString(words[i]) {
+		end += strings.Index(text[end:], words[i]) + len(words[i])
 		i++
 	}
 	if i == 0 {
 		return "", text
 	}
-	rest = strings.TrimSpace(text[strings.Index(text, words[i-1])+len(words[i-1]):])
-	return strings.Join(words[:i], " ") + " ", rest
+	return strings.Join(words[:i], " ") + " ", strings.TrimSpace(text[end:])
 }
 
 func (p *project) packageManager(dir string) string {

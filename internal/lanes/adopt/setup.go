@@ -5,6 +5,18 @@ import (
 	"strings"
 )
 
+func slug(s string) string {
+	return strings.Trim(nonNameChar.ReplaceAllString(strings.ToLower(strings.ReplaceAll(s, "/", "-")), "-"), "-")
+}
+
+// cdPath keeps cd from reading a directory named -x as an option.
+func cdPath(dir string) string {
+	if strings.HasPrefix(dir, "-") {
+		return "./" + dir
+	}
+	return dir
+}
+
 type setupStep struct {
 	name, run, lockfile string
 }
@@ -26,8 +38,8 @@ func (p *project) detectSetup() {
 		dir := path.Dir(f)
 		s := setupStep{name: in.tool, run: in.run, lockfile: f}
 		if dir != "." {
-			s.name = in.tool + "-" + strings.Trim(nonNameChar.ReplaceAllString(strings.ToLower(strings.ReplaceAll(dir, "/", "-")), "-"), "-")
-			s.run = "cd " + shellWord(dir) + " && " + in.run
+			s.name = in.tool + "-" + slug(dir)
+			s.run = "cd " + shellWord(cdPath(dir)) + " && " + in.run
 		}
 		s.name = unique(s.name, "-", used)
 		p.steps = append(p.steps, s)

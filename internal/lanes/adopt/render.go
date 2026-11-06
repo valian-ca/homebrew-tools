@@ -2,7 +2,9 @@ package adopt
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
+	"unicode"
 
 	"gopkg.in/yaml.v3"
 )
@@ -54,19 +56,19 @@ func (p *project) renderLanesYAML() []byte {
 		i := p.mysqlIndex()
 		w("  - mysql:")
 		if m.portIssue != "" {
-			w("      %sport — %s", fillMark, m.portIssue)
+			w("      %sport — %s", fillMark, oneLine(m.portIssue))
 			p.report.fill(Item{File: "lanes.yaml", Key: fmt.Sprintf("resources[%d].mysql.port", i), What: "the host port of " + m.service.String() + ": " + m.portIssue})
 		} else {
 			w("      port: %d", m.port)
 		}
 		w("      user: root")
 		if m.passwordIssue != "" {
-			w("      %spassword — %s", fillMark, m.passwordIssue)
+			w("      %spassword — %s", fillMark, oneLine(m.passwordIssue))
 			p.report.fill(Item{File: "lanes.yaml", Key: fmt.Sprintf("resources[%d].mysql.password", i), What: "the root password: " + m.passwordIssue})
 		} else {
 			w("      password: %s", scalar(m.password))
 		}
-		w("      start: %s", scalar("docker compose -f "+shellWord(m.service.file)+" up -d --wait"))
+		w("      start: %s", scalar("docker compose -f "+shellWord(m.service.file)+" up -d --wait "+shellWord(m.service.name)))
 		w("      listeners: [com.docker.backend]")
 		what := "one entry per database a lane gets: a key and a name template with {lane} after a fixed prefix (dev: app_{lane}); lanes start refuses until it is filled"
 		w("      %sdatabases — %s", fillMark, what)
@@ -112,7 +114,7 @@ func (p *project) renderProcessCompose() []byte {
 	for _, d := range p.devs {
 		w("  %s:", d.name)
 		if d.fillNote != "" {
-			w("    %s%s", fillMark, d.fillNote)
+			w("    %s%s", fillMark, oneLine(d.fillNote))
 		}
 		w("    command: %s", scalar(d.command))
 		if d.pkgDir != "." {
@@ -128,10 +130,23 @@ func (p *project) renderProcessCompose() []byte {
 	return []byte(b.String())
 }
 
+// oneLine keeps project text that lands in a YAML comment on that comment's
+// line: a newline in a service or script name would start a YAML key.
+func oneLine(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, s)
+}
+
+// scalar always fits on its key's line: yaml.Marshal turns a multi-line value
+// into a block scalar, whose indentation would not follow the key's.
 func scalar(s string) string {
 	out, err := yaml.Marshal(s)
-	if err != nil {
-		return fmt.Sprintf("%q", s)
+	if err != nil || strings.ContainsFunc(s, unicode.IsControl) {
+		return strconv.Quote(s)
 	}
 	return strings.TrimSuffix(string(out), "\n")
 }

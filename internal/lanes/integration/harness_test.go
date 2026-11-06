@@ -134,11 +134,15 @@ func newHarness(t *testing.T, opts ...option) *harness {
 
 	if h.profile.firebase() {
 		requireFirebase(t)
+	}
+	if h.profile.mysql() {
+		requireMySQL(t)
+	}
+	if h.profile.firebase() {
 		firebaseSlots <- struct{}{}
 		h.slot = true
 	}
 	if h.profile.mysql() {
-		requireMySQL(t)
 		mysqlSlots <- struct{}{}
 		h.mysqlSlot = true
 		h.mysqlPort = freePort(t)

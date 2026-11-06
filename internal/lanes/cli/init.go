@@ -21,20 +21,22 @@ It asks nothing, and needs neither lanesd nor process-compose.
 
 It writes lanes.yaml (schema 2) and process-compose.yaml, and refuses, naming
 the file and writing nothing, when either exists. It adds the contract's four
-guarded hooks to .claude/settings.json, keeping everything else in the file;
-the session-start and cwd-changed hooks get a 600 s timeout when lanes.yaml
-has setup steps. It appends the lanes line to .envrc and, with a firebase
-resource, the generated configs and the data directory to .gitignore. Each
-file is created when missing; a hook or a line already there is not added
-twice.
+guarded hooks to .claude/settings.json, keeping its other keys and values
+and re-indenting it; the SessionStart, CwdChanged and PostToolUse hooks get a
+600 s timeout when lanes.yaml has setup steps. It appends the lanes line to
+.envrc and, with a firebase resource, the generated configs and the data
+directories to .gitignore. Each file is created when missing; a hook or a
+line already there is not added twice. A merged file that is a symbolic link
+is refused.
 
 It detects:
-  Firebase      a firebase.emulator.json, else firebase.json, with an emulators
-                section: a firebase resource and every port the contract
-                requires, for the stack and its test series
+  Firebase      the shallowest firebase.emulator.json or firebase.json with
+                an emulators section: a firebase resource and every port the
+                contract requires, for the stack and its test series
   MySQL         a compose service on a mysql or mariadb image: a mysql resource
-                with its host port, root password, a docker compose start and
-                listeners [com.docker.backend]
+                with its host port and root password (read from the compose
+                .env as docker compose does), a docker compose start of that
+                service alone, and listeners [com.docker.backend]
   Postgres      a compose service on a postgres image: reported, not written
   Dev servers   package.json scripts running vite, vite dev, vite serve,
                 storybook dev or start-storybook: a disabled process each, on

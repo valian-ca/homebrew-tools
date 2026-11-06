@@ -163,16 +163,38 @@ func (p *project) existing(rel string) ([]byte, fs.FileMode, bool, error) {
 	return data, info.Mode().Perm(), true, err
 }
 
-// Apply writes only once every file is computed, so a refusal leaves the
-// checkout untouched.
+// Apply writes the merged files first and lanes.yaml last: lanes.yaml is what
+// makes a rerun refuse, and the merges are idempotent, so a write that fails
+// halfway leaves a checkout that a rerun completes.
 func (r *Result) Apply() error {
-	for _, f := range r.Files {
-		if err := os.MkdirAll(filepath.Dir(filepath.Join(r.Root, f.Path)), 0o755); err != nil {
-			return fmt.Errorf("lanes init: write %s: %w", f.Path, err)
+	order := slices.Clone(r.Files)
+	slices.SortStableFunc(order, func(a, b File) int { return lastWritten(a) - lastWritten(b) })
+	var created []string
+	for _, f := range order {
+		path := filepath.Join(r.Root, f.Path)
+		err := os.MkdirAll(filepath.Dir(path), 0o755)
+		if err == nil {
+			err = fsx.WriteAtomic(path, f.Content, f.perm)
 		}
-		if err := fsx.WriteAtomic(filepath.Join(r.Root, f.Path), f.Content, f.perm); err != nil {
-			return fmt.Errorf("lanes init: write %s: %w", f.Path, err)
+		if err != nil {
+			for _, c := range created {
+				_ = os.Remove(c)
+			}
+			return fmt.Errorf("lanes init: write %s: %w — run lanes init again once fixed", f.Path, err)
+		}
+		if lastWritten(f) > 0 {
+			created = append(created, path)
 		}
 	}
 	return nil
+}
+
+func lastWritten(f File) int {
+	switch f.Path {
+	case pc.ProjectFile:
+		return 1
+	case config.FileName:
+		return 2
+	}
+	return 0
 }

@@ -98,7 +98,7 @@ func (p *project) details(path string) []string {
 		}
 		d := []string{"lanes hooks added: " + strings.Join(events, ", ")}
 		if len(p.steps) > 0 {
-			d = append(d, fmt.Sprintf("timeout %d on the session-start and cwd-changed hooks: lanes.yaml has setup steps", PrepTimeout))
+			d = append(d, fmt.Sprintf("timeout %d on the SessionStart, CwdChanged and PostToolUse lanes hooks: lanes.yaml has setup steps", PrepTimeout))
 		}
 		return d
 	case EnvrcFile:

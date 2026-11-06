@@ -188,3 +188,67 @@ func TestShellQuoting(t *testing.T) {
 		t.Errorf("process-compose.yaml:\n%s", pcYAML)
 	}
 }
+
+func TestSplitAssignments(t *testing.T) {
+	for text, want := range map[string][2]string{
+		"NODE_ENV=dev ENV=dev vite --port 3000": {"NODE_ENV=dev ENV=dev ", "vite --port 3000"},
+		"A=1  vite":                             {"A=1 ", "vite"},
+		"vite -p 1":                             {"", "vite -p 1"},
+	} {
+		lead, rest := splitAssignments(text)
+		if lead != want[0] || rest != want[1] {
+			t.Errorf("splitAssignments(%q) = %q, %q", text, lead, rest)
+		}
+	}
+}
+
+func TestProjectTextStaysInItsComment(t *testing.T) {
+	dir := repo(t, map[string]string{
+		"compose.yaml":      "services:\n  \"db\\nstart: evil\":\n    image: mysql:8\n    ports: [\"${P}:3306\"]\n",
+		"ü/package.json":    `{"scripts": {"é": "vite --port 1 & tsc -w"}}`,
+		"-x/pubspec.lock":   "",
+		"firebase.json":     `{"emulators": {"auth": {}}}`,
+		"test/package.json": `{"scripts": {"auth": "vite"}}`,
+	})
+	initRepo(t, dir)
+	y := readFile(t, dir, "lanes.yaml")
+	if strings.Contains(y, "\nstart: evil") {
+		t.Errorf("a service name injected a key:\n%s", y)
+	}
+	cfg, err := config.Parse([]byte(strings.Replace(y, "databases: {}", "databases:\n        dev: app_{lane}", 1)))
+	if err != nil {
+		t.Fatalf("lanes.yaml: %v\n%s", err, y)
+	}
+	if !slices.ContainsFunc(cfg.Setup, func(s config.Step) bool { return s.Run == "cd ./-x && flutter pub get" }) {
+		t.Errorf("setup %+v", cfg.Setup)
+	}
+	if !slices.Contains(cfg.Ports.Names, "test_auth_2") || !slices.Contains(cfg.Ports.Names, "dev_server") {
+		t.Errorf("ports %v", cfg.Ports.Names)
+	}
+	if pcYAML := readFile(t, dir, "process-compose.yaml"); !strings.Contains(pcYAML, "  dev-server:\n") {
+		t.Errorf("process-compose.yaml:\n%s", pcYAML)
+	}
+}
+
+func TestApplyFailureCanBeRerun(t *testing.T) {
+	dir := repo(t, map[string]string{"package-lock.json": "{}", EnvrcFile: "use asdf\n"})
+	res := plan(t, dir)
+	blocker := filepath.Join(dir, "lanes.yaml", "x")
+	testutil.Write(t, blocker, "")
+	if err := res.Apply(); err == nil {
+		t.Fatal("Apply over a lanes.yaml directory succeeded")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "process-compose.yaml")); err == nil {
+		t.Error("process-compose.yaml was left behind")
+	}
+	if err := os.RemoveAll(filepath.Join(dir, "lanes.yaml")); err != nil {
+		t.Fatal(err)
+	}
+	initRepo(t, dir)
+	if got := readFile(t, dir, EnvrcFile); strings.Count(got, EnvrcLine) != 1 {
+		t.Errorf(".envrc after the rerun:\n%s", got)
+	}
+	if h := hooks(t, dir); len(h["SessionStart"]) != 1 {
+		t.Errorf("hooks after the rerun: %+v", h)
+	}
+}

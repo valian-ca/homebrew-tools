@@ -289,7 +289,7 @@ func rootPassword(svc composeService, env map[string]envValue, r *resolver) (pas
 		}
 		v, ok := r.resolve(e.value)
 		if !ok {
-			return "", fmt.Sprintf("%s sets %s to %q, which lanes init does not copy", svc, key, e.value)
+			return "", fmt.Sprintf("%s sets %s from a variable lanes init cannot resolve", svc, key)
 		}
 		return v, ""
 	}
