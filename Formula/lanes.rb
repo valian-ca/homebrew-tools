@@ -1,8 +1,8 @@
 class Lanes < Formula
   desc "Give each git worktree its own local stack, run by the lanesd daemon"
   homepage "https://github.com/valian-ca/homebrew-tools"
-  url "https://github.com/valian-ca/homebrew-tools/archive/refs/tags/lanes-0.3.0.tar.gz"
-  sha256 "3e609408b96c2836ec7706bb1381b23a7e5f1b98f4ab232d45d3e75b79d8db20"
+  url "https://github.com/valian-ca/homebrew-tools/archive/refs/tags/lanes-0.4.0.tar.gz"
+  sha256 "50952af1ffd0f16b8c49ec5f2b3ad69e3e0674893bd2b60b5c3edf22b137699d"
   license "MIT"
   head "https://github.com/valian-ca/homebrew-tools.git", branch: "main"
 
@@ -27,6 +27,7 @@ class Lanes < Formula
   test do
     assert_match "lanes", shell_output("#{bin}/lanes --help")
     assert_match version.to_s, shell_output("#{bin}/lanes --version")
+    assert_match "lanes.yaml", shell_output("#{bin}/lanes help contract")
     assert_match "lanesd", shell_output("#{bin}/lanesd --help")
     assert_match version.to_s, shell_output("#{bin}/lanesd --version")
   end
