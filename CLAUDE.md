@@ -167,7 +167,8 @@ state dir and port range through the `LANES_TEST=1` overrides. No account is
 needed. Each test claims its range, 100 ports out of 42000-48899, with a
 `flock` on a file under `/tmp/lanes-it-ports`, so two runs on one Mac take
 disjoint ranges; the lock goes with the process that holds it, even a killed
-one.
+one. Unit tests that set `LANES_PORT_RANGE` stay outside 42000-48899: CI runs
+them alongside the integration suite.
 
 The demo's Firebase side is the project `demo-lanes`: the `demo-` prefix needs
 no credentials. Its cases need Java 21 and Node 22; without them they skip,
