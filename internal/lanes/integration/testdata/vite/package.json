@@ -1,0 +1,11 @@
+{
+  "name": "frontend",
+  "private": true,
+  "scripts": {
+    "dev": "vite",
+    "storybook": "storybook dev -p 6006"
+  },
+  "devDependencies": {
+    "vite": "8.3.4"
+  }
+}

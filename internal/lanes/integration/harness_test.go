@@ -90,7 +90,12 @@ const (
 	firebaseLight
 	firebaseFull
 	mysqlStack
+	fullStack
 )
+
+func (p profile) firebase() bool { return p == firebaseFull || p == fullStack }
+
+func (p profile) mysql() bool { return p == mysqlStack || p == fullStack }
 
 func withProfile(p profile) option { return func(h *harness) { h.profile = p } }
 
@@ -127,13 +132,17 @@ func newHarness(t *testing.T, opts ...option) *harness {
 		h.env = append(h.env, "LANES_GRACE=3s")
 	}
 
-	if h.profile == firebaseFull {
+	if h.profile.firebase() {
 		requireFirebase(t)
+	}
+	if h.profile.mysql() {
+		requireMySQL(t)
+	}
+	if h.profile.firebase() {
 		firebaseSlots <- struct{}{}
 		h.slot = true
 	}
-	if h.profile == mysqlStack {
-		requireMySQL(t)
+	if h.profile.mysql() {
 		mysqlSlots <- struct{}{}
 		h.mysqlSlot = true
 		h.mysqlPort = freePort(t)

@@ -59,11 +59,14 @@ lanes serves linked worktrees only. On the main checkout:
   Run `lanes help contract` for the contract: ports, TMPDIR and stack per worktree.
   ```
 
-- `lanes list` never shows it.
+- `lanes list` never shows it;
+- `lanes init` works there as in a worktree: it writes the project's lanes
+  files at the checkout's root (see
+  [Adopting with `lanes init`](#adopting-with-lanes-init)).
 
-In a repository without `lanes.yaml`, `lanes env` and the hooks do nothing,
-and `lanes list` still lists every lane on the Mac; every other command
-refuses and names the missing file.
+In a repository without `lanes.yaml`, `lanes init` writes it, `lanes env` and
+the hooks do nothing, and `lanes list` still lists every lane on the Mac;
+every other command refuses and names the missing file.
 
 ## Versioned files
 
@@ -72,11 +75,103 @@ A project declares its stack in two files it writes and versions:
 - `lanes.yaml`, below;
 - `process-compose.yaml`, the project's own processes.
 
-lanes never modifies a file git tracks. What it writes in the worktree —
-`.lanes/`, the generated files, and a `firebase` resource's generated configs
-and data — must be ignored by git; lanes refuses to write a generated file that
-git tracks, and warns when one is not ignored. It never edits `.gitignore` or
-`.git/info/exclude`.
+At runtime, lanes never modifies a file git tracks. What it writes in the
+worktree — `.lanes/`, the generated files, and a `firebase` resource's
+generated configs and data — must be ignored by git; lanes refuses to write a
+generated file that git tracks, and warns when one is not ignored. It never
+edits `.gitignore` or `.git/info/exclude`.
+
+`lanes init` is the one exception: an explicit adoption command, run once,
+that writes and merges the project's versioned files (see
+[below](#adopting-with-lanes-init)).
+
+## Adopting with `lanes init`
+
+`lanes init` writes a project's lanes files from what it detects, then prints a
+report of what it did and what it could not infer. Its user is an agent: it
+asks nothing. It runs in any checkout, main or worktree, writes at the root of
+that checkout, and needs neither `lanesd` nor process-compose. `lanes init
+--dry-run` prints each file it would write or merge — the whole file, or for
+`.envrc` and `.gitignore` the lines it would append — then the report, and
+writes nothing.
+
+| File | What `lanes init` does |
+| --- | --- |
+| `lanes.yaml`, `process-compose.yaml` | Writes them, schema 2. When either exists, it refuses, names the file and writes nothing; nothing overwrites them. A second run therefore refuses on `lanes.yaml`. |
+| `.claude/settings.json` | Adds the four guarded hooks [below](#hooks-and-envrc), and keeps every other key and value, in their order; the merged file is rewritten with a 2-space indent. When `lanes.yaml` has setup steps, the `SessionStart`, `CwdChanged` and `PostToolUse` hooks get `"timeout": 600`, so that a first prep fits. A lanes hook already there is not added twice, nor changed: without a timeout while `lanes.yaml` has setup steps, the report lists it to check. An invalid file is refused before anything is written. |
+| `.envrc` | Appends the contract's line, unless a line already runs `lanes env`. |
+| `.gitignore` | With a `firebase` resource, appends `firebase.lanes.json`, `firebase.lanes.test.json` and the data directories `.emu-data`, `.emu-data.next` and `.emu-data.old` when no line of the root `.gitignore` already names them. |
+
+A missing file is created. A merged file that is a symbolic link, or sits in
+a linked `.claude`, is refused before anything is written: replacing the link
+would commit a copy of its target. `lanes.yaml` is written last, so a write
+that fails halfway leaves a checkout that a second run completes.
+
+What it detects, among the files git tracks or does not ignore:
+
+- **Firebase** — the shallowest `firebase.emulator.json` or `firebase.json`
+  with an `emulators` section, `firebase.emulator.json` first within a
+  directory: a `firebase` resource on it, and a named port for every port the
+  contract requires, for the stack and the test series. Another such config is
+  listed to check, as is a project with `firebase-tools` in no `package.json`.
+- **MySQL** — a service on a `mysql` or `mariadb` image in a
+  `docker-compose.yml`, `docker-compose.yaml`, `compose.yml` or `compose.yaml`
+  at the root or below: a `mysql` resource with the published host port, `user:
+  root`, the service's `MYSQL_ROOT_PASSWORD` (or `MARIADB_ROOT_PASSWORD`; empty
+  under `MYSQL_ALLOW_EMPTY_PASSWORD`),
+  `start: docker compose -f <compose file> up -d --wait <service>` and
+  `listeners: [com.docker.backend]`. Naming the service starts the database
+  alone. A `${VAR}` or `${VAR:-default}` value is read as docker compose reads
+  it, from the `.env` beside the compose file, else its default
+  (`${DB_PORT:-3306}:3306` gives `3306`); the report names each variable it
+  read or defaulted, never its value. A port or password it cannot resolve
+  becomes an item to fill in. A second MySQL service is listed to check: a
+  project has at most one `mysql` resource.
+- **Postgres** — a compose service on a `postgres` image is reported, and no
+  resource is written: the adapter is not in this lanes.
+- **Dev servers** — each `package.json` script that runs `vite`, `vite dev`,
+  `vite serve`, `storybook dev` or `start-storybook` gives a `disabled: true`
+  process named after its package and script (`frontend-dev`), on its own
+  named port (`frontend_dev`, so `$PORT_FRONTEND_DEV`) passed with `--port`,
+  so that `lanes up frontend-dev` starts it. It runs through the package
+  manager of the nearest lockfile, npm by default — `npm run dev -- --port
+  "$PORT_FRONTEND_DEV"` —, from the package's directory, with a readiness
+  probe `nc -z localhost` on its port every second, for up to 2 minutes. A
+  single-command script that sets its own port (`storybook dev -p 6006`) runs
+  as `<manager> exec -- <the script, its port flag replaced>`, and the report
+  lists it to check; inside a composite script (`a && b`), a port flag, or a
+  dev server that is not the last command, becomes an item to fill in.
+- **Setup** — each `pnpm-lock.yaml`, `package-lock.json`, `yarn.lock` and
+  `pubspec.lock` gives an install step run from its directory, with
+  `when_changed` on the lockfile.
+- **Ports** — `ports.block` is the number of named ports rounded up to a
+  multiple of 10, at least 10.
+
+It never infers, and always reports: the MySQL databases, which `lanes start`
+requires; a seed (the `firebase` resource's `seed`, a MySQL seed task); a
+`scripts` resource for the lane-scoped resources the project makes itself;
+the `generate` templates for the project files that carry ports today; the
+project's own processes besides its dev servers; a MySQL server not run from
+docker-compose, when no compose file has one. In the YAML files it writes,
+each is a `# lanes init:` comment at the place to fill in.
+
+The report has these sections, each only when it has content:
+
+- **Written** and **Merged** — each file and the detections behind it;
+  **Unchanged** — a merged file that already held what lanes init adds;
+- **To fill in** — each item with its file and key (`lanes.yaml
+  resources[0].mysql.databases`);
+- **To check** — rewritten dev servers, other Firebase or MySQL candidates,
+  variables read from a compose `.env`, a lanes hook without its timeout;
+- **Not written** — a Postgres service;
+- **Former worktree harness** — in `.envrc`, the lines that set port
+  variables, `DATABASE_URL`, `COMPOSE_PROJECT_NAME` or emulator variables, by
+  line and name; in `.claude/settings.json`, the `SessionStart`, `CwdChanged`
+  or `SessionEnd` hooks that are not lanes', by event and index. It shows no
+  value, and removes none of them: that is the migration's work;
+- **Nothing detected**, when no detection fired;
+- **Next steps** — fill in the items, `direnv allow` when `.envrc` changed,
+  commit the files, then `lanes start` in a worktree, which starts the stack.
 
 ## `lanes.yaml`, schema 2
 
@@ -96,7 +191,7 @@ resources:                    # adapters, in creation order
       config: firebase.emulator.json
       seed: seed
   - mysql:                    # at most one per project; schema 2
-      start: docker compose -f pilote/docker-compose.yaml up -d --wait
+      start: docker compose -f pilote/docker-compose.yaml up -d --wait db
       listeners: [com.docker.backend]
       databases:
         dev: nezrouge_{lane}
@@ -368,7 +463,7 @@ below). Schema 2.
 | `port` | Default `3306`. The server runs on this Mac, and lanes always reaches it at `127.0.0.1`: there is no `host` key, since the port guard can only vouch for this Mac's listener. |
 | `user` | Default `root`. |
 | `password` | Default empty. |
-| `start` | The command that wakes the server, such as `docker compose -f pilote/docker-compose.yaml up -d --wait`. Optional. |
+| `start` | The command that wakes the server, such as `docker compose -f pilote/docker-compose.yaml up -d --wait db`. Naming the service starts the database alone, even behind a compose `profile`, and leaves the file's other services stopped. Optional. |
 | `listeners` | The process names that may hold `port`. Default `[mysqld]`. |
 | `databases` | Required, at least one: a key of letters, digits and `_`, and a name template holding `{lane}` after a fixed prefix (`app_{lane}`, not `{lane}`), with only letters, digits, `_` and `$` around it (`app.{lane}` is an error). |
 
@@ -679,6 +774,7 @@ A physical device reaches the lane's emulators by the Mac's IP, not by
 
 | Command | Does |
 | --- | --- |
+| `lanes init [--dry-run]` | Write a project's lanes files from what it detects, and report what it could not infer; see [Adopting with `lanes init`](#adopting-with-lanes-init). |
 | `lanes start` | Settle the lane, prep, create resources on the lane's first start — wake the MySQL server and ensure the lane's databases at every start — start the stack and wait until it is ready. |
 | `lanes stop [worktree]` | Stop a stack, the current worktree's by default, and keep its data. |
 | `lanes list [--json]` | Every lane on the Mac, stopped ones included. With `--json`, each lane's `resources`: its current lane's registered resources, `{adapter, kind, resource}`. |

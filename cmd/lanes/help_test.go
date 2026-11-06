@@ -56,7 +56,7 @@ func TestHelpCompletesCommandsAndContract(t *testing.T) {
 }
 
 func TestHelpPointsToTheEmbeddedContract(t *testing.T) {
-	for _, args := range [][]string{{"--help"}, {"help"}, {"hook", "--help"}} {
+	for _, args := range [][]string{{"--help"}, {"help"}, {"hook", "--help"}, {"init", "--help"}} {
 		out := run(t, args...)
 		if !strings.Contains(out, "lanes help contract") {
 			t.Errorf("lanes %s does not point to lanes help contract:\n%s", strings.Join(args, " "), out)

@@ -52,13 +52,13 @@ func (h *harness) shape(dir string) {
 	h.t.Helper()
 	noFirebase := h.profile == core || h.profile == mysqlStack
 	h.editYAML(filepath.Join(dir, "lanes.yaml"), func(doc map[string]any) {
-		if h.profile != firebaseFull {
+		if !h.profile.firebase() {
 			doc["setup"] = slices.DeleteFunc(doc["setup"].([]any), func(s any) bool { return s.(map[string]any)["name"] == "node" })
 		}
 		if noFirebase {
 			doc["resources"] = slices.DeleteFunc(doc["resources"].([]any), func(r any) bool { return r.(map[string]any)["firebase"] != nil })
 		}
-		if h.profile == mysqlStack {
+		if h.profile.mysql() {
 			h.pointMySQL(doc)
 		} else {
 			trimMySQL(doc)
@@ -70,7 +70,7 @@ func (h *harness) shape(dir string) {
 			delete(procs, "firebase")
 			delete(procs, "functions-build")
 		}
-		if h.profile != mysqlStack {
+		if !h.profile.mysql() {
 			delete(procs, "mysql-seed")
 		}
 	})

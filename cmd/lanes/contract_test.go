@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"regexp"
@@ -8,10 +9,33 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/valian-ca/homebrew-tools/internal/lanes/adopt"
 	"github.com/valian-ca/homebrew-tools/internal/lanes/config"
 	"github.com/valian-ca/homebrew-tools/internal/lanes/firebase"
 	"github.com/valian-ca/homebrew-tools/internal/lanes/pc"
+	"github.com/valian-ca/homebrew-tools/internal/lanes/testutil"
 )
+
+func TestInitWritesTheContractHooks(t *testing.T) {
+	testutil.Hermetic(t)
+	dir := testutil.RealTemp(t)
+	testutil.Git(t, dir, "init", "-q", "-b", "main")
+	res, err := adopt.Plan(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	written := map[string]string{}
+	for _, f := range res.Files {
+		written[f.Path] = string(f.Content)
+	}
+	if jsonFences := fences(t, "json"); len(jsonFences) != 1 || written[adopt.SettingsFile] != jsonFences[0] {
+		t.Errorf("lanes init writes hooks that are not the contract's:\n%s\ncontract:\n%v", written[adopt.SettingsFile], jsonFences)
+	}
+	envrc := strings.TrimSpace(written[adopt.EnvrcFile])
+	if envrc != adopt.EnvrcLine || !slices.ContainsFunc(fences(t, "sh"), func(f string) bool { return strings.Contains(f, envrc) }) {
+		t.Errorf("lanes init writes an .envrc line that is not the contract's: %q", envrc)
+	}
+}
 
 func TestDemoMySQLFollowsContract(t *testing.T) {
 	cfg, err := config.Load(demo)

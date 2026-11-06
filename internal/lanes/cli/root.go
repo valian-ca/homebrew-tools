@@ -30,10 +30,12 @@ when no Claude session works in the worktree any more; its data stays until
 the worktree goes away.
 
 lanes serves linked worktrees only. On a project's main checkout, run the
-project's own commands.
+project's own commands — except lanes init, which adopts a project from its
+main checkout or a worktree.
 
 The project declares its stack in lanes.yaml and process-compose.yaml, both
-versioned. See the contract: lanes help contract`,
+versioned; lanes init writes a first version of them. See the contract:
+lanes help contract`,
 		Example: `  cd ~/code/acme/.claude/worktrees/fix-login
   lanes start              # start this worktree's stack, wait until it is ready
   eval "$(lanes env)"      # its ports and TMPDIR in this shell
@@ -44,6 +46,7 @@ versioned. See the contract: lanes help contract`,
 		SilenceUsage:  true,
 	}
 	root.AddCommand(
+		newInitCmd(),
 		newStartCmd(),
 		newStopCmd(),
 		newListCmd(),

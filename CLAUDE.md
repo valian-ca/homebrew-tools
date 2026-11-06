@@ -168,7 +168,10 @@ needed.
 
 The demo's Firebase side is the project `demo-lanes`: the `demo-` prefix needs
 no credentials. Its cases need Java 21 and Node 22; without them they skip,
-unless `LANES_REQUIRE_FIREBASE=1`, which CI sets. At most two Firebase stacks
+unless `LANES_REQUIRE_FIREBASE=1`, which CI sets. The `lanes init`
+dev-server case needs only Node, npm and the npm registry, to install the Vite
+that `internal/lanes/integration/testdata/vite` pins; it skips without them,
+under the same `LANES_REQUIRE_FIREBASE` switch. At most two Firebase stacks
 run at once (`LANES_FIREBASE_PARALLEL` changes it), and the core tests run on
 a copy of the demo without its Firebase side. Two more `LANES_TEST=1` seams
 serve them: `LANES_TMPDIR_ROOT` moves the lanes' `TMPDIR` (the socket-length
