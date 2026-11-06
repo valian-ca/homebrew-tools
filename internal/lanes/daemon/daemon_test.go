@@ -416,7 +416,7 @@ func TestNotifyArmsOnlyRunningStacksAtOrBelowTheRoot(t *testing.T) {
 func TestReconcileClearsAnAdminDirLeftWithLanesFilesOnly(t *testing.T) {
 	h := newHarness(t)
 	common := testutil.RealTemp(t)
-	t.Setenv("LANES_PORT_RANGE", "43700-43799")
+	t.Setenv("LANES_PORT_RANGE", "41700-41799")
 	left := filepath.Join(common, "worktrees", "left")
 	live := liveAdminDir(t, filepath.Join(common, "worktrees", "live"))
 	for _, admin := range []string{left, live} {
@@ -444,7 +444,7 @@ func TestReconcileBacksOffAFailedCleanup(t *testing.T) {
 	h := newHarness(t)
 	common := testutil.RealTemp(t)
 	gone := filepath.Join(common, "worktrees", "gone")
-	t.Setenv("LANES_PORT_RANGE", "43900-43999")
+	t.Setenv("LANES_PORT_RANGE", "41900-41999")
 	if _, err := ports.Ensure(ports.Entry{CommonDir: common, AdminDir: gone, Worktree: "/w/gone", Size: 5}); err != nil {
 		t.Fatal(err)
 	}
@@ -485,7 +485,7 @@ func TestReconcileBacksOffAFailedCleanup(t *testing.T) {
 func TestReconcileErasesRetiredLaneEntriesOfALiveWorktree(t *testing.T) {
 	h := newHarness(t)
 	common := testutil.RealTemp(t)
-	t.Setenv("LANES_PORT_RANGE", "43600-43699")
+	t.Setenv("LANES_PORT_RANGE", "41600-41699")
 	live := liveAdminDir(t, filepath.Join(common, "worktrees", "live"))
 	if _, err := ports.Ensure(ports.Entry{CommonDir: common, AdminDir: live, Worktree: "/w/live", Size: 5}); err != nil {
 		t.Fatal(err)
@@ -535,7 +535,7 @@ func TestReconcileErasesRetiredLaneEntriesOfALiveWorktree(t *testing.T) {
 func TestAdoptKeepsTheSavedGraceAndSkipsDeadStacks(t *testing.T) {
 	h := newHarness(t)
 	common := testutil.RealTemp(t)
-	t.Setenv("LANES_PORT_RANGE", "43800-43899")
+	t.Setenv("LANES_PORT_RANGE", "41800-41899")
 	var entries []ports.Entry
 	for _, name := range []string{"alive", "dead"} {
 		e, err := ports.Ensure(ports.Entry{CommonDir: common, AdminDir: filepath.Join(common, name), Worktree: "/w/" + name, Size: 5})
