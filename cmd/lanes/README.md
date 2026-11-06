@@ -236,16 +236,19 @@ Commands: lanes start · lanes stop · lanes logs <piece> · lanes restart <piec
 - The lane ID, the worktree and `LANES_HOST`.
 - The stack's state at that moment: `running`; `stopped`; `never started` for
   a lane whose stack has not started yet; `unknown` with
-  `brew services start lanes` when `lanesd` is not running. When the stack
-  does not run, the block says to run `lanes start` before using the ports.
-  The block never starts anything: `lanes start` stays the only way a stack
-  starts.
+  `brew services start lanes` when `lanesd` is not running; `unknown —
+  lanesd did not answer: <error>` when it does not answer within a second.
+  When the stack does not run, the block says to run `lanes start` before
+  using the ports. The block never starts anything: `lanes start` stays the
+  only way a stack starts.
 - The named ports, `name=port` in block order, without the `test_*` ports,
   which only `lanes test-env` uses. A project that names no port has no
   `Ports:` line.
 - A `Problem:` line for each error the hook met while it still settled the
-  lane: a failed prep step, an `env` entry that does not render, a `firebase`
-  config it could not generate.
+  lane. A failed prep step, or a session mark or env file the hook could not
+  write, leaves the lane's variables unexported, and the line says so. The
+  others leave them exported: an `env` entry that does not render (only the
+  `env:` variables are left out), a `firebase` config it could not generate.
 - The commands to know.
 
 When the lane cannot be settled — an invalid `lanes.yaml`, no free port block,
@@ -260,7 +263,9 @@ worktree's block after `EnterWorktree`, and the main checkout's note after an
 `ExitWorktree` back to it, through the `PostToolUse` hook. **Limit:** a `cd`
 into another worktree fires `CwdChanged`, which updates the session's
 variables but cannot add a block: Claude Code takes no context from a
-`CwdChanged` hook.
+`CwdChanged` hook. After an `ExitWorktree` or a second `EnterWorktree`, the
+block or note describes the new directory, while Bash commands keep the first
+lane's variables until a `cd`: the block can name another lane than theirs.
 
 No `WorktreeRemove` hook is needed: `lanesd` notices a deleted worktree on its
 own, as git does, by the missing `gitdir` file in its admin directory, even

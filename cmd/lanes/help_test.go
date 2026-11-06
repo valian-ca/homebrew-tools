@@ -36,6 +36,25 @@ func TestHelpContractPrintsTheReadme(t *testing.T) {
 	}
 }
 
+func TestHelpCompletesCommandsAndContract(t *testing.T) {
+	offered := map[string]bool{}
+	for line := range strings.Lines(run(t, "__complete", "help", "")) {
+		name, _, _ := strings.Cut(strings.TrimSpace(line), "\t")
+		offered[name] = true
+	}
+	want := []string{"contract"}
+	for _, c := range cli.NewRoot("test", contract).Commands() {
+		if c.IsAvailableCommand() || c.Name() == "help" {
+			want = append(want, c.Name())
+		}
+	}
+	for _, name := range want {
+		if !offered[name] {
+			t.Errorf("lanes help <TAB> does not offer %s", name)
+		}
+	}
+}
+
 func TestHelpPointsToTheEmbeddedContract(t *testing.T) {
 	for _, args := range [][]string{{"--help"}, {"help"}, {"hook", "--help"}} {
 		out := run(t, args...)
@@ -69,6 +88,7 @@ func TestContractDocumentsContextAndState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	flat := strings.Join(strings.Fields(string(readme)), " ")
 	for _, want := range []string{
 		"### Context block",
 		"`lanes help contract`",
@@ -76,9 +96,12 @@ func TestContractDocumentsContextAndState(t *testing.T) {
 		"**Limit:** a `cd`",
 		"Run `lanes help contract` for the contract",
 		"`~/.local/state/lanes/mysql-<port>.lock`",
-		"deferred erase it retries for a live worktree — connects with the main\ncheckout's",
+		"deferred erase it retries for a live worktree — connects with the main checkout's",
+		"`unknown — lanesd did not answer: <error>`",
+		"leaves the lane's variables unexported",
+		"the block can name another lane than theirs",
 	} {
-		if !strings.Contains(string(readme), want) {
+		if !strings.Contains(flat, want) {
 			t.Errorf("the contract lacks %q", want)
 		}
 	}

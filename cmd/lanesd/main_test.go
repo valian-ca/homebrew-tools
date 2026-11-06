@@ -14,8 +14,9 @@ func TestHelpDescribesMySQLReconciliation(t *testing.T) {
 	if err := root.Execute(); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"erases the databases of a gone lane", "retries every\n5 minutes", "never wakes nor stops the MySQL server"} {
-		if !strings.Contains(out.String(), want) {
+	help := strings.Join(strings.Fields(out.String()), " ")
+	for _, want := range []string{"erases the databases of a gone lane", "or those recorded at registration", "retries every 5 minutes", "never wakes nor stops the MySQL server"} {
+		if !strings.Contains(help, want) {
 			t.Errorf("lanesd --help lacks %q:\n%s", want, out.String())
 		}
 	}

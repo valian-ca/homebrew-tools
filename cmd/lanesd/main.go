@@ -41,8 +41,9 @@ On startup it takes back the stacks still running and clears leftovers of
 deleted worktrees; it never relaunches a stack.
 
 With a mysql resource, reconciliation erases the databases of a gone lane —
-from the main checkout, with its lanes.yaml credentials — and retries every
-5 minutes when the server sleeps, does not answer or its port guard refuses.
+from the main checkout, with its lanes.yaml credentials, or those recorded at
+registration when that file has no mysql resource — and retries every 5
+minutes when the server sleeps, does not answer or its port guard refuses.
 lanesd never wakes nor stops the MySQL server.
 
 Its log goes to stderr, which the Homebrew service writes to

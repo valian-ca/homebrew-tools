@@ -4,7 +4,6 @@ package integration
 
 import (
 	"bytes"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -65,15 +64,15 @@ func TestStartForeignPortHolder(t *testing.T) {
 	h.startDaemon()
 	wt := h.worktree("foreign", "feat/foreign")
 	h.mustLanes(wt, "env")
-	start := h.laneOf(wt).Block.Start
+	held := h.laneOf(wt).Block.Start + 1
+	port := strconv.Itoa(held)
 
-	ln, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(start+1))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer ln.Close()
+	// A holder of its own: a listener in the test process would also be held,
+	// between fork and exec, by every child the parallel tests start.
+	holder := h.spawn(wt, "/usr/bin/nc", "-lk", "127.0.0.1", port)
+	h.eventually("the holder to listen", 10*time.Second, func() bool { return listening(held) })
 	r := h.lanes(wt, "start")
-	want := "port " + strconv.Itoa(start+1) + " is held by integration.test (pid " + strconv.Itoa(os.Getpid()) + ")"
+	want := "port " + port + " is held by nc (pid " + strconv.Itoa(holder.Process.Pid) + ")"
 	if r.code == 0 || !strings.Contains(r.stderr, want) {
 		t.Fatalf("want %q, got %s", want, r)
 	}

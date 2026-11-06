@@ -56,7 +56,7 @@ silent:
 	}
 	c.AddCommand(
 		envHook("session-start", "SessionStart: settle the lane, run prep steps, export the lane's variables, add its context block"),
-		envHook("cwd-changed", "CwdChanged, and PostToolUse after EnterWorktree or ExitWorktree: settle the lane of the new directory, run prep steps, export its variables; after EnterWorktree or ExitWorktree, add its context block"),
+		envHook("cwd-changed", "CwdChanged, and PostToolUse after EnterWorktree or ExitWorktree: settle the lane of the new directory, run prep steps, export its variables; after EnterWorktree or ExitWorktree, add its context block, or the main checkout's note"),
 		&cobra.Command{
 			Use:   "session-end",
 			Short: "SessionEnd: tell lanesd a session ended, in well under a second",

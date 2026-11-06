@@ -272,7 +272,7 @@ lanes stop           # stop it, keep its data
 ```
 
 A project adopts lanes with a `lanes.yaml`, a `process-compose.yaml` and
-three hooks. The contract is in [`cmd/lanes/README.md`](./cmd/lanes/README.md),
+four hooks. The contract is in [`cmd/lanes/README.md`](./cmd/lanes/README.md),
 and [`examples/lanes-demo`](./examples/lanes-demo) follows it
 (`examples/lanes-demo/make-repo.sh <dir>` turns it into a throwaway repo).
 
